@@ -1,0 +1,8 @@
+file[0]: foo.txt -> foo.txt (Modified)
+  @@ -1,1 +1,1 @@
+    - old=1 new=. |foo line1
+    + old=. new=1 |FOO LINE1
+file[1]: bar.txt -> bar.txt (Modified)
+  @@ -1,1 +1,1 @@
+    - old=1 new=. |bar line1
+    + old=. new=1 |BAR LINE1

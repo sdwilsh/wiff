@@ -1,0 +1,23 @@
+[package]
+name = "wiff"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[[bin]]
+name = "wiff"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+toml.workspace = true
+toml_edit.workspace = true
+wiff-core.workspace = true
+wiff-diff.workspace = true
+wiff-tui.workspace = true

@@ -1,0 +1,28 @@
+file[0]: /path/to/original -> /path/to/new (Modified)
+  @@ -1,3 +1,9 @@
+    + old=. new=1 |This is an important
+    + old=. new=2 |notice! It should
+    + old=. new=3 |therefore be located at
+    + old=. new=4 |the beginning of this
+    + old=. new=5 |document!
+    + old=. new=6 |
+      old=1 new=7 |This part of the
+      old=2 new=8 |document has stayed the
+      old=3 new=9 |same from version to
+  @@ -5,16 +11,13 @@
+      old=5 new=11 |be shown if it doesn't
+      old=6 new=12 |change.  Otherwise, that
+      old=7 new=13 |would not be helping to
+    - old=8 new=. |compress the size of the
+    - old=9 new=. |changes.
+    - old=10 new=. |
+    - old=11 new=. |This paragraph contains
+    - old=12 new=. |text that is outdated.
+    + old=. new=14 |compress anything.
+      old=13 new=15 |
+      old=14 new=16 |It is important to spell
+    - old=15 new=. |check this dokument. On
+    + old=. new=17 |check this document. On
+      old=16 new=18 |the other hand, a
+      old=17 new=19 |misspelled word isn't
+      old=18 new=20 |the end of the world.

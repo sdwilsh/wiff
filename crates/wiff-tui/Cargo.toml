@@ -1,0 +1,18 @@
+[package]
+name = "wiff-tui"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+ratatui.workspace = true
+serde = { workspace = true }
+thiserror.workspace = true
+wiff-core.workspace = true
+wiff-diff.workspace = true
+
+[dev-dependencies]
+k9.workspace = true

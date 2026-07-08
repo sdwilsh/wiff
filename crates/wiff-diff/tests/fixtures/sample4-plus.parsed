@@ -1,0 +1,9 @@
+file[0]: sample.txt -> sample.txt (Added)
+  @@ -0,0 +1,1 @@
+    + old=. new=1 |hello world
+file[1]: sample2.txt -> sample2.txt (Added)
+  @@ -0,0 +1,1 @@
+    + old=. new=1 |hello world
+file[2]: sample3.txt -> sample3.txt (Added)
+  @@ -0,0 +1,1 @@
+    + old=. new=1 |hello world

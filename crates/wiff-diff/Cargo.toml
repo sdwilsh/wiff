@@ -1,0 +1,17 @@
+[package]
+name = "wiff-diff"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+similar.workspace = true
+syntect.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+k9.workspace = true

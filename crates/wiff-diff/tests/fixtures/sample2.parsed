@@ -1,0 +1,45 @@
+file[0]: content/base/src/nsContentUtils.cpp -> content/base/src/nsContentUtils.cpp (Modified)
+  @@ -6369,17 +6369,17 @@ section="public:"
+      old=6369 new=6369 |                                    nsCycleCollectionParticipant* helper)
+      old=6370 new=6370 |  {
+      old=6371 new=6371 |  }
+      old=6372 new=6372 |
+      old=6373 new=6373 |  NS_IMETHOD_(void) NoteNextEdgeName(const char* name)
+      old=6374 new=6374 |  {
+      old=6375 new=6375 |  }
+      old=6376 new=6376 |
+    - old=6377 new=. |  NS_IMETHOD_(void) NoteWeakMapping(void* map, void* key, void* val)
+    + old=. new=6377 |  NS_IMETHOD_(void) NoteWeakMapping(void* map, void* key, void* kdelegate, void* val)
+      old=6378 new=6378 |  {
+      old=6379 new=6379 |  }
+      old=6380 new=6380 |
+      old=6381 new=6381 |  bool mFound;
+      old=6382 new=6382 |
+      old=6383 new=6383 |private:
+      old=6384 new=6384 |  void* mWrapper;
+      old=6385 new=6385 |};
+file[1]: js/src/jsfriendapi.cpp -> js/src/jsfriendapi.cpp (Modified)
+  @@ -527,16 +527,24 @@ section="js::VisitGrayWrapperTargets(JSCompartmen"
+      old=527 new=527 |{
+      old=528 new=528 |    for (WrapperMap::Enum e(comp->crossCompartmentWrappers); !e.empty(); e.popFront()) {
+      old=529 new=529 |        gc::Cell *thing = e.front().key.wrapped;
+      old=530 new=530 |        if (thing->isMarked(gc::GRAY))
+      old=531 new=531 |            callback(closure, thing);
+      old=532 new=532 |    }
+      old=533 new=533 |}
+      old=534 new=534 |
+    + old=. new=535 |JS_FRIEND_API(JSObject *)
+    + old=. new=536 |js::GetWeakmapKeyDelegate(JSObject *key)
+    + old=. new=537 |{
+    + old=. new=538 |    if (JSWeakmapKeyDelegateOp op = key->getClass()->ext.weakmapKeyDelegateOp)
+    + old=. new=539 |        return op(key);
+    + old=. new=540 |    return NULL;
+    + old=. new=541 |}
+    + old=. new=542 |
+      old=535 new=543 |JS_FRIEND_API(void)
+      old=536 new=544 |JS_SetAccumulateTelemetryCallback(JSRuntime *rt, JSAccumulateTelemetryDataCallback callback)
+      old=537 new=545 |{
+      old=538 new=546 |    rt->telemetryCallback = callback;
+      old=539 new=547 |}
+      old=540 new=548 |
+      old=541 new=549 |JS_FRIEND_API(JSObject *)

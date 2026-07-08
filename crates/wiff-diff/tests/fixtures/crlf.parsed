@@ -1,0 +1,9 @@
+file[0]: before.py -> after.py (Modified)
+  @@ -1,4 +1,4 @@
+    - old=1 new=. |bacon
+    - old=2 new=. |eggs
+    - old=3 new=. |ham
+    + old=. new=1 |python
+    + old=. new=2 |eggy
+    + old=. new=3 |hamster
+      old=4 new=4 |guido

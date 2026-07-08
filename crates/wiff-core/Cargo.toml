@@ -1,0 +1,24 @@
+[package]
+name = "wiff-core"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+blake3.workspace = true
+directories.workspace = true
+nix.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+similar.workspace = true
+thiserror.workspace = true
+time.workspace = true
+ulid.workspace = true
+wiff-diff.workspace = true
+
+[dev-dependencies]
+k9.workspace = true
+tempfile.workspace = true
