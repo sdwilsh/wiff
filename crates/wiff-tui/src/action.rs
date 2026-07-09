@@ -31,8 +31,14 @@ pub enum Action {
     NextHunk,
     /// Move to the previous hunk.
     PrevHunk,
+    /// Move to the next comment.
+    NextComment,
+    /// Move to the previous comment.
+    PrevComment,
     /// Expand or collapse the fold at the cursor.
     ToggleFold,
+    /// Expand or collapse the comment at the cursor.
+    ToggleComment,
     /// Add a comment at the cursor.
     AddComment,
     /// Edit the focused comment.
@@ -67,7 +73,10 @@ impl Action {
             Action::PrevFile => "prev_file",
             Action::NextHunk => "next_hunk",
             Action::PrevHunk => "prev_hunk",
+            Action::NextComment => "next_comment",
+            Action::PrevComment => "prev_comment",
             Action::ToggleFold => "toggle_fold",
+            Action::ToggleComment => "toggle_comment",
             Action::AddComment => "add_comment",
             Action::EditComment => "edit_comment",
             Action::ResolveComment => "resolve_comment",

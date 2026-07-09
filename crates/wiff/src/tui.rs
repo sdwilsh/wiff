@@ -28,10 +28,18 @@ pub fn open(session_path: &Path, config: &Config) -> anyhow::Result<()> {
     let theme = Theme::dark();
     let sections = wiff_diff::SectionMatchers::new(&config.section)
         .context("a configured section pattern is not a valid regex")?;
+    // Withdrawn comments are tombstones in the folded state; the review view
+    // shows only the live ones.
+    let comments: Vec<_> = state
+        .comments
+        .iter()
+        .filter(|comment| !comment.deleted)
+        .cloned()
+        .collect();
     let document = DiffView::new(theme.clone())?
         .with_display_context(config.display_context)
         .with_section_matchers(sections)
-        .render(&diff);
+        .render_review(&diff, &comments);
     let app = App::new(document, 0, &theme);
     let keymap = config.keymap()?;
 

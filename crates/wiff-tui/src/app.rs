@@ -15,8 +15,11 @@
 //! expands it, so the cursor and viewport move over a view that reflects what is
 //! actually shown rather than every underlying row.
 
+use std::collections::HashMap;
+
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
+use ulid::Ulid;
 use wiff_diff::Rgb;
 
 use crate::action::Action;
@@ -32,11 +35,12 @@ pub enum Update {
     Passed(Action),
 }
 
-/// Which family of rows a jump seeks: file headers or hunk headers.
+/// Which family of rows a jump seeks: file, hunk, or comment headers.
 #[derive(Debug, Clone, Copy)]
 enum Landmark {
     File,
     Hunk,
+    Comment,
 }
 
 impl Landmark {
@@ -44,7 +48,9 @@ impl Landmark {
     fn matches(self, kind: &RowKind) -> bool {
         matches!(
             (self, kind),
-            (Landmark::File, RowKind::FileHeader) | (Landmark::Hunk, RowKind::HunkHeader { .. })
+            (Landmark::File, RowKind::FileHeader)
+                | (Landmark::Hunk, RowKind::HunkHeader { .. })
+                | (Landmark::Comment, RowKind::CommentHeader { .. })
         )
     }
 }
@@ -63,6 +69,9 @@ pub struct App {
     document: Document,
     /// Whether each of the document's folds is currently collapsed.
     collapsed: Vec<bool>,
+    /// Whether each comment's body is currently collapsed, keyed by its stable
+    /// identity so the state survives a document rebuild after a refresh.
+    comment_collapsed: HashMap<Ulid, bool>,
     /// The visible lines in order, resolved from the collapse state.
     view: Vec<ViewRow>,
     cursor: usize,
@@ -81,9 +90,15 @@ impl App {
     /// with `theme`'s cursor color. Every fold starts collapsed.
     pub fn new(document: Document, height: usize, theme: &Theme) -> Self {
         let collapsed = vec![true; document.folds.len()];
+        let comment_collapsed = document
+            .comments
+            .iter()
+            .map(|region| (region.id, region.collapsed_default))
+            .collect();
         let mut app = Self {
             document,
             collapsed,
+            comment_collapsed,
             view: Vec::new(),
             cursor: 0,
             top: 0,
@@ -133,7 +148,10 @@ impl App {
             Action::PrevFile => self.jump_backward(Landmark::File),
             Action::NextHunk => self.jump_forward(Landmark::Hunk),
             Action::PrevHunk => self.jump_backward(Landmark::Hunk),
+            Action::NextComment => self.jump_forward(Landmark::Comment),
+            Action::PrevComment => self.jump_backward(Landmark::Comment),
             Action::ToggleFold => self.toggle_fold(),
+            Action::ToggleComment => self.toggle_comment(),
             other => return Update::Passed(other),
         }
         Update::Handled
@@ -174,8 +192,10 @@ impl App {
     }
 
     /// Rebuild the view from the collapse state: each collapsed fold becomes one
-    /// marker in place of the rows it hides; every other row appears in order.
+    /// marker in place of the rows it hides, the body rows of a collapsed comment
+    /// drop out behind its header, and every other row appears in order.
     fn rebuild_view(&mut self) {
+        let hidden = self.hidden_comment_rows();
         self.view.clear();
         let mut row = 0;
         while row < self.document.rows.len() {
@@ -185,11 +205,33 @@ impl App {
                     row = self.document.folds[fold].end;
                 }
                 _ => {
-                    self.view.push(ViewRow::Row(row));
+                    if !hidden[row] {
+                        self.view.push(ViewRow::Row(row));
+                    }
                     row += 1;
                 }
             }
         }
+    }
+
+    /// Which document rows are the body of a currently-collapsed comment, and so
+    /// are hidden behind their header row.
+    fn hidden_comment_rows(&self) -> Vec<bool> {
+        let mut hidden = vec![false; self.document.rows.len()];
+        for region in &self.document.comments {
+            if self.is_comment_collapsed(region.id) {
+                for row in region.body.clone() {
+                    hidden[row] = true;
+                }
+            }
+        }
+        hidden
+    }
+
+    /// Whether the comment `id` is currently collapsed. A comment absent from the
+    /// map has never been toggled, so it keeps its rendered default.
+    fn is_comment_collapsed(&self, id: Ulid) -> bool {
+        self.comment_collapsed.get(&id).copied().unwrap_or(false)
     }
 
     /// The fold that begins at document `row`, if any.
@@ -244,6 +286,38 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Expand or collapse the comment the cursor is on, whether it sits on the
+    /// header or somewhere in the body, landing the cursor back on the header.
+    fn toggle_comment(&mut self) {
+        let Some(id) = self.comment_at_cursor() else {
+            return;
+        };
+        let collapsed = self.is_comment_collapsed(id);
+        self.comment_collapsed.insert(id, !collapsed);
+        let header = self.comment_header_row(id);
+        self.rebuild_view();
+        if let Some(index) = header.and_then(|row| self.view_index_of_row(row)) {
+            self.move_to(index);
+        }
+    }
+
+    /// The comment the cursor is on, whether on its header or its body.
+    fn comment_at_cursor(&self) -> Option<Ulid> {
+        match self.kind_at(self.cursor)? {
+            RowKind::CommentHeader { id } | RowKind::CommentBody { id } => Some(*id),
+            _ => None,
+        }
+    }
+
+    /// The document row of comment `id`'s header line.
+    fn comment_header_row(&self, id: Ulid) -> Option<usize> {
+        self.document
+            .comments
+            .iter()
+            .find(|region| region.id == id)
+            .map(|region| region.header)
     }
 
     /// A page's worth of rows for page up/down, at least one.
@@ -398,13 +472,78 @@ fn wash(mut line: Line<'static>, bg: Rgb, width: usize) -> Line<'static> {
 
 #[cfg(test)]
 mod tests {
-    use wiff_diff::{Diff, FileStatus, LineKind};
+    use ulid::Ulid;
+    use wiff_core::record::{Author, AuthorKind, CommentTarget};
+    use wiff_core::review::CommentState;
+    use wiff_diff::{Diff, FileStatus, LineKind, Side};
 
     use super::{App, Update};
     use crate::action::Action;
     use crate::render::DiffView;
-    use crate::render::testutil::{dump, file};
+    use crate::render::testutil::{dump, file, ln};
     use crate::theme::Theme;
+
+    /// An after-side line comment on `line` of `path` by `author`, with `body`,
+    /// resolved when `resolved`.
+    fn line_comment(
+        id: u128,
+        author: (&str, AuthorKind),
+        path: &str,
+        line: u32,
+        body: &str,
+        resolved: bool,
+    ) -> CommentState {
+        CommentState {
+            id: Ulid(id),
+            author: Author {
+                name: author.0.to_string(),
+                kind: author.1,
+            },
+            target: CommentTarget::Lines {
+                file: path.to_string(),
+                side: Side::After,
+                start_line: ln(line),
+                end_line: ln(line),
+            },
+            version: 0,
+            anchor: None,
+            body: body.to_string(),
+            resolved,
+            deleted: false,
+            confidence: None,
+            created_seq: 0,
+            updated_seq: 0,
+        }
+    }
+
+    /// A one-file document whose second line carries an unresolved two-line
+    /// comment and whose first line carries a resolved one.
+    fn commented_document() -> crate::render::Document {
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[
+                    (LineKind::Context, "let x = 1;", 1),
+                    (LineKind::Added, "let y = 2;", 2),
+                ],
+            )],
+        };
+        let comments = vec![
+            line_comment(1, ("opus", AuthorKind::Agent), "src/lib.rs", 1, "ok", true),
+            line_comment(
+                2,
+                ("wez", AuthorKind::Human),
+                "src/lib.rs",
+                2,
+                "why 2?\nsay more",
+                false,
+            ),
+        ];
+        DiffView::new(Theme::dark())
+            .unwrap()
+            .render_review(&diff, &comments)
+    }
 
     /// A two-file document: a Rust modification and a short text edit.
     fn document() -> crate::render::Document {
@@ -674,6 +813,103 @@ mod tests {
 <#65737e|-|->   6    6   <#c0c5ce|-|->ctx06
 <#65737e|-|->   7    7   <#c0c5ce|-|->ctx07
 <#65737e|-|->   8    8   <#c0c5ce|-|->ctx08
+";
+        k9::assert_equal!(visible, expected.to_string());
+    }
+
+    #[test]
+    fn comments_open_with_the_resolved_one_collapsed_and_the_rest_expanded() {
+        // The resolved comment on line 1 shows only its header; the unresolved
+        // comment on line 2 shows its header and both body lines.
+        let (cursor, top, visible) = drive(commented_document(), 12, &[]);
+        k9::assert_equal!(cursor, 0);
+        k9::assert_equal!(top, 0);
+        let expected = "\
+<#ebcb8b|#4f5b66|b>Review<-|#4f5b66|->                                  
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,2 +1,2 @@
+<#8a8a8a|-|->            * <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]
+<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#8a8a8a|-|->            * <#8fa1b3|-|->wez (human)
+<#c0c5ce|-|->              why 2?
+<#c0c5ce|-|->              say more
+<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
+";
+        k9::assert_equal!(visible, expected.to_string());
+    }
+
+    #[test]
+    fn next_and_prev_comment_jump_between_comment_headers() {
+        // Two comment headers; next-comment lands on the first then the second,
+        // and prev-comment walks back, staying put once past the first.
+        let (cursor, _, _) = drive(commented_document(), 12, &[Action::NextComment]);
+        k9::assert_equal!(cursor, 3);
+        let (cursor, _, _) = drive(
+            commented_document(),
+            12,
+            &[Action::NextComment, Action::NextComment],
+        );
+        k9::assert_equal!(cursor, 5);
+        let (cursor, _, _) = drive(
+            commented_document(),
+            12,
+            &[
+                Action::NextComment,
+                Action::NextComment,
+                Action::PrevComment,
+                Action::PrevComment,
+            ],
+        );
+        k9::assert_equal!(cursor, 3);
+    }
+
+    #[test]
+    fn toggling_a_comment_hides_and_restores_its_body() {
+        // Land on the unresolved comment, collapse it so only its header shows,
+        // then expand it again to reveal both body lines.
+        let (cursor, top, visible) = drive(
+            commented_document(),
+            12,
+            &[
+                Action::NextComment,
+                Action::NextComment,
+                Action::ToggleComment,
+            ],
+        );
+        k9::assert_equal!(cursor, 5);
+        k9::assert_equal!(top, 0);
+        let expected = "\
+<#ebcb8b|-|b>Review
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,2 +1,2 @@
+<#8a8a8a|-|->            * <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]
+<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#8a8a8a|#4f5b66|->            * <#8fa1b3|#4f5b66|->wez (human)<-|#4f5b66|->               
+<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
+";
+        k9::assert_equal!(visible, expected.to_string());
+
+        let (cursor, _, visible) = drive(
+            commented_document(),
+            12,
+            &[
+                Action::NextComment,
+                Action::NextComment,
+                Action::ToggleComment,
+                Action::ToggleComment,
+            ],
+        );
+        k9::assert_equal!(cursor, 5);
+        let expected = "\
+<#ebcb8b|-|b>Review
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,2 +1,2 @@
+<#8a8a8a|-|->            * <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]
+<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#8a8a8a|#4f5b66|->            * <#8fa1b3|#4f5b66|->wez (human)<-|#4f5b66|->               
+<#c0c5ce|-|->              why 2?
+<#c0c5ce|-|->              say more
+<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
 ";
         k9::assert_equal!(visible, expected.to_string());
     }
