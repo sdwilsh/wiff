@@ -140,14 +140,14 @@ impl App {
     }
 
     /// The lines currently in view, with the cursor row washed in the selection
-    /// color so it stands out.
-    pub fn visible(&self) -> Vec<Line<'static>> {
+    /// color across the full `width` so the highlight fills the screen.
+    pub fn visible(&self, width: usize) -> Vec<Line<'static>> {
         let end = (self.top + self.height).min(self.view.len());
         (self.top..end)
             .map(|i| {
                 let line = self.line_at(i);
                 if i == self.cursor {
-                    wash(line, self.cursor_bg)
+                    wash(line, self.cursor_bg, width)
                 } else {
                     line
                 }
@@ -376,10 +376,22 @@ impl App {
 }
 
 /// Return `line` with every span's background replaced by `bg`, keeping each
-/// span's foreground and modifiers.
-fn wash(mut line: Line<'static>, bg: Rgb) -> Line<'static> {
+/// span's foreground and modifiers, then padded with blank cells to `width` so
+/// the background fills the row to the edge of the screen.
+fn wash(mut line: Line<'static>, bg: Rgb, width: usize) -> Line<'static> {
     for span in &mut line.spans {
         span.style = span.style.bg(color(bg));
+    }
+    let filled: usize = line
+        .spans
+        .iter()
+        .map(|span| span.content.chars().count())
+        .sum();
+    if width > filled {
+        line.spans.push(Span::styled(
+            " ".repeat(width - filled),
+            Style::default().bg(color(bg)),
+        ));
     }
     line
 }
@@ -449,6 +461,10 @@ mod tests {
         DiffView::new(Theme::dark()).unwrap().render(&diff)
     }
 
+    /// The width the test viewport renders at, wide enough that the cursor row
+    /// pads past every line's content so the full-width highlight shows.
+    const TEST_WIDTH: usize = 40;
+
     /// Drive `actions` through a fresh app over `document` and return its cursor,
     /// top, and the dumped visible lines.
     fn drive(
@@ -460,7 +476,7 @@ mod tests {
         for action in actions {
             app.update(*action);
         }
-        (app.cursor(), app.top(), dump(&app.visible()))
+        (app.cursor(), app.top(), dump(&app.visible(TEST_WIDTH)))
     }
 
     /// Drive `actions` over the two-file [`document`].
@@ -474,9 +490,9 @@ mod tests {
         k9::assert_equal!(cursor, 0);
         k9::assert_equal!(top, 0);
         // The first three rows are shown; the cursor row (the file header) is
-        // washed with the selection background.
+        // washed with the selection background out to the full width.
         let expected = "\
-<#c0c5ce|#4f5b66|b>modified  src/lib.rs
+<#c0c5ce|#4f5b66|b>modified  src/lib.rs<-|#4f5b66|->                    
 <#96b5b4|-|->@@ -1,2 +1,2 @@
 <#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
 ";
@@ -496,13 +512,13 @@ mod tests {
 <#96b5b4|-|->@@ -1,20 +1,20 @@
 <#65737e|#2d3b30|->        1 + <#c0c5ce|#2d3b30|->row01
 <#65737e|#2d3b30|->        2 + <#c0c5ce|#2d3b30|->row02
-<#65737e|#4f5b66|->        3 + <#c0c5ce|#4f5b66|->row03
+<#65737e|#4f5b66|->        3 + <#c0c5ce|#4f5b66|->row03<-|#4f5b66|->                       
 <#65737e|#2d3b30|->        4 + <#c0c5ce|#2d3b30|->row04
 <#65737e|#2d3b30|->        5 + <#c0c5ce|#2d3b30|->row05
 <#65737e|#2d3b30|->        6 + <#c0c5ce|#2d3b30|->row06
 <#65737e|#2d3b30|->        7 + <#c0c5ce|#2d3b30|->row07
 ";
-        k9::assert_equal!(dump(&app.visible()), expected.to_string());
+        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
 
     #[test]
@@ -520,7 +536,7 @@ mod tests {
 <#65737e|#2d3b30|->        8 + <#c0c5ce|#2d3b30|->row08
 <#65737e|#2d3b30|->        9 + <#c0c5ce|#2d3b30|->row09
 <#65737e|#2d3b30|->       10 + <#c0c5ce|#2d3b30|->row10
-<#65737e|#4f5b66|->       11 + <#c0c5ce|#4f5b66|->row11
+<#65737e|#4f5b66|->       11 + <#c0c5ce|#4f5b66|->row11<-|#4f5b66|->                       
 <#65737e|#2d3b30|->       12 + <#c0c5ce|#2d3b30|->row12
 <#65737e|#2d3b30|->       13 + <#c0c5ce|#2d3b30|->row13
 <#65737e|#2d3b30|->       14 + <#c0c5ce|#2d3b30|->row14
@@ -600,7 +616,7 @@ mod tests {
         k9::assert_equal!(cursor, 0);
         k9::assert_equal!(top, 0);
         let expected = "\
-<#c0c5ce|#4f5b66|b>modified  notes.txt
+<#c0c5ce|#4f5b66|b>modified  notes.txt<-|#4f5b66|->                     
 <#96b5b4|-|->@@ -1,17 +1,17 @@
 <#8a8a8a|-|->            [5 unchanged lines]
 <#65737e|-|->   6    6   <#c0c5ce|-|->ctx06
@@ -628,7 +644,7 @@ mod tests {
         let expected = "\
 <#c0c5ce|-|b>modified  notes.txt
 <#96b5b4|-|->@@ -1,17 +1,17 @@
-<#65737e|#4f5b66|->   1    1   <#c0c5ce|#4f5b66|->ctx01
+<#65737e|#4f5b66|->   1    1   <#c0c5ce|#4f5b66|->ctx01<-|#4f5b66|->                       
 <#65737e|-|->   2    2   <#c0c5ce|-|->ctx02
 <#65737e|-|->   3    3   <#c0c5ce|-|->ctx03
 <#65737e|-|->   4    4   <#c0c5ce|-|->ctx04
@@ -654,7 +670,7 @@ mod tests {
         let expected = "\
 <#c0c5ce|-|b>modified  notes.txt
 <#96b5b4|-|->@@ -1,17 +1,17 @@
-<#8a8a8a|#4f5b66|->            [5 unchanged lines]
+<#8a8a8a|#4f5b66|->            [5 unchanged lines]<-|#4f5b66|->         
 <#65737e|-|->   6    6   <#c0c5ce|-|->ctx06
 <#65737e|-|->   7    7   <#c0c5ce|-|->ctx07
 <#65737e|-|->   8    8   <#c0c5ce|-|->ctx08

@@ -60,7 +60,7 @@ pub fn draw<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
             height: 1,
             ..area
         };
-        frame.render_widget(Paragraph::new(app.visible()), doc_area);
+        frame.render_widget(Paragraph::new(app.visible(area.width as usize)), doc_area);
         frame.render_widget(Paragraph::new(app.status(area.width as usize)), status_area);
     })?;
     Ok(())
