@@ -29,8 +29,9 @@ pub struct Record {
     pub body: RecordBody,
 }
 
-/// The payload of a [`Record`]. Unknown variants are skipped on read so the
-/// format can grow.
+/// The payload of a [`Record`]. An unrecognized `type` deserializes to
+/// [`RecordBody::Unknown`] rather than failing outright, so a newer log can
+/// still be read; folding then decides whether it can be interpreted.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RecordBody {
@@ -48,9 +49,8 @@ pub enum RecordBody {
     CommentDelete(CommentDelete),
     /// A re-anchoring of a comment onto a newer diff version.
     CommentReanchor(CommentReanchor),
-    /// A revision to the overall review summary.
-    ReviewSummary(ReviewSummary),
-    /// An unrecognized record type written by a newer format; skipped on read.
+    /// An unrecognized record type. A compatible-version log should never
+    /// contain one, so folding rejects it as corrupt.
     #[serde(other)]
     Unknown,
 }
@@ -89,6 +89,15 @@ impl SourceKind {
     /// Whether a new diff version can be captured for this source.
     pub fn regenerable(&self) -> bool {
         matches!(self, SourceKind::GitWorktree | SourceKind::GitIndex)
+    }
+
+    /// The stable identifier for this source, matching its serialized form.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SourceKind::GitWorktree => "git_worktree",
+            SourceKind::GitIndex => "git_index",
+            SourceKind::Stdin => "stdin",
+        }
     }
 }
 
@@ -134,6 +143,16 @@ pub enum AuthorKind {
     Human,
     /// An automated agent.
     Agent,
+}
+
+impl AuthorKind {
+    /// The stable identifier for this author kind, matching its serialized form.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AuthorKind::Human => "human",
+            AuthorKind::Agent => "agent",
+        }
+    }
 }
 
 /// What an annotation is attached to.
@@ -238,13 +257,4 @@ pub struct CommentReanchor {
     pub target: CommentTarget,
     /// How confidently it was relocated.
     pub confidence: Confidence,
-}
-
-/// A revision to the overall review summary.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ReviewSummary {
-    /// Who wrote it.
-    pub author: Author,
-    /// The summary text.
-    pub body: String,
 }

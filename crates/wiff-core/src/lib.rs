@@ -7,6 +7,7 @@ pub mod error;
 pub mod hash;
 pub mod identity;
 pub mod record;
+pub mod review;
 pub mod session;
 pub mod source;
 
@@ -14,5 +15,6 @@ pub use capture::{create_session, write_diff_version};
 pub use error::{Error, Result};
 pub use hash::SidebandHash;
 pub use identity::{ProjectIdentity, ScmType};
+pub use review::{CommentState, ReviewState, fold};
 pub use session::{SessionLock, SessionLog};
 pub use source::{CapturedDiff, DiffSource, GitSource};

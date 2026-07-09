@@ -19,6 +19,16 @@ pub enum Side {
     After,
 }
 
+impl Side {
+    /// The stable identifier for this side, matching its serialized form.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Side::Before => "before",
+            Side::After => "after",
+        }
+    }
+}
+
 /// How a file was changed between the two sides of a diff.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

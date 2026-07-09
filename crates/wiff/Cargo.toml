@@ -19,6 +19,10 @@ serde_json.workspace = true
 tokio = { workspace = true }
 toml.workspace = true
 toml_edit.workspace = true
+ulid.workspace = true
 wiff-core.workspace = true
 wiff-diff.workspace = true
 wiff-tui.workspace = true
+
+[dev-dependencies]
+k9.workspace = true

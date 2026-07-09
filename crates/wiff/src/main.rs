@@ -1,15 +1,21 @@
 //! The `wiff` command-line entry point.
 
+mod render;
+
 use std::io::IsTerminal;
 
 use anyhow::{Context, bail};
 use clap::{Args, Parser, Subcommand};
 use tokio::io::AsyncReadExt;
+use ulid::Ulid;
 use wiff_core::record::SourceKind;
-use wiff_core::session::data_dir;
+use wiff_core::review::ReviewState;
+use wiff_core::session::{active_session, data_dir, session_file};
 use wiff_core::{
     CapturedDiff, DiffSource, GitSource, ProjectIdentity, ScmType, SessionLog, create_session,
 };
+
+use crate::render::{Format, render};
 
 /// wiff: sniff out the wiff in your diff, from the comfort of your terminal.
 #[derive(Debug, Parser)]
@@ -33,7 +39,7 @@ enum Command {
     /// Add or manage comments.
     Comment,
     /// Render the review state for consumption.
-    Render,
+    Render(RenderArgs),
 }
 
 /// Arguments for `wiff new`.
@@ -51,19 +57,48 @@ struct NewArgs {
     no_tui: bool,
 }
 
+/// Arguments for `wiff render`.
+#[derive(Debug, Args)]
+struct RenderArgs {
+    /// The output format.
+    #[arg(long, value_enum, default_value_t = Format::Markdown)]
+    format: Format,
+    /// Render a specific session by ULID instead of the active one.
+    #[arg(long)]
+    session: Option<String>,
+    /// Force the project bucket name when it cannot be derived from the cwd.
+    #[arg(long)]
+    project: Option<String>,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::New(args) => run_new(args).await,
-        Command::Resume
-        | Command::Session
-        | Command::Refresh
-        | Command::Comment
-        | Command::Render => {
+        Command::Render(args) => run_render(args),
+        Command::Resume | Command::Session | Command::Refresh | Command::Comment => {
             bail!("not yet implemented");
         }
     }
+}
+
+/// Render a session's folded review state to stdout.
+fn run_render(args: RenderArgs) -> anyhow::Result<()> {
+    let cwd = std::env::current_dir().context("could not determine the current directory")?;
+    let identity = ProjectIdentity::for_dir_or_forced(&cwd, args.project.as_deref())?;
+    let base = data_dir()?;
+    let path = match args.session {
+        Some(session) => {
+            let ulid = Ulid::from_string(&session)
+                .with_context(|| format!("{session} is not a valid session ULID"))?;
+            session_file(&base, &identity.canonical, ulid)
+        }
+        None => active_session(&base, &identity.canonical)?,
+    };
+    let state = ReviewState::load(&path)?;
+    print!("{}", render(&state, args.format)?);
+    Ok(())
 }
 
 /// Create a session: capture a diff from git or piped stdin, persist it, and

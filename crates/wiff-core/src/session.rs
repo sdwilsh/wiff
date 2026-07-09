@@ -301,6 +301,14 @@ pub fn list_sessions(base: &Path, project: &str) -> Result<Vec<PathBuf>> {
     Ok(sessions.into_iter().map(|(_, path)| path).collect())
 }
 
+/// The path a session with `ulid` would occupy under `project`. The file need
+/// not exist; this only names where it lives.
+pub fn session_file(base: &Path, project: &str, ulid: Ulid) -> PathBuf {
+    sessions_root(base)
+        .join(project)
+        .join(format!("{ulid}.jsonl"))
+}
+
 /// The active session for a project: its most recently modified session file.
 pub fn active_session(base: &Path, project: &str) -> Result<PathBuf> {
     list_sessions(base, project)?

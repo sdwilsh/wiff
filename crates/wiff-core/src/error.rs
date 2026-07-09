@@ -59,6 +59,24 @@ pub enum Error {
     /// No session matched a discovery request.
     #[error("no session found for project {0}")]
     NoSession(String),
+
+    /// A session's records lacked the leading header, so it cannot be folded.
+    #[error("session has no header record")]
+    MissingHeader,
+
+    /// A session was written by a newer format than this build understands, so
+    /// it cannot be safely interpreted.
+    #[error("session format version {found} is newer than supported version {supported}")]
+    UnsupportedVersion {
+        /// The version recorded in the session header.
+        found: u32,
+        /// The newest version this build understands.
+        supported: u32,
+    },
+
+    /// A session's records are internally inconsistent and cannot be folded.
+    #[error("inconsistent session log: {0}")]
+    InconsistentLog(String),
 }
 
 impl Error {

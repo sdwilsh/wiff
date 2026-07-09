@@ -107,7 +107,6 @@ bodies:
   ULID.
 - `CommentResolve` / `CommentDelete`: marks a comment resolved or withdrawn.
   Deletes are tombstones, not physical removal (append-only).
-- `ReviewSummary`: sets or revises the overall review summary text.
 
 Comment mutations are append-only events keyed by annotation ULID; the current
 state of a comment is the fold of its event chain, mirroring how wallah folds
@@ -160,8 +159,7 @@ A comment target is one of:
 
 - **Line range**: `{ file, side (before|after), start_line, end_line }`.
 - **File**: a whole-file comment on a named file.
-- **Review**: the overall summary (there is one current summary via
-  `ReviewSummary`; general review-level comments may also exist).
+- **Review**: a comment on the review overall, anchored to no particular file.
 
 When a line-range comment is created, wiff captures the exact text of the
 anchored lines plus a window of surrounding context lines (a fixed few lines
@@ -260,7 +258,7 @@ through the append + lock path.
   by file, showing author and kind, the target location, resolved/outdated
   state, the body, and a fenced code block of the surrounding context. JSON is
   the folded current state (not the raw event log) under a versioned schema
-  (`{ schema_version, session, files, comments, summary }`); the raw log
+  (`{ schema_version, session, files, comments }`); the raw log
   remains available by reading the JSONL directly.
 - `wiff comment add` lets an agent contribute comments, setting its author name
   and `--author-kind agent`.
