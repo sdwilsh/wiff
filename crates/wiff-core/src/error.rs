@@ -21,6 +21,14 @@ pub enum Error {
     #[error("could not decode session record: {0}")]
     Decode(#[from] serde_json::Error),
 
+    /// A diff source failed to produce a diff.
+    #[error("could not capture diff: {0}")]
+    Source(String),
+
+    /// Captured diff text could not be parsed into the diff model.
+    #[error("could not parse captured diff: {0}")]
+    Diff(#[from] wiff_diff::parse::ParseError),
+
     /// Another process holds the session's exclusive lock.
     #[error("session {0} is locked by another process")]
     Locked(PathBuf),

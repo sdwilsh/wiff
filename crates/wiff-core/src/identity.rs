@@ -10,6 +10,31 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 
+/// The source-control system a repository root belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScmType {
+    /// A git checkout.
+    Git,
+    /// A Jujutsu workspace.
+    Jujutsu,
+    /// A Mercurial repository.
+    Mercurial,
+    /// A Sapling repository.
+    Sapling,
+}
+
+impl std::fmt::Display for ScmType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            ScmType::Git => "git",
+            ScmType::Jujutsu => "jujutsu",
+            ScmType::Mercurial => "mercurial",
+            ScmType::Sapling => "sapling",
+        };
+        f.write_str(name)
+    }
+}
+
 /// The project a session belongs to: the bucket name and the repository root it
 /// was derived from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,16 +43,20 @@ pub struct ProjectIdentity {
     pub canonical: String,
     /// The repository root the project was derived from, when one was found.
     pub repo_root: Option<PathBuf>,
+    /// The source-control system of the repository root, when one was found.
+    pub scm: Option<ScmType>,
 }
 
 impl ProjectIdentity {
     /// Resolve the project for `cwd` by locating its enclosing repository root.
     /// Fails with [`Error::NoProject`] when `cwd` is not inside a repository.
     pub fn for_dir(cwd: &Path) -> Result<Self> {
-        let repo_root = find_repo_root(cwd).ok_or_else(|| Error::NoProject(cwd.to_path_buf()))?;
+        let (repo_root, scm) =
+            find_repo_root(cwd).ok_or_else(|| Error::NoProject(cwd.to_path_buf()))?;
         Ok(Self {
             canonical: canonical_for_root(&repo_root),
             repo_root: Some(repo_root),
+            scm: Some(scm),
         })
     }
 
@@ -38,17 +67,20 @@ impl ProjectIdentity {
     /// derived from the repository, and it is an error to have neither.
     pub fn for_dir_or_forced(cwd: &Path, forced: Option<&str>) -> Result<Self> {
         match (find_repo_root(cwd), forced) {
-            (Some(repo_root), Some(name)) => Ok(Self {
+            (Some((repo_root, scm)), Some(name)) => Ok(Self {
                 canonical: sanitize(name),
                 repo_root: Some(repo_root),
+                scm: Some(scm),
             }),
-            (Some(repo_root), None) => Ok(Self {
+            (Some((repo_root, scm)), None) => Ok(Self {
                 canonical: canonical_for_root(&repo_root),
                 repo_root: Some(repo_root),
+                scm: Some(scm),
             }),
             (None, Some(name)) => Ok(Self {
                 canonical: sanitize(name),
                 repo_root: None,
+                scm: None,
             }),
             (None, None) => Err(Error::NoProject(cwd.to_path_buf())),
         }
@@ -56,20 +88,24 @@ impl ProjectIdentity {
 }
 
 /// The control directories that mark a workspace root, so discovery does not
-/// assume git: jj, git, Sapling, and Mercurial.
-const WORKSPACE_MARKERS: [&str; 4] = [".jj", ".git", ".sl", ".hg"];
+/// assume git, paired with the SCM each identifies.
+const WORKSPACE_MARKERS: [(&str, ScmType); 4] = [
+    (".jj", ScmType::Jujutsu),
+    (".git", ScmType::Git),
+    (".sl", ScmType::Sapling),
+    (".hg", ScmType::Mercurial),
+];
 
 /// Walk up from `start` looking for the nearest directory that holds one of the
 /// [`WORKSPACE_MARKERS`] (the marker may be a directory or, for git worktrees
-/// and submodules, a file).
-fn find_repo_root(start: &Path) -> Option<PathBuf> {
+/// and submodules, a file), reporting the root and which SCM it belongs to.
+fn find_repo_root(start: &Path) -> Option<(PathBuf, ScmType)> {
     let mut dir = Some(start);
     while let Some(current) = dir {
-        if WORKSPACE_MARKERS
-            .iter()
-            .any(|marker| current.join(marker).exists())
-        {
-            return Some(current.to_path_buf());
+        for (marker, scm) in WORKSPACE_MARKERS {
+            if current.join(marker).exists() {
+                return Some((current.to_path_buf(), scm));
+            }
         }
         dir = current.parent();
     }

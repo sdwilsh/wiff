@@ -74,7 +74,7 @@ pub struct SessionHeader {
 }
 
 /// How a session's diff is obtained.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SourceKind {
     /// `git diff` of the working tree against the index.

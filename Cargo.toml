@@ -12,6 +12,7 @@ missing_docs = "deny"
 
 [workspace.dependencies]
 anyhow = "1.0"
+async-trait = "0.1"
 blake3 = "1"
 clap = { version = "4", features = ["derive"] }
 directories = "6"
@@ -25,6 +26,7 @@ syntect = { version = "5", default-features = false, features = ["default-fancy"
 tempfile = "3"
 thiserror = "2"
 time = { version = "0.3", features = ["serde-well-known"] }
+tokio = { version = "1", features = ["fs", "io-std", "io-util", "macros", "process", "rt-multi-thread"] }
 toml = "0.8"
 toml_edit = "0.22"
 ulid = { version = "1", features = ["serde"] }
