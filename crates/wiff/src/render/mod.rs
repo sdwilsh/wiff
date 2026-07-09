@@ -6,6 +6,7 @@
 //! `markdown` and `json` submodules.
 
 mod json;
+mod list;
 mod markdown;
 
 use clap::ValueEnum;
@@ -27,6 +28,12 @@ pub fn render(state: &ReviewState, format: Format) -> anyhow::Result<String> {
         Format::Markdown => Ok(markdown::render(state)),
         Format::Json => json::render(state),
     }
+}
+
+/// Render `state`'s comments as a compact, id-first list for `wiff comment
+/// list`.
+pub fn render_list(state: &ReviewState) -> String {
+    list::render(state)
 }
 
 /// The current (non-withdrawn) comments in creation order.

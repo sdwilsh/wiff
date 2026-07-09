@@ -2,11 +2,14 @@
 
 use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
+use ulid::Ulid;
 use wiff_core::record::{Author, AuthorKind, CommentTarget};
-use wiff_core::{DraftComment, SessionLog};
+use wiff_core::review::ReviewState;
+use wiff_core::{DraftComment, SessionLog, delete_comment, set_resolved};
 use wiff_diff::{LineNo, Side};
 
 use super::{read_piped_stdin, resolve_session};
+use crate::render::render_list;
 
 /// Arguments for `wiff comment`.
 #[derive(Debug, Args)]
@@ -20,6 +23,9 @@ impl CommentArgs {
     pub async fn run(self) -> anyhow::Result<()> {
         match self.command {
             CommentCommand::Add(args) => args.run().await,
+            CommentCommand::List(args) => args.run(),
+            CommentCommand::Resolve(args) => args.run(),
+            CommentCommand::Rm(args) => args.run(),
         }
     }
 }
@@ -29,6 +35,12 @@ impl CommentArgs {
 enum CommentCommand {
     /// Append a comment to a session.
     Add(CommentAddArgs),
+    /// List a session's comments with their ids.
+    List(CommentListArgs),
+    /// Mark a comment resolved, or reopen it.
+    Resolve(CommentResolveArgs),
+    /// Withdraw a comment.
+    Rm(CommentRmArgs),
 }
 
 /// Arguments for `wiff comment add`.
@@ -109,6 +121,86 @@ impl CommentAddArgs {
             None => Ok(CommentTarget::File { file }),
         }
     }
+}
+
+/// Arguments for `wiff comment list`.
+#[derive(Debug, Args)]
+struct CommentListArgs {
+    /// List a specific session by ULID instead of the active one.
+    #[arg(long)]
+    session: Option<String>,
+    /// Force the project bucket name when it cannot be derived from the cwd.
+    #[arg(long)]
+    project: Option<String>,
+}
+
+impl CommentListArgs {
+    /// Print the session's live comments, id first.
+    fn run(self) -> anyhow::Result<()> {
+        let path = resolve_session(self.session.as_deref(), self.project.as_deref())?;
+        let state = ReviewState::load(&path)?;
+        print!("{}", render_list(&state));
+        Ok(())
+    }
+}
+
+/// Arguments for `wiff comment resolve`.
+#[derive(Debug, Args)]
+struct CommentResolveArgs {
+    /// The id of the comment to resolve.
+    id: String,
+    /// Reopen the comment instead of resolving it.
+    #[arg(long)]
+    reopen: bool,
+    /// Resolve a comment in a specific session by ULID instead of the active one.
+    #[arg(long)]
+    session: Option<String>,
+    /// Force the project bucket name when it cannot be derived from the cwd.
+    #[arg(long)]
+    project: Option<String>,
+}
+
+impl CommentResolveArgs {
+    /// Toggle a comment's resolved state and report the outcome.
+    fn run(self) -> anyhow::Result<()> {
+        let path = resolve_session(self.session.as_deref(), self.project.as_deref())?;
+        let id = parse_id(&self.id)?;
+        let mut log = SessionLog::open(&path)?;
+        let comment = set_resolved(&mut log, id, !self.reopen)?;
+        let verb = if self.reopen { "reopened" } else { "resolved" };
+        println!("{verb} comment {}", comment.id);
+        Ok(())
+    }
+}
+
+/// Arguments for `wiff comment rm`.
+#[derive(Debug, Args)]
+struct CommentRmArgs {
+    /// The id of the comment to withdraw.
+    id: String,
+    /// Withdraw a comment in a specific session by ULID instead of the active one.
+    #[arg(long)]
+    session: Option<String>,
+    /// Force the project bucket name when it cannot be derived from the cwd.
+    #[arg(long)]
+    project: Option<String>,
+}
+
+impl CommentRmArgs {
+    /// Withdraw a comment and report the outcome.
+    fn run(self) -> anyhow::Result<()> {
+        let path = resolve_session(self.session.as_deref(), self.project.as_deref())?;
+        let id = parse_id(&self.id)?;
+        let mut log = SessionLog::open(&path)?;
+        let comment = delete_comment(&mut log, id)?;
+        println!("withdrew comment {}", comment.id);
+        Ok(())
+    }
+}
+
+/// Parse a comment id from its ULID text.
+fn parse_id(id: &str) -> anyhow::Result<Ulid> {
+    Ulid::from_string(id).with_context(|| format!("{id} is not a valid comment id"))
 }
 
 /// Which side of the diff a line-range comment refers to.

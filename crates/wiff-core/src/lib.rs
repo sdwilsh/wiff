@@ -13,7 +13,7 @@ pub mod session;
 pub mod source;
 
 pub use capture::{create_session, write_diff_version};
-pub use comment::{AddedComment, DraftComment};
+pub use comment::{AddedComment, DraftComment, delete_comment, set_resolved};
 pub use error::{Error, Result};
 pub use hash::SidebandHash;
 pub use identity::{ProjectIdentity, ScmType};

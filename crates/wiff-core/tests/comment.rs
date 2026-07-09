@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use ulid::Ulid;
 use wiff_core::record::{
     Anchor, Author, AuthorKind, CommentTarget, DiffVersionRecord, FileSummary, SessionHeader,
     SourceKind,
@@ -10,6 +11,7 @@ use wiff_core::review::{CommentState, fold};
 use wiff_core::session::read_records;
 use wiff_core::{
     CapturedDiff, DraftComment, Error, ProjectIdentity, SessionLog, SidebandHash, create_session,
+    delete_comment, set_resolved,
 };
 use wiff_diff::{FileStatus, LineNo, Side};
 
@@ -245,6 +247,83 @@ fn a_line_beyond_the_captured_window_is_recorded_without_an_anchor() {
             created_seq: 2,
             updated_seq: 2,
         }]
+    );
+}
+
+#[test]
+fn resolving_and_withdrawing_comments_folds_to_current_state() {
+    let (_base, mut log) = session();
+    let keep = DraftComment {
+        author: human("wez"),
+        target: CommentTarget::File {
+            file: "added.txt".to_string(),
+        },
+        body: "needs a newline".to_string(),
+    }
+    .append(&mut log)
+    .unwrap();
+    let gone = DraftComment {
+        author: human("wez"),
+        target: CommentTarget::Review,
+        body: "never mind".to_string(),
+    }
+    .append(&mut log)
+    .unwrap();
+
+    // Resolve then reopen the kept comment; its state reflects the last write.
+    set_resolved(&mut log, keep.id, true).unwrap();
+    set_resolved(&mut log, keep.id, false).unwrap();
+    delete_comment(&mut log, gone.id).unwrap();
+
+    let state = fold(&read_records(log.path()).unwrap()).unwrap();
+    k9::assert_equal!(
+        state.comments,
+        vec![
+            CommentState {
+                id: keep.id,
+                author: human("wez"),
+                target: CommentTarget::File {
+                    file: "added.txt".to_string(),
+                },
+                version: 0,
+                anchor: None,
+                body: "needs a newline".to_string(),
+                resolved: false,
+                deleted: false,
+                confidence: None,
+                created_seq: 2,
+                updated_seq: 5,
+            },
+            CommentState {
+                id: gone.id,
+                author: human("wez"),
+                target: CommentTarget::Review,
+                version: 0,
+                anchor: None,
+                body: "never mind".to_string(),
+                resolved: false,
+                deleted: true,
+                confidence: None,
+                created_seq: 3,
+                updated_seq: 6,
+            },
+        ]
+    );
+}
+
+#[test]
+fn mutating_an_unknown_comment_is_an_error() {
+    let (_base, mut log) = session();
+    let missing = Ulid::new();
+    let resolve_err = set_resolved(&mut log, missing, true).unwrap_err();
+    let delete_err = delete_comment(&mut log, missing).unwrap_err();
+    k9::assert_equal!(
+        resolve_err.to_string(),
+        format!("no comment {missing} in this session")
+    );
+    k9::assert_equal!(
+        delete_err.to_string(),
+        format!("no comment {missing} in this session")
     );
 }
 

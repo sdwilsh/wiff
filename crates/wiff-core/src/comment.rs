@@ -18,8 +18,10 @@ use wiff_diff::{LineNo, Side};
 
 use crate::error::{Error, Result};
 use crate::record::{
-    Anchor, Author, CommentRecord, CommentTarget, DiffVersionRecord, Record, RecordBody,
+    Anchor, Author, CommentDelete, CommentRecord, CommentResolve, CommentTarget, DiffVersionRecord,
+    Record, RecordBody,
 };
+use crate::review::{CommentState, fold};
 use crate::session::{SessionLog, read_records};
 
 /// The number of surrounding context lines captured on each side of a
@@ -82,6 +84,33 @@ impl DraftComment {
             anchor,
         })
     }
+}
+
+/// Set the resolved state of an existing comment, appending a resolve record.
+/// The comment must already exist in the session.
+pub fn set_resolved(log: &mut SessionLog, id: Ulid, resolved: bool) -> Result<CommentState> {
+    let comment = require_comment_in_log(log, id)?;
+    log.append_locked(RecordBody::CommentResolve(CommentResolve { id, resolved }))?;
+    Ok(comment)
+}
+
+/// Withdraw an existing comment, appending a delete tombstone. The comment must
+/// already exist in the session.
+pub fn delete_comment(log: &mut SessionLog, id: Ulid) -> Result<CommentState> {
+    let comment = require_comment_in_log(log, id)?;
+    log.append_locked(RecordBody::CommentDelete(CommentDelete { id }))?;
+    Ok(comment)
+}
+
+/// Fold the session and return the current state of comment `id`, or
+/// [`Error::UnknownComment`] when the session has no such comment.
+fn require_comment_in_log(log: &SessionLog, id: Ulid) -> Result<CommentState> {
+    let state = fold(&read_records(log.path())?)?;
+    state
+        .comments
+        .into_iter()
+        .find(|comment| comment.id == id)
+        .ok_or(Error::UnknownComment(id))
 }
 
 /// The most recently captured diff version among `records`.

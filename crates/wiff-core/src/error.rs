@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 
+use ulid::Ulid;
+
 /// The result type used throughout the core layer.
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -73,6 +75,10 @@ pub enum Error {
     /// so it cannot be anchored.
     #[error("cannot anchor comment: {0}")]
     Anchor(String),
+
+    /// A mutation named a comment the session has no record of.
+    #[error("no comment {0} in this session")]
+    UnknownComment(Ulid),
 
     /// A session was written by a newer format than this build understands, so
     /// it cannot be safely interpreted.
