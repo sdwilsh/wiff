@@ -83,6 +83,18 @@ impl KeyPress {
         .normalized()
     }
 
+    /// A press of `key` with the given modifiers, folded so a shifted letter
+    /// matches a binding written in its uppercase form.
+    pub fn with_modifiers(key: Key, ctrl: bool, alt: bool, shift: bool) -> Self {
+        Self {
+            key,
+            ctrl,
+            alt,
+            shift,
+        }
+        .normalized()
+    }
+
     /// Fold a shift modifier on a letter into the character's case, so the two
     /// ways of writing a shifted letter compare equal.
     fn normalized(mut self) -> Self {

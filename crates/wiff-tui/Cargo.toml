@@ -8,7 +8,7 @@ license = "Apache-2.0"
 workspace = true
 
 [dependencies]
-ratatui.workspace = true
+ratatui = { workspace = true, features = ["crossterm"] }
 serde = { workspace = true }
 thiserror.workspace = true
 wiff-core.workspace = true
