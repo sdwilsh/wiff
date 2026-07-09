@@ -86,23 +86,7 @@ fn anchor_block(anchor: &Anchor, target: &CommentTarget) -> String {
 
 /// The markdown fence language for a path's extension, or empty when unknown.
 fn language_for(path: &str) -> &'static str {
-    const LANG_BY_EXT: &[(&str, &str)] = &[
-        (".rs", "rust"),
-        (".toml", "toml"),
-        (".md", "markdown"),
-        (".py", "python"),
-        (".js", "javascript"),
-        (".ts", "typescript"),
-        (".sh", "bash"),
-        (".json", "json"),
-        (".yaml", "yaml"),
-        (".yml", "yaml"),
-    ];
-    LANG_BY_EXT
-        .iter()
-        .find(|(ext, _)| path.ends_with(ext))
-        .map(|(_, lang)| *lang)
-        .unwrap_or("")
+    wiff_diff::fence_language(path).unwrap_or("")
 }
 
 /// The review-level comments first (they set the tone for the rest), then one
