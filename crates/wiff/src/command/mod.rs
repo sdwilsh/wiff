@@ -4,6 +4,7 @@
 
 mod comment;
 mod new;
+mod refresh;
 mod render;
 mod session;
 
@@ -14,11 +15,12 @@ use anyhow::{Context, bail};
 use clap::Subcommand;
 use tokio::io::AsyncReadExt;
 use ulid::Ulid;
-use wiff_core::ProjectIdentity;
 use wiff_core::session::{active_session, data_dir, session_file};
+use wiff_core::{CapturedDiff, DiffSource, GitSource, ProjectIdentity, ScmType};
 
 use self::comment::CommentArgs;
 use self::new::NewArgs;
+use self::refresh::RefreshArgs;
 use self::render::RenderArgs;
 use self::session::SessionArgs;
 
@@ -32,7 +34,7 @@ pub enum Command {
     /// Manage sessions.
     Session(SessionArgs),
     /// Capture a new diff version into a session and rebase comments.
-    Refresh,
+    Refresh(RefreshArgs),
     /// Add or manage comments.
     Comment(CommentArgs),
     /// Render the review state for consumption.
@@ -47,7 +49,8 @@ impl Command {
             Command::Comment(args) => args.run().await,
             Command::Render(args) => args.run(),
             Command::Session(args) => args.run(),
-            Command::Resume | Command::Refresh => {
+            Command::Refresh(args) => args.run().await,
+            Command::Resume => {
                 bail!("not yet implemented");
             }
         }
@@ -68,6 +71,34 @@ fn resolve_session(session: Option<&str>, project: Option<&str>) -> anyhow::Resu
         }
         None => Ok(active_session(&base, &identity.canonical)?),
     }
+}
+
+/// Capture a diff from the repository at `root` using its detected `scm`, taking
+/// the index against `HEAD` when `cached` is set, else the working tree. Errors
+/// when the repository is of a kind wiff cannot yet capture from, or when there
+/// is nothing to review, so callers need not repeat those checks.
+async fn capture_scm_diff(
+    scm: Option<ScmType>,
+    root: PathBuf,
+    cached: bool,
+) -> anyhow::Result<CapturedDiff> {
+    let source = match scm {
+        Some(ScmType::Git) if cached => GitSource::index(root),
+        Some(ScmType::Git) => GitSource::worktree(root),
+        Some(other) => bail!(
+            "{} is a {other} repository, which wiff cannot capture from yet; pipe a unified diff on stdin instead",
+            root.display()
+        ),
+        None => bail!(
+            "{} is not a recognized repository; pipe a unified diff on stdin instead",
+            root.display()
+        ),
+    };
+    let captured = source.capture().await?;
+    if captured.text.trim().is_empty() {
+        bail!("no changes to review");
+    }
+    Ok(captured)
 }
 
 /// Read content piped on stdin, returning `None` when stdin is a terminal or

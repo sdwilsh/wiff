@@ -4,11 +4,9 @@ use anyhow::{Context, bail};
 use clap::Args;
 use wiff_core::record::SourceKind;
 use wiff_core::session::data_dir;
-use wiff_core::{
-    CapturedDiff, DiffSource, GitSource, ProjectIdentity, ScmType, SessionLog, create_session,
-};
+use wiff_core::{CapturedDiff, ProjectIdentity, SessionLog, create_session};
 
-use super::read_piped_stdin;
+use super::{capture_scm_diff, read_piped_stdin};
 
 /// Arguments for `wiff new`.
 #[derive(Debug, Args)]
@@ -32,9 +30,6 @@ impl NewArgs {
         let cwd = std::env::current_dir().context("could not determine the current directory")?;
         let identity = ProjectIdentity::for_dir_or_forced(&cwd, self.project.as_deref())?;
         let captured = self.capture_source(&identity).await?;
-        if captured.text.trim().is_empty() {
-            bail!("no changes to review");
-        }
         let base = data_dir()?;
         let log = create_session(&base, &identity, &cwd, &captured)?;
         report_created(&log);
@@ -60,19 +55,7 @@ impl NewArgs {
         let root = identity.repo_root.clone().context(
             "no diff was piped on stdin and the current directory is not inside a repository",
         )?;
-        let source = match identity.scm {
-            Some(ScmType::Git) if self.cached => GitSource::index(root),
-            Some(ScmType::Git) => GitSource::worktree(root),
-            Some(other) => bail!(
-                "{} is a {other} repository, which wiff cannot capture from yet; pipe a unified diff on stdin instead",
-                root.display()
-            ),
-            None => bail!(
-                "{} is not a recognized repository; pipe a unified diff on stdin instead",
-                root.display()
-            ),
-        };
-        Ok(source.capture().await?)
+        capture_scm_diff(identity.scm, root, self.cached).await
     }
 }
 
