@@ -8,6 +8,7 @@ license = "Apache-2.0"
 workspace = true
 
 [dependencies]
+fancy-regex.workspace = true
 serde = { workspace = true }
 similar.workspace = true
 syntect.workspace = true

@@ -618,7 +618,7 @@ mod tests {
         let expected = "\
 <#c0c5ce|#4f5b66|b>modified  notes.txt<-|#4f5b66|->                     
 <#96b5b4|-|->@@ -1,17 +1,17 @@
-<#8a8a8a|-|->            [5 unchanged lines]
+<#8a8a8a|-|->            [5 unchanged lines]  ctx05
 <#65737e|-|->   6    6   <#c0c5ce|-|->ctx06
 <#65737e|-|->   7    7   <#c0c5ce|-|->ctx07
 <#65737e|-|->   8    8   <#c0c5ce|-|->ctx08
@@ -626,7 +626,7 @@ mod tests {
 <#65737e|-|->  10   10   <#c0c5ce|-|->ctx09
 <#65737e|-|->  11   11   <#c0c5ce|-|->ctx10
 <#65737e|-|->  12   12   <#c0c5ce|-|->ctx11
-<#8a8a8a|-|->            [5 unchanged lines]
+<#8a8a8a|-|->            [5 unchanged lines]  ctx16
 ";
         k9::assert_equal!(visible, expected.to_string());
     }
@@ -670,7 +670,7 @@ mod tests {
         let expected = "\
 <#c0c5ce|-|b>modified  notes.txt
 <#96b5b4|-|->@@ -1,17 +1,17 @@
-<#8a8a8a|#4f5b66|->            [5 unchanged lines]<-|#4f5b66|->         
+<#8a8a8a|#4f5b66|->            [5 unchanged lines]  ctx05<-|#4f5b66|->  
 <#65737e|-|->   6    6   <#c0c5ce|-|->ctx06
 <#65737e|-|->   7    7   <#c0c5ce|-|->ctx07
 <#65737e|-|->   8    8   <#c0c5ce|-|->ctx08

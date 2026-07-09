@@ -27,6 +27,9 @@ disable_default_keymap = false
 human = \"wez\"
 agent = \"opus\"
 
+[section]
+kotlin = ['^ *(fun|class) .*$']
+
 [keymap]
 line_down = [\"j\", \"down\"]
 quit = [\"q\", \"ctrl-c\"]
@@ -53,6 +56,12 @@ quit = [\"q\", \"ctrl-c\"]
                 .into_iter()
                 .collect(),
             },
+            section: [(
+                "kotlin".to_string(),
+                vec![r"^ *(fun|class) .*$".to_string()],
+            )]
+            .into_iter()
+            .collect(),
             disable_default_keymap: false,
             keymap: expected_keymap,
         }
@@ -100,7 +109,7 @@ fn an_unknown_field_is_rejected() {
     let message = error.to_string();
     k9::assert_equal!(
         message,
-        "could not parse config: TOML parse error at line 1, column 1\n  |\n1 | wibble = true\n  | ^^^^^^\nunknown field `wibble`, expected one of `on_exit`, `display_context`, `editor`, `author`, `disable_default_keymap`, `keymap`\n"
+        "could not parse config: TOML parse error at line 1, column 1\n  |\n1 | wibble = true\n  | ^^^^^^\nunknown field `wibble`, expected one of `on_exit`, `display_context`, `editor`, `author`, `section`, `disable_default_keymap`, `keymap`\n"
             .to_string()
     );
 }

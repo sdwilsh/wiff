@@ -6,6 +6,11 @@
 //! colored by syntect. Added and removed rows are tinted by role, and within a
 //! replaced row the characters that actually changed are tinted more strongly,
 //! from the word-level refinement in [`wiff_diff::intraline`].
+//!
+//! Long runs of unchanged lines are marked foldable, and each fold marker names
+//! the enclosing definition (function, struct, and so on) of the content below
+//! it, recovered by [`wiff_diff::SectionMatchers`] since the wide-context
+//! capture merges each file into one hunk with no per-change context header.
 
 use std::ops::Range;
 
@@ -13,7 +18,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use wiff_diff::{
     Diff, DiffLine, FileDiff, FileStatus, HighlightError, HighlightedLine, Highlighter, LineKind,
-    LineNo, Rgb, Side, StyledSpan, intraline,
+    LineNo, Rgb, Section, SectionMatchers, Side, StyledSpan, intraline,
 };
 
 use crate::theme::Theme;
@@ -98,6 +103,7 @@ pub struct DiffView {
     highlighter: Highlighter,
     theme: Theme,
     display_context: usize,
+    sections: SectionMatchers,
 }
 
 impl DiffView {
@@ -108,6 +114,7 @@ impl DiffView {
             highlighter: Highlighter::with_theme(&theme.syntax_theme)?,
             theme,
             display_context: DEFAULT_DISPLAY_CONTEXT,
+            sections: SectionMatchers::builtins(),
         })
     }
 
@@ -115,6 +122,13 @@ impl DiffView {
     /// rest away.
     pub fn with_display_context(mut self, context: usize) -> Self {
         self.display_context = context;
+        self
+    }
+
+    /// Recognise enclosing-definition lines with `sections`, so fold markers name
+    /// the scope the hidden lines sit in.
+    pub fn with_section_matchers(mut self, sections: SectionMatchers) -> Self {
+        self.sections = sections;
         self
     }
 
@@ -169,25 +183,31 @@ impl DiffView {
                 );
             }
             let kinds: Vec<LineKind> = hunk.lines.iter().map(|line| line.kind).collect();
+            let section = self.sections.for_path(file.display_path());
             for run in foldable_runs(&kinds, self.display_context) {
+                let scope = enclosing_scope(&hunk.lines, run.end, &section);
                 doc.folds.push(Fold {
                     start: content_base + run.start,
                     end: content_base + run.end,
-                    marker: self.fold_marker(run.end - run.start),
+                    marker: self.fold_marker(run.end - run.start, scope),
                 });
             }
         }
     }
 
     /// The line shown in place of `hidden` collapsed rows, indented to align
-    /// under the code column.
-    fn fold_marker(&self, hidden: usize) -> Line<'static> {
+    /// under the code column and naming the enclosing `scope` when one is known.
+    fn fold_marker(&self, hidden: usize, scope: Option<&str>) -> Line<'static> {
         let plural = if hidden == 1 { "" } else { "s" };
-        let text = format!(
+        let mut text = format!(
             "{:indent$}[{hidden} unchanged line{plural}]",
             "",
             indent = GUTTER_WIDTH
         );
+        if let Some(scope) = scope {
+            text.push_str("  ");
+            text.push_str(scope);
+        }
         Line::from(Span::styled(
             text,
             Style::default().fg(color(self.theme.fold_fg)),
@@ -375,6 +395,18 @@ fn foldable_runs(kinds: &[LineKind], context: usize) -> Vec<Range<usize>> {
     runs
 }
 
+/// The enclosing definition for the content just below a fold: the nearest
+/// after-side line above `below` that `section` recognises, trimmed. Removed
+/// lines are skipped since they are gone from the content the reviewer reads.
+fn enclosing_scope<'a>(lines: &'a [DiffLine], below: usize, section: &Section) -> Option<&'a str> {
+    (0..below)
+        .rev()
+        .filter(|&i| !matches!(lines[i].kind, LineKind::Removed))
+        .map(|i| lines[i].text.as_str())
+        .find(|text| section.is_definition(text))
+        .map(str::trim)
+}
+
 /// A short label for a file's change status.
 fn status_label(status: FileStatus) -> &'static str {
     match status {
@@ -485,6 +517,7 @@ pub(crate) mod testutil {
 
 #[cfg(test)]
 mod tests {
+    use ratatui::text::Line;
     use wiff_diff::{Diff, FileStatus, LineKind};
 
     use super::DiffView;
@@ -538,6 +571,30 @@ mod tests {
 <#65737e|#2d3b30|->        1 + <#c0c5ce|#2d3b30|->hello there <#c0c5ce|#3a5a40|->pete
 ";
         k9::assert_equal!(dump(&view.render(&diff).lines), expected.to_string());
+    }
+
+    #[test]
+    fn a_fold_marker_names_the_enclosing_definition_of_the_content_below_it() {
+        // A rust change buried below its function: the leading context folds and
+        // its marker names the enclosing fn, found by scanning up past the
+        // hidden lines.
+        let mut lines: Vec<(LineKind, String, u32)> =
+            vec![(LineKind::Context, "fn draw() {".to_string(), 1)];
+        for n in 2..=6 {
+            lines.push((LineKind::Context, format!("    let v{n} = {n};"), n));
+        }
+        lines.push((LineKind::Added, "    let w = 7;".to_string(), 7));
+        let borrowed: Vec<(LineKind, &str, u32)> =
+            lines.iter().map(|(k, t, n)| (*k, t.as_str(), *n)).collect();
+        let diff = Diff {
+            files: vec![file("src/lib.rs", FileStatus::Modified, &borrowed)],
+        };
+        let doc = DiffView::new(Theme::dark()).unwrap().render(&diff);
+        let markers: Vec<Line<'static>> = doc.folds.iter().map(|f| f.marker.clone()).collect();
+        let expected = "\
+<#8a8a8a|-|->            [3 unchanged lines]  fn draw() {
+";
+        k9::assert_equal!(dump(&markers), expected.to_string());
     }
 
     #[test]

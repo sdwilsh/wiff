@@ -17,6 +17,7 @@ async-trait = "0.1"
 blake3 = "1"
 clap = { version = "4", features = ["derive"] }
 directories = "6"
+fancy-regex = "0.16"
 k9 = "0.12"
 nix = { version = "0.29", features = ["fs"] }
 ratatui = { version = "0.29", default-features = false }

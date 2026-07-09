@@ -10,6 +10,7 @@ pub mod line;
 pub mod model;
 pub mod parse;
 pub mod reconstitute;
+pub mod section;
 
 pub use highlight::{
     HighlightError, HighlightedLine, Highlighter, Rgb, Style, StyledSpan, fence_language,
@@ -19,3 +20,4 @@ pub use line::LineNo;
 pub use model::{Diff, DiffLine, FileDiff, FileStatus, Hunk, LineKind, Side};
 pub use parse::{ParseError, parse};
 pub use reconstitute::{ReconLine, known_lines, reconstitute};
+pub use section::{Section, SectionError, SectionMatchers};

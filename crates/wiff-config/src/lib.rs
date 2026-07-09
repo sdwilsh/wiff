@@ -7,6 +7,7 @@
 //! remembered view options) will edit the document in place with `toml_edit` so
 //! the user's formatting and comments survive.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -46,6 +47,11 @@ pub struct Config {
     pub editor: Option<String>,
     /// The default author identity for annotations.
     pub author: AuthorDefaults,
+    /// Per-language patterns recognising the enclosing-definition line shown on a
+    /// fold marker, keyed by language token. A language here replaces its
+    /// built-in patterns; unlisted languages keep the built-ins. Patterns follow
+    /// git's `userdiff` format, a leading `!` marking an exclusion.
+    pub section: BTreeMap<String, Vec<String>>,
     /// Start from an empty keymap so only configured bindings take effect.
     pub disable_default_keymap: bool,
     /// Per-action chord overrides layered onto the built-in defaults.
@@ -59,6 +65,7 @@ impl Default for Config {
             display_context: DEFAULT_DISPLAY_CONTEXT,
             editor: None,
             author: AuthorDefaults::default(),
+            section: BTreeMap::new(),
             disable_default_keymap: false,
             keymap: KeymapOverrides::default(),
         }

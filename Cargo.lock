@@ -1556,6 +1556,7 @@ dependencies = [
 name = "wiff-diff"
 version = "0.1.0"
 dependencies = [
+ "fancy-regex",
  "k9",
  "serde",
  "similar",
