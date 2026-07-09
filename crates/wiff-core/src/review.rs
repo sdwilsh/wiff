@@ -15,8 +15,8 @@ use ulid::Ulid;
 
 use crate::error::{Error, Result};
 use crate::record::{
-    Anchor, Author, CommentTarget, Confidence, DiffVersionRecord, FORMAT_VERSION, Record,
-    RecordBody, SessionHeader,
+    Anchor, Author, CommentRecord, CommentTarget, Confidence, DiffVersionRecord, FORMAT_VERSION,
+    Record, RecordBody, SessionHeader,
 };
 use crate::session::read_records;
 
@@ -70,6 +70,26 @@ pub struct CommentState {
     pub updated_seq: u64,
 }
 
+impl CommentState {
+    /// The state of a comment at creation, before any later event in its chain
+    /// is folded in. `seq` is the sequence number of the creating record.
+    pub(crate) fn created(record: &CommentRecord, seq: u64) -> Self {
+        Self {
+            id: record.id,
+            author: record.author.clone(),
+            target: record.target.clone(),
+            version: record.version,
+            anchor: record.anchor.clone(),
+            body: record.body.clone(),
+            resolved: false,
+            deleted: false,
+            confidence: None,
+            created_seq: seq,
+            updated_seq: seq,
+        }
+    }
+}
+
 /// Fold a session's records into its current [`ReviewState`].
 ///
 /// A log written by a newer, incompatible format is refused up front via the
@@ -106,22 +126,7 @@ pub fn fold(records: &[Record]) -> Result<ReviewState> {
                 if !comments.contains_key(&comment.id) {
                     order.push(comment.id);
                 }
-                comments.insert(
-                    comment.id,
-                    CommentState {
-                        id: comment.id,
-                        author: comment.author.clone(),
-                        target: comment.target.clone(),
-                        version: comment.version,
-                        anchor: comment.anchor.clone(),
-                        body: comment.body.clone(),
-                        resolved: false,
-                        deleted: false,
-                        confidence: None,
-                        created_seq: seq,
-                        updated_seq: seq,
-                    },
-                );
+                comments.insert(comment.id, CommentState::created(comment, seq));
             }
             RecordBody::CommentEdit(edit) => {
                 let comment = require_comment(&mut comments, edit.id, seq)?;
