@@ -2,11 +2,13 @@
 
 use anyhow::{Context, bail};
 use clap::Args;
+use wiff_config::Config;
 use wiff_core::record::SourceKind;
 use wiff_core::session::data_dir;
 use wiff_core::{CapturedDiff, ProjectIdentity, SessionLog, create_session};
 
 use super::{capture_scm_diff, read_piped_stdin};
+use crate::tui;
 
 /// Arguments for `wiff new`.
 #[derive(Debug, Args)]
@@ -33,10 +35,11 @@ impl NewArgs {
         let base = data_dir()?;
         let log = create_session(&base, &identity, &cwd, &captured)?;
         report_created(&log);
-        if !self.no_tui {
-            eprintln!("(the review TUI is not yet implemented; session created headlessly)");
+        if self.no_tui {
+            return Ok(());
         }
-        Ok(())
+        let config = Config::load()?;
+        tui::open(log.path(), &config)
     }
 
     /// Choose and run the diff source: a diff piped on stdin, else git.

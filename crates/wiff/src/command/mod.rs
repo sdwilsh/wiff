@@ -6,6 +6,7 @@ mod comment;
 mod new;
 mod refresh;
 mod render;
+mod resume;
 mod session;
 
 use std::io::IsTerminal;
@@ -22,6 +23,7 @@ use self::comment::CommentArgs;
 use self::new::NewArgs;
 use self::refresh::RefreshArgs;
 use self::render::RenderArgs;
+use self::resume::ResumeArgs;
 use self::session::SessionArgs;
 
 /// The top-level subcommands.
@@ -30,7 +32,7 @@ pub enum Command {
     /// Create a review session from a source and open it.
     New(NewArgs),
     /// Resume an existing review session.
-    Resume,
+    Resume(ResumeArgs),
     /// Manage sessions.
     Session(SessionArgs),
     /// Capture a new diff version into a session and rebase comments.
@@ -50,9 +52,7 @@ impl Command {
             Command::Render(args) => args.run(),
             Command::Session(args) => args.run(),
             Command::Refresh(args) => args.run().await,
-            Command::Resume => {
-                bail!("not yet implemented");
-            }
+            Command::Resume(args) => args.run(),
         }
     }
 }

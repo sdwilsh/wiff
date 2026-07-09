@@ -95,6 +95,13 @@ impl SessionLog {
         self.path.with_extension("d")
     }
 
+    /// Read the raw unified-diff text of captured version `number` from the
+    /// sideband `vN.diff`.
+    pub fn read_diff(&self, number: u32) -> Result<String> {
+        let path = self.sideband_dir().join(format!("v{number}.diff"));
+        std::fs::read_to_string(&path).map_err(|source| Error::io(&path, source))
+    }
+
     /// The next sequence number this handle would assign.
     pub fn next_seq(&self) -> u64 {
         self.next_seq

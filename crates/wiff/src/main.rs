@@ -2,6 +2,7 @@
 
 mod command;
 mod render;
+mod tui;
 
 use clap::Parser;
 

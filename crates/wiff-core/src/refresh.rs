@@ -71,7 +71,7 @@ pub fn refresh_session(
         let old_diff = match old_diffs.entry(comment.version) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
-                let text = read_version_diff(log, comment.version)?;
+                let text = log.read_diff(comment.version)?;
                 entry.insert(parse(&text)?)
             }
         };
@@ -99,10 +99,4 @@ pub fn refresh_session(
         )?;
     }
     Ok(Some(outcome))
-}
-
-/// Read the raw diff text of an existing version from the sideband.
-fn read_version_diff(log: &SessionLog, number: u32) -> Result<String> {
-    let path = log.sideband_dir().join(format!("v{number}.diff"));
-    std::fs::read_to_string(&path).map_err(|source| Error::io(&path, source))
 }

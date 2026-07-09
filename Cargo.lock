@@ -1513,6 +1513,7 @@ dependencies = [
  "toml",
  "toml_edit",
  "ulid",
+ "wiff-config",
  "wiff-core",
  "wiff-diff",
  "wiff-tui",
