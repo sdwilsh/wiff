@@ -64,6 +64,16 @@ pub enum Error {
     #[error("session has no header record")]
     MissingHeader,
 
+    /// A comment was requested against a session that has captured no diff
+    /// version yet, so there is nothing to author it against.
+    #[error("session has no diff version to comment on")]
+    NoDiffVersion,
+
+    /// A comment's target does not correspond to content in the session's diff,
+    /// so it cannot be anchored.
+    #[error("cannot anchor comment: {0}")]
+    Anchor(String),
+
     /// A session was written by a newer format than this build understands, so
     /// it cannot be safely interpreted.
     #[error("session format version {found} is newer than supported version {supported}")]
