@@ -542,7 +542,7 @@ mod tests {
         ];
         DiffView::new(Theme::dark())
             .unwrap()
-            .render_review(&diff, &comments)
+            .render_review(&diff, &comments, &[])
     }
 
     /// A two-file document: a Rust modification and a short text edit.

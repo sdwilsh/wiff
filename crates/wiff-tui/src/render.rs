@@ -172,19 +172,31 @@ impl DiffView {
     /// Render every file of `diff` into one scrollable [`Document`], with no
     /// review overlay.
     pub fn render(&self, diff: &Diff) -> Document {
-        self.build(diff, &[], false)
+        self.build(diff, &[], &[], false)
     }
 
     /// Render `diff` with `comments` woven in: a review summary row at the top,
     /// whole-file comments under their file header, and line comments in a block
     /// above the line they anchor. Deleted comments are the caller's to filter.
-    pub fn render_review(&self, diff: &Diff, comments: &[CommentState]) -> Document {
-        self.build(diff, comments, true)
+    /// Comments whose id is in `pending` are badged as uncommitted drafts.
+    pub fn render_review(
+        &self,
+        diff: &Diff,
+        comments: &[CommentState],
+        pending: &[Ulid],
+    ) -> Document {
+        self.build(diff, comments, pending, true)
     }
 
     /// The shared render path: build the document, optionally leading with the
     /// review summary row, then each file with its placed comments.
-    fn build(&self, diff: &Diff, comments: &[CommentState], review_row: bool) -> Document {
+    fn build(
+        &self,
+        diff: &Diff,
+        comments: &[CommentState],
+        pending: &[Ulid],
+        review_row: bool,
+    ) -> Document {
         let mut doc = Document {
             lines: Vec::new(),
             rows: Vec::new(),
@@ -200,11 +212,17 @@ impl DiffView {
         if review_row {
             doc.push(NO_FILE, RowKind::ReviewSummary, self.review_summary());
             for comment in &placement.review {
-                self.push_comment(&mut doc, NO_FILE, comment, COMMENT_INDENT);
+                self.push_comment(
+                    &mut doc,
+                    NO_FILE,
+                    comment,
+                    COMMENT_INDENT,
+                    pending.contains(&comment.id),
+                );
             }
         }
         for (index, file) in diff.files.iter().enumerate() {
-            self.render_file(index, file, &placement.files[index], &mut doc);
+            self.render_file(index, file, &placement.files[index], pending, &mut doc);
         }
         doc
     }
@@ -216,11 +234,18 @@ impl DiffView {
         index: usize,
         file: &FileDiff,
         placement: &FilePlacement,
+        pending: &[Ulid],
         doc: &mut Document,
     ) {
         doc.push(index, RowKind::FileHeader, self.file_header(file));
         for comment in &placement.header {
-            self.push_comment(doc, index, comment, COMMENT_INDENT);
+            self.push_comment(
+                doc,
+                index,
+                comment,
+                COMMENT_INDENT,
+                pending.contains(&comment.id),
+            );
         }
         let before = self.highlighter.highlight_side(file, Side::Before);
         let after = self.highlighter.highlight_side(file, Side::After);
@@ -247,7 +272,13 @@ impl DiffView {
                 };
                 if let Some(n) = lineno {
                     for comment in placement.at(side, n.get()) {
-                        self.push_comment(doc, index, comment, GUTTER_WIDTH);
+                        self.push_comment(
+                            doc,
+                            index,
+                            comment,
+                            GUTTER_WIDTH,
+                            pending.contains(&comment.id),
+                        );
                     }
                 }
                 line_row.push(doc.rows.len());
@@ -288,12 +319,19 @@ impl DiffView {
 
     /// Append `comment` as a header row plus its body rows, indented by `indent`,
     /// and record the collapsible region so a resolved comment starts collapsed.
-    fn push_comment(&self, doc: &mut Document, file: usize, comment: &CommentState, indent: usize) {
+    fn push_comment(
+        &self,
+        doc: &mut Document,
+        file: usize,
+        comment: &CommentState,
+        indent: usize,
+        pending: bool,
+    ) {
         let header = doc.rows.len();
         doc.push(
             file,
             RowKind::CommentHeader { id: comment.id },
-            self.comment_header(comment, indent),
+            self.comment_header(comment, indent, pending),
         );
         let body_start = doc.rows.len();
         for text in comment.body.trim_end().split('\n') {
@@ -312,7 +350,12 @@ impl DiffView {
     }
 
     /// A comment's header line: a marker, the author and kind, and status badges.
-    fn comment_header(&self, comment: &CommentState, indent: usize) -> Line<'static> {
+    fn comment_header(
+        &self,
+        comment: &CommentState,
+        indent: usize,
+        pending: bool,
+    ) -> Line<'static> {
         let mut spans = vec![
             Span::styled(
                 format!("{:indent$}* ", ""),
@@ -323,11 +366,11 @@ impl DiffView {
                 Style::default().fg(color(self.theme.comment_author_fg)),
             ),
         ];
-        for (text, warn) in badges(comment) {
-            let fg = if warn {
-                self.theme.comment_warn_fg
-            } else {
-                self.theme.comment_flag_fg
+        for (text, style) in badges(comment, pending) {
+            let fg = match style {
+                BadgeStyle::Muted => self.theme.comment_flag_fg,
+                BadgeStyle::Warn => self.theme.comment_warn_fg,
+                BadgeStyle::Draft => self.theme.comment_draft_fg,
             };
             spans.push(Span::styled(
                 format!(" [{text}]"),
@@ -579,15 +622,29 @@ fn rendered_anchors(file: &FileDiff) -> Vec<(Side, u32)> {
         .collect()
 }
 
-/// A comment's status badges as `(text, is_warning)`, in display order.
-fn badges(comment: &CommentState) -> Vec<(&'static str, bool)> {
+/// How a comment badge is tinted.
+enum BadgeStyle {
+    /// A muted badge such as `resolved`.
+    Muted,
+    /// A warning badge such as `shifted` or `outdated`.
+    Warn,
+    /// The `draft` badge for a comment with uncommitted edits.
+    Draft,
+}
+
+/// A comment's status badges, in display order. A pending comment leads with a
+/// `draft` badge so uncommitted work stands out.
+fn badges(comment: &CommentState, pending: bool) -> Vec<(&'static str, BadgeStyle)> {
     let mut out = Vec::new();
+    if pending {
+        out.push(("draft", BadgeStyle::Draft));
+    }
     if comment.resolved {
-        out.push(("resolved", false));
+        out.push(("resolved", BadgeStyle::Muted));
     }
     match comment.confidence {
-        Some(Confidence::Approximate) => out.push(("shifted", true)),
-        Some(Confidence::Outdated) => out.push(("outdated", true)),
+        Some(Confidence::Approximate) => out.push(("shifted", BadgeStyle::Warn)),
+        Some(Confidence::Outdated) => out.push(("outdated", BadgeStyle::Warn)),
         Some(Confidence::Exact) | None => {}
     }
     out
@@ -965,7 +1022,7 @@ mod tests {
         )];
         let doc = DiffView::new(Theme::dark())
             .unwrap()
-            .render_review(&diff, &comments);
+            .render_review(&diff, &comments, &[]);
         let lines = "\
 <#ebcb8b|-|b>Review
 <#c0c5ce|-|b>modified  src/lib.rs
@@ -980,6 +1037,35 @@ mod tests {
         // range; an unresolved comment starts expanded.
         let expected_regions = "1: header 4 body 5..6 collapsed=false\n";
         k9::assert_equal!(regions(&doc.comments), expected_regions.to_string());
+    }
+
+    #[test]
+    fn a_pending_comment_leads_its_badges_with_a_draft_flag() {
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[(LineKind::Added, "let y = 2;", 1)],
+            )],
+        };
+        let comments = vec![comment(
+            1,
+            ("wez", AuthorKind::Human),
+            on_lines("src/lib.rs", 1, 1),
+            "why 2?",
+        )];
+        let doc = DiffView::new(Theme::dark())
+            .unwrap()
+            .render_review(&diff, &comments, &[Ulid(1)]);
+        let lines = "\
+<#ebcb8b|-|b>Review
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,1 +1,1 @@
+<#8a8a8a|-|->            * <#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]
+<#c0c5ce|-|->              why 2?
+<#65737e|#2d3b30|->        1 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
+";
+        k9::assert_equal!(dump(&doc.lines), lines.to_string());
     }
 
     #[test]
@@ -1000,7 +1086,7 @@ mod tests {
         resolved.resolved = true;
         let doc = DiffView::new(Theme::dark())
             .unwrap()
-            .render_review(&diff, &[resolved]);
+            .render_review(&diff, &[resolved], &[]);
         let lines = "\
 <#ebcb8b|-|b>Review
 <#c0c5ce|-|b>modified  src/lib.rs
@@ -1031,7 +1117,7 @@ mod tests {
         )];
         let doc = DiffView::new(Theme::dark())
             .unwrap()
-            .render_review(&diff, &comments);
+            .render_review(&diff, &comments, &[]);
         let lines = "\
 <#ebcb8b|-|b>Review
 <#8a8a8a|-|->  * <#8fa1b3|-|->wez (human)
@@ -1065,7 +1151,7 @@ mod tests {
         )];
         let doc = DiffView::new(Theme::dark())
             .unwrap()
-            .render_review(&diff, &comments);
+            .render_review(&diff, &comments, &[]);
         let markers: Vec<Line<'static>> = doc.folds.iter().map(|f| f.marker.clone()).collect();
         let expected = "\
 <#8a8a8a|-|->            [2 unchanged lines]  ctx02
@@ -1093,7 +1179,7 @@ mod tests {
         outdated.confidence = Some(Confidence::Outdated);
         let doc = DiffView::new(Theme::dark())
             .unwrap()
-            .render_review(&diff, &[outdated]);
+            .render_review(&diff, &[outdated], &[]);
         let lines = "\
 <#ebcb8b|-|b>Review
 <#c0c5ce|-|b>modified  src/lib.rs

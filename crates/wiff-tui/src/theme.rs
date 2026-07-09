@@ -46,6 +46,8 @@ pub struct Theme {
     pub comment_flag_fg: Rgb,
     /// The color of a warning comment badge such as `shifted` or `outdated`.
     pub comment_warn_fg: Rgb,
+    /// The color of the `draft` badge marking a comment with uncommitted edits.
+    pub comment_draft_fg: Rgb,
 }
 
 impl Theme {
@@ -70,6 +72,7 @@ impl Theme {
             comment_author_fg: rgb(0x8f, 0xa1, 0xb3),
             comment_flag_fg: rgb(0x8a, 0x8a, 0x8a),
             comment_warn_fg: rgb(0xd0, 0x87, 0x70),
+            comment_draft_fg: rgb(0xa3, 0xbe, 0x8c),
         }
     }
 }

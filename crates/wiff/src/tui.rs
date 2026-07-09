@@ -39,7 +39,7 @@ pub fn open(session_path: &Path, config: &Config) -> anyhow::Result<()> {
     let document = DiffView::new(theme.clone())?
         .with_display_context(config.display_context)
         .with_section_matchers(sections)
-        .render_review(&diff, &comments);
+        .render_review(&diff, &comments, &[]);
     let app = App::new(document, 0, &theme);
     let keymap = config.keymap()?;
 
