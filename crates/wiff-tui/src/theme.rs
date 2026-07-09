@@ -28,6 +28,8 @@ pub struct Theme {
     pub added_emphasis_bg: Rgb,
     /// The background behind the changed characters of a removed row.
     pub removed_emphasis_bg: Rgb,
+    /// The background washed over the row the cursor is on.
+    pub cursor_bg: Rgb,
 }
 
 impl Theme {
@@ -43,6 +45,7 @@ impl Theme {
             removed_bg: rgb(0x3b, 0x2d, 0x30),
             added_emphasis_bg: rgb(0x3a, 0x5a, 0x40),
             removed_emphasis_bg: rgb(0x5a, 0x3a, 0x40),
+            cursor_bg: rgb(0x4f, 0x5b, 0x66),
         }
     }
 }

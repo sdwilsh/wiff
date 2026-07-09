@@ -1,16 +1,19 @@
 //! The wiff terminal UI: the [`action`] vocabulary the UI is driven by, the
 //! [`key`] model bindings are expressed against, the [`keymap`] that resolves
 //! key presses into actions, the [`theme`] palette, and the [`render`] layer
-//! that paints a diff into styled terminal lines.
+//! that paints a diff into styled terminal lines, and the [`app`] that scrolls
+//! a cursor over that rendering.
 
 pub mod action;
+pub mod app;
 pub mod key;
 pub mod keymap;
 pub mod render;
 pub mod theme;
 
 pub use action::Action;
+pub use app::{App, Update};
 pub use key::{Chord, Key, KeyPress};
 pub use keymap::{Keymap, KeymapError, KeymapOverrides, Resolution};
-pub use render::DiffView;
+pub use render::{DiffView, Document, Row, RowKind};
 pub use theme::Theme;

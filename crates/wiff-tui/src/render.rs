@@ -13,13 +13,58 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use wiff_diff::{
     Diff, DiffLine, FileDiff, FileStatus, HighlightError, HighlightedLine, Highlighter, LineKind,
-    Rgb, Side, StyledSpan, intraline,
+    LineNo, Rgb, Side, StyledSpan, intraline,
 };
 
 use crate::theme::Theme;
 
 /// The gutter width for one side's line number.
 const LINENO_WIDTH: usize = 4;
+
+/// A rendered diff: the styled lines to draw, paired one-to-one with the [`Row`]
+/// metadata that says what each line is, for cursor navigation and anchoring.
+pub struct Document {
+    /// The styled lines, in draw order.
+    pub lines: Vec<Line<'static>>,
+    /// The metadata for each line, parallel to `lines`.
+    pub rows: Vec<Row>,
+}
+
+/// What one rendered line corresponds to in the diff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Row {
+    /// The index of the file within the diff.
+    pub file: usize,
+    /// The kind of line and its place within the file.
+    pub kind: RowKind,
+}
+
+/// The role of a rendered line: a file header, a hunk header, or a content line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RowKind {
+    /// The header naming a file.
+    FileHeader,
+    /// A hunk's `@@` header.
+    HunkHeader {
+        /// The hunk's index within the file.
+        hunk: usize,
+    },
+    /// A content line, anchorable to `(side, lineno)` on the diff.
+    Content {
+        /// The side the line's number belongs to.
+        side: Side,
+        /// The line's number on that side, absent for a malformed line.
+        lineno: Option<LineNo>,
+    },
+}
+
+impl Document {
+    /// Append a styled line and its parallel row metadata.
+    fn push(&mut self, file: usize, kind: RowKind, line: Line<'static>) {
+        self.lines.push(line);
+        self.rows.push(Row { file, kind });
+    }
+}
 
 /// A renderer pairing a syntax highlighter with a color theme.
 pub struct DiffView {
@@ -36,31 +81,48 @@ impl DiffView {
         })
     }
 
-    /// Render every file of `diff` into one scrollable list of lines.
-    pub fn render(&self, diff: &Diff) -> Vec<Line<'static>> {
-        let mut lines = Vec::new();
-        for file in &diff.files {
-            self.render_file(file, &mut lines);
+    /// Render every file of `diff` into one scrollable [`Document`].
+    pub fn render(&self, diff: &Diff) -> Document {
+        let mut doc = Document {
+            lines: Vec::new(),
+            rows: Vec::new(),
+        };
+        for (index, file) in diff.files.iter().enumerate() {
+            self.render_file(index, file, &mut doc);
         }
-        lines
+        doc
     }
 
-    /// Append `file`'s header and hunks to `out`.
-    fn render_file(&self, file: &FileDiff, out: &mut Vec<Line<'static>>) {
-        out.push(self.file_header(file));
+    /// Append `file`'s header and hunks to `doc`.
+    fn render_file(&self, index: usize, file: &FileDiff, doc: &mut Document) {
+        doc.push(index, RowKind::FileHeader, self.file_header(file));
         let before = self.highlighter.highlight_side(file, Side::Before);
         let after = self.highlighter.highlight_side(file, Side::After);
-        for hunk in &file.hunks {
-            out.push(self.hunk_header(hunk));
+        for (hunk_index, hunk) in file.hunks.iter().enumerate() {
+            doc.push(
+                index,
+                RowKind::HunkHeader { hunk: hunk_index },
+                self.hunk_header(hunk),
+            );
             let emphasis = intraline::refine(&hunk.lines);
             for (line, ranges) in hunk.lines.iter().zip(&emphasis) {
-                let highlighted = match line.kind {
-                    LineKind::Removed => line.old_lineno.and_then(|n| before.get(&n)),
-                    LineKind::Context | LineKind::Added => {
-                        line.new_lineno.and_then(|n| after.get(&n))
-                    }
+                let (side, lineno, highlighted) = match line.kind {
+                    LineKind::Removed => (
+                        Side::Before,
+                        line.old_lineno,
+                        line.old_lineno.and_then(|n| before.get(&n)),
+                    ),
+                    LineKind::Context | LineKind::Added => (
+                        Side::After,
+                        line.new_lineno,
+                        line.new_lineno.and_then(|n| after.get(&n)),
+                    ),
                 };
-                out.push(self.content_line(line, highlighted, ranges));
+                doc.push(
+                    index,
+                    RowKind::Content { side, lineno },
+                    self.content_line(line, highlighted, ranges),
+                );
             }
         }
     }
@@ -230,25 +292,28 @@ fn with_bg(style: Style, bg: Option<Rgb>) -> Style {
 }
 
 /// Convert a wiff [`Rgb`] into a ratatui [`Color`].
-fn color(rgb: Rgb) -> Color {
+pub(crate) fn color(rgb: Rgb) -> Color {
     Color::Rgb(rgb.r, rgb.g, rgb.b)
 }
 
+/// Rendering helpers shared by the render and app tests.
 #[cfg(test)]
-mod tests {
+pub(crate) mod testutil {
     use ratatui::style::{Color, Modifier};
     use ratatui::text::Line;
-    use wiff_diff::{Diff, DiffLine, FileDiff, FileStatus, Hunk, LineKind, LineNo};
+    use wiff_diff::{DiffLine, FileDiff, FileStatus, Hunk, LineKind, LineNo};
 
-    use super::DiffView;
-    use crate::theme::Theme;
-
-    fn ln(n: u32) -> LineNo {
+    /// A line number from a nonzero `n`.
+    pub(crate) fn ln(n: u32) -> LineNo {
         LineNo::new(n).expect("nonzero line number")
     }
 
     /// A one-hunk file over `lines`, each `(kind, text, lineno)`.
-    fn file(path: &str, status: FileStatus, lines: &[(LineKind, &str, u32)]) -> FileDiff {
+    pub(crate) fn file(
+        path: &str,
+        status: FileStatus,
+        lines: &[(LineKind, &str, u32)],
+    ) -> FileDiff {
         let diff_lines = lines
             .iter()
             .map(|(kind, text, n)| {
@@ -277,10 +342,10 @@ mod tests {
         }
     }
 
-    /// Serialize the rendered document into one text line per row, each span
-    /// shown as `<fg|bg|mods>text` so the full visual result is asserted: the
-    /// content, its syntax colors, the role tints, and bold.
-    fn dump(lines: &[Line<'_>]) -> String {
+    /// Serialize lines into one text row each, every span shown as
+    /// `<fg|bg|mods>text` so the full visual result is asserted: the content,
+    /// its colors, the role or selection tints, and bold.
+    pub(crate) fn dump(lines: &[Line<'_>]) -> String {
         let mut out = String::new();
         for line in lines {
             for span in &line.spans {
@@ -314,6 +379,15 @@ mod tests {
             "-".to_string()
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use wiff_diff::{Diff, FileStatus, LineKind};
+
+    use super::DiffView;
+    use super::testutil::{dump, file};
+    use crate::theme::Theme;
 
     #[test]
     fn renders_a_modified_file_with_headers_gutter_and_syntax_colors() {
@@ -335,7 +409,7 @@ mod tests {
 <#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
 <#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
 ";
-        k9::assert_equal!(dump(&view.render(&diff)), expected.to_string());
+        k9::assert_equal!(dump(&view.render(&diff).lines), expected.to_string());
     }
 
     #[test]
@@ -361,6 +435,6 @@ mod tests {
 <#65737e|#3b2d30|->   1      - <#c0c5ce|#3b2d30|->hello there <#c0c5ce|#5a3a40|->fred
 <#65737e|#2d3b30|->        1 + <#c0c5ce|#2d3b30|->hello there <#c0c5ce|#3a5a40|->pete
 ";
-        k9::assert_equal!(dump(&view.render(&diff)), expected.to_string());
+        k9::assert_equal!(dump(&view.render(&diff).lines), expected.to_string());
     }
 }
