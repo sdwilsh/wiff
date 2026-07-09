@@ -274,7 +274,8 @@ no thousand-line nested match driving the UI.
 ### Action model
 
 Input is decoded into an **action** (an enum of intents: page up/down, next/prev
-file, next/prev hunk, add comment, edit comment, resolve comment, refresh,
+file, next/prev hunk, next/prev comment, toggle comment, add comment, edit
+comment, resolve comment, delete comment, refresh, save,
 `open_in_editor`, `quit`, `quit_keep`, `quit_remove`, etc.). Nothing in the UI
 logic branches on raw keys; it branches on actions. This keeps bindings
 reassignable and keeps the update logic small.
@@ -287,7 +288,11 @@ reassignable and keeps the update logic small.
   modified keys, but the schema is a sequence so leader-key and multi-key chords
   can be added without a format change.
 - Defaults resemble `less` for navigation (space, b, g, G, /, q, ...) plus
-  review actions layered on top.
+  review actions layered on top. Sequence navigation follows a paired scheme:
+  `,`/`.` prev/next file, `[`/`]` prev/next hunk, `{`/`}` prev/next comment.
+  (`n`/`p` are left free to become search `n`/`N` later.) The review summary sits
+  at the top of the document, so the existing top jump (`g`, and `<` as a
+  `less`-style alias) reaches it; there is no separate jump-to-review action.
 
 ### Rendering
 
@@ -298,11 +303,75 @@ reassignable and keeps the update logic small.
   ignore-whitespace are designed to be user-selectable, though only unified
   ships in v0.
 
+### Comments
+
+Comments render inline as a block immediately above the line they anchor (the
+GitHub / `hunk` convention), so a reviewer reads each comment next to the code it
+is about. Unlike the `wiff render` markdown output, the TUI does not echo the
+anchored snippet: the real code sits directly below.
+
+Anchoring by target:
+
+- **Line range**: the block sits above `start_line`; the anchored line span is
+  marked in the margin across `start..=end`.
+- **File**: the block sits under the file header.
+- **Review**: a review summary row is always present at the top of the document,
+  even with no review comment yet, so it is a stable target for a review-level
+  comment and the destination of the top jump. Review comments render there.
+
+Several comments on one line stack in creation order. Each comment is
+independently collapsible. A collapsed comment occupies a single line showing a
+marker, the author (name and kind), and status badges; metadata only, no body
+preview. Expanding adds the body. Resolved comments default to collapsed.
+Collapse state is per-process view state keyed by annotation ULID, not persisted
+across runs.
+
+Confidence is shown distinctly: an approximate re-anchor carries a `shifted`
+badge and an outdated one an `outdated` badge. An outdated comment whose anchored
+line still exists renders on that line; when the line is gone entirely (rename or
+deletion), it floats up to the file header block so it stays near its file.
+
+A comment anchored inside a run that would otherwise fold splits the fold rather
+than expanding it: the anchored line is kept like a change, with `display_context`
+lines of surrounding context, and the rest of the run stays folded. This keeps a
+comment always visible with its code without unfolding a potentially huge region.
+
+Comment bodies are plain wrapped text in v0. The body-to-lines step is isolated
+so a markdown block renderer can replace it later; the collapse model (a header
+line plus body lines) already accommodates a body that renders as several lines.
+
+### Authoring and drafts
+
+Editing in the TUI is buffered. Adding, editing, resolving, and deleting are held
+in memory as **drafts** against the session and are not written until the review
+is committed. Drafts render distinctly (a `draft` badge) so pending work is
+obvious. Reviews are not heavily concurrent (typically one human and sometimes
+one agent), so buffering the whole review and flushing on commit is acceptable;
+a crash loses only uncommitted drafts, like an editor's unsaved buffer.
+
+A `save` action commits the pending drafts as append events and leaves the review
+open, which also gives a future `--watch` / auto-refresh mode a natural flush
+point.
+
+A draft holds the same anchor data a committed comment does (snippet, surrounding
+context, authored-against version and side), so `refresh` rebases drafts forward
+onto a new diff version alongside committed comments. A draft never authored
+against a persisted version still carries its anchor, so it is not stranded when
+the review advances.
+
 ### Exit behavior
 
-Quitting resolves to keep or remove the session per the `on_exit` config and any
-`--keep` / `--remove` override, with `quit_keep` and `quit_remove` actions to
-choose explicitly. When unset (or `prompt`), the TUI asks.
+Quitting with pending drafts opens a dialog with three choices:
+
+- **Commit review**: flush the drafts as append events, keep the session.
+- **Quit without saving**: discard the drafts, keep the session.
+- **Remove session**: discard the drafts and remove the session.
+
+The `on_exit` config (and any `--keep` / `--remove` override) sets the default
+choice: `keep` defaults to Commit, `remove` to Remove, `prompt` leaves no default
+and always shows the dialog. With no pending drafts there is nothing to lose, so
+the dialog is skipped and `on_exit` (with overrides) decides keep-or-remove
+directly. `quit_keep` and `quit_remove` actions still choose explicitly.
 
 ## Opening files in an editor
 
@@ -341,7 +410,8 @@ the groundwork is present regardless.
 
 - TOML at `$XDG_CONFIG_HOME/wiff/config.toml` (e.g. `~/.config/wiff`).
 - Keymap is `action -> [chords]`, action names in snake_case (`page_down`,
-  `next_hunk`, `add_comment`, `quit_keep`, ...). A chord is a space-separated
+  `next_hunk`, `next_comment`, `add_comment`, `save`, `quit_keep`, ...). A chord
+  is a space-separated
   sequence of key presses; each press is a key with optional `ctrl-`/`alt-`/
   `shift-` modifier prefixes, lowercased (e.g. `"ctrl-f"`, `"g g"`).
 - `on_exit` selects keep/remove/prompt behavior on quit.
@@ -369,6 +439,7 @@ A cargo workspace under `crates/`:
 - jj source; forge integration via git-pkgs/forge (pull, review, push PR
   commentary).
 - Suggested code-change blocks in comments.
+- Markdown rendering of comment bodies in the TUI (plain wrapped text in v0).
 - Side-by-side view; ignore-whitespace and other diff options.
 - `--watch` live reload of concurrent edits.
 - Whole-tree editor materialization and feeding editor changes back into the
