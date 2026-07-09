@@ -4,6 +4,7 @@
 
 pub mod capture;
 pub mod comment;
+pub mod config;
 pub mod error;
 pub mod hash;
 pub mod identity;
@@ -16,6 +17,7 @@ pub mod source;
 
 pub use capture::{create_session, write_diff_version};
 pub use comment::{AddedComment, DraftComment, delete_comment, set_resolved};
+pub use config::AuthorDefaults;
 pub use error::{Error, Result};
 pub use hash::SidebandHash;
 pub use identity::{ProjectIdentity, ScmType};

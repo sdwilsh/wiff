@@ -1393,6 +1393,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "wiff-config"
+version = "0.1.0"
+dependencies = [
+ "directories",
+ "k9",
+ "serde",
+ "thiserror",
+ "toml",
+ "wiff-core",
+ "wiff-tui",
+]
+
+[[package]]
 name = "wiff-core"
 version = "0.1.0"
 dependencies = [

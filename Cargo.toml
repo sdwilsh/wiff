@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/wiff",
+    "crates/wiff-config",
     "crates/wiff-core",
     "crates/wiff-diff",
     "crates/wiff-tui",
@@ -30,6 +31,7 @@ tokio = { version = "1", features = ["fs", "io-std", "io-util", "macros", "proce
 toml = "0.8"
 toml_edit = "0.22"
 ulid = { version = "1", features = ["serde"] }
+wiff-config = { path = "crates/wiff-config" }
 wiff-core = { path = "crates/wiff-core" }
 wiff-diff = { path = "crates/wiff-diff" }
 wiff-tui = { path = "crates/wiff-tui" }

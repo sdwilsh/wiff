@@ -1,0 +1,114 @@
+//! The user's `config.toml`, deserialized into typed settings.
+//!
+//! This crate sits above `wiff-tui` and `wiff-core` so serde can parse the file
+//! straight into their types: the keymap into [`wiff_tui`] actions and chords,
+//! the author defaults into the struct `wiff-core` exports. Reading is a plain
+//! deserialize; persisting individual settings back (a later feature for
+//! remembered view options) will edit the document in place with `toml_edit` so
+//! the user's formatting and comments survive.
+
+use std::path::{Path, PathBuf};
+
+use serde::Deserialize;
+use wiff_core::AuthorDefaults;
+use wiff_tui::keymap::Keymap;
+use wiff_tui::{KeymapError, KeymapOverrides};
+
+/// The environment variable that overrides the config directory.
+pub const CONFIG_DIR_ENV: &str = "WIFF_CONFIG_DIR";
+
+/// What to do with a session when the review UI exits.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnExit {
+    /// Ask whether to keep or remove the session.
+    #[default]
+    Prompt,
+    /// Keep the session for later resumption.
+    Keep,
+    /// Remove the session.
+    Remove,
+}
+
+/// The whole of the user's configuration.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Config {
+    /// How to resolve keep-or-remove when the UI exits.
+    pub on_exit: OnExit,
+    /// The editor command template for `open_in_editor`, with `{file}` and
+    /// `{line}` placeholders; falls back to `$VISUAL`/`$EDITOR` when unset.
+    pub editor: Option<String>,
+    /// The default author identity for annotations.
+    pub author: AuthorDefaults,
+    /// Start from an empty keymap so only configured bindings take effect.
+    pub disable_default_keymap: bool,
+    /// Per-action chord overrides layered onto the built-in defaults.
+    pub keymap: KeymapOverrides,
+}
+
+impl Config {
+    /// Parse a config from TOML text.
+    pub fn parse(text: &str) -> Result<Self, ConfigError> {
+        toml::from_str(text).map_err(ConfigError::Parse)
+    }
+
+    /// Load the config from `path`, or the default config when the file does not
+    /// exist.
+    pub fn load_from(path: &Path) -> Result<Self, ConfigError> {
+        match std::fs::read_to_string(path) {
+            Ok(text) => Self::parse(&text),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(err) => Err(ConfigError::Io {
+                path: path.to_path_buf(),
+                source: err,
+            }),
+        }
+    }
+
+    /// Load the config from the user's config directory, or the default config
+    /// when no file is present.
+    pub fn load() -> Result<Self, ConfigError> {
+        Self::load_from(&config_file()?)
+    }
+
+    /// Build the effective keymap: the built-in defaults (unless disabled)
+    /// overlaid with the configured overrides.
+    pub fn keymap(&self) -> Result<Keymap, KeymapError> {
+        Keymap::resolve_config(&self.keymap, self.disable_default_keymap)
+    }
+}
+
+/// The config directory: the `WIFF_CONFIG_DIR` override if set, else the
+/// platform config directory for wiff.
+pub fn config_dir() -> Result<PathBuf, ConfigError> {
+    if let Some(dir) = std::env::var_os(CONFIG_DIR_ENV) {
+        return Ok(PathBuf::from(dir));
+    }
+    let dirs = directories::ProjectDirs::from("", "", "wiff").ok_or(ConfigError::NoConfigDir)?;
+    Ok(dirs.config_dir().to_path_buf())
+}
+
+/// The path to the config file within the config directory.
+pub fn config_file() -> Result<PathBuf, ConfigError> {
+    Ok(config_dir()?.join("config.toml"))
+}
+
+/// An error loading the configuration.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    /// The platform config directory could not be determined.
+    #[error("could not determine the wiff config directory")]
+    NoConfigDir,
+    /// The config file could not be read.
+    #[error("could not read config at {path}: {source}")]
+    Io {
+        /// The path that could not be read.
+        path: PathBuf,
+        /// The underlying I/O error.
+        source: std::io::Error,
+    },
+    /// The config file was not valid TOML or had invalid values.
+    #[error("could not parse config: {0}")]
+    Parse(#[source] toml::de::Error),
+}

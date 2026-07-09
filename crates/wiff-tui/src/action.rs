@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 /// A single reviewer intent the UI can act on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
     /// Move the cursor down one line.
