@@ -2,9 +2,15 @@
 //!
 //! The app owns the rendered diff and the viewport into it: which row the
 //! cursor is on and which row is at the top of the screen. It consumes the
-//! navigation [`Action`]s (line, page, file, and hunk movement) and reports any
-//! other action back to the host to handle. The cursor row is washed with the
-//! theme's selection color so the reviewer can see where they are.
+//! navigation [`Action`]s (line, page, file, and hunk movement, and toggling a
+//! fold) and reports any other action back to the host to handle. The cursor row
+//! is washed with the theme's selection color so the reviewer can see where they
+//! are.
+//!
+//! Long runs of unchanged lines are folded away: the document carries the
+//! foldable runs, and the app keeps each one collapsed until the reviewer
+//! expands it, so the cursor and viewport move over a view that reflects what is
+//! actually shown rather than every underlying row.
 
 use ratatui::text::Line;
 use wiff_diff::Rgb;
@@ -39,9 +45,22 @@ impl Landmark {
     }
 }
 
+/// One line of the current view: a document row, or a collapsed fold shown as
+/// its marker line.
+enum ViewRow {
+    /// A row index into [`Document::rows`] and [`Document::lines`].
+    Row(usize),
+    /// A fold index into [`Document::folds`], collapsed to its marker.
+    Fold(usize),
+}
+
 /// The review view over a rendered diff.
 pub struct App {
     document: Document,
+    /// Whether each of the document's folds is currently collapsed.
+    collapsed: Vec<bool>,
+    /// The visible lines in order, resolved from the collapse state.
+    view: Vec<ViewRow>,
     cursor: usize,
     top: usize,
     height: usize,
@@ -50,23 +69,28 @@ pub struct App {
 
 impl App {
     /// Build the view over `document`, showing `height` rows, selecting rows
-    /// with `theme`'s cursor color.
+    /// with `theme`'s cursor color. Every fold starts collapsed.
     pub fn new(document: Document, height: usize, theme: &Theme) -> Self {
-        Self {
+        let collapsed = vec![true; document.folds.len()];
+        let mut app = Self {
             document,
+            collapsed,
+            view: Vec::new(),
             cursor: 0,
             top: 0,
             height,
             cursor_bg: theme.cursor_bg,
-        }
+        };
+        app.rebuild_view();
+        app
     }
 
-    /// The row the cursor is on.
+    /// The view row the cursor is on.
     pub fn cursor(&self) -> usize {
         self.cursor
     }
 
-    /// The first visible row.
+    /// The first visible view row.
     pub fn top(&self) -> usize {
         self.top
     }
@@ -82,14 +106,15 @@ impl App {
         match action {
             Action::LineDown => self.move_to(self.cursor + 1),
             Action::LineUp => self.move_to(self.cursor.saturating_sub(1)),
-            Action::PageDown => self.move_to(self.cursor + self.page()),
-            Action::PageUp => self.move_to(self.cursor.saturating_sub(self.page())),
+            Action::PageDown => self.page_down(),
+            Action::PageUp => self.page_up(),
             Action::Top => self.move_to(0),
-            Action::Bottom => self.move_to(self.last_row()),
+            Action::Bottom => self.move_to(self.last_view()),
             Action::NextFile => self.jump_forward(Landmark::File),
             Action::PrevFile => self.jump_backward(Landmark::File),
             Action::NextHunk => self.jump_forward(Landmark::Hunk),
             Action::PrevHunk => self.jump_backward(Landmark::Hunk),
+            Action::ToggleFold => self.toggle_fold(),
             other => return Update::Passed(other),
         }
         Update::Handled
@@ -98,18 +123,108 @@ impl App {
     /// The lines currently in view, with the cursor row washed in the selection
     /// color so it stands out.
     pub fn visible(&self) -> Vec<Line<'static>> {
-        let end = (self.top + self.height).min(self.document.lines.len());
-        self.document.lines[self.top..end]
-            .iter()
-            .enumerate()
-            .map(|(offset, line)| {
-                if self.top + offset == self.cursor {
+        let end = (self.top + self.height).min(self.view.len());
+        (self.top..end)
+            .map(|i| {
+                let line = self.line_at(i);
+                if i == self.cursor {
                     wash(line, self.cursor_bg)
                 } else {
-                    line.clone()
+                    line
                 }
             })
             .collect()
+    }
+
+    /// The line to draw for view row `index`: the document line, or the fold's
+    /// marker when it stands in for a collapsed run.
+    fn line_at(&self, index: usize) -> Line<'static> {
+        match self.view[index] {
+            ViewRow::Row(row) => self.document.lines[row].clone(),
+            ViewRow::Fold(fold) => self.document.folds[fold].marker.clone(),
+        }
+    }
+
+    /// The diff-row kind at view row `index`, or `None` when it is a fold marker
+    /// (which the landmark jumps skip over).
+    fn kind_at(&self, index: usize) -> Option<&RowKind> {
+        match self.view[index] {
+            ViewRow::Row(row) => Some(&self.document.rows[row].kind),
+            ViewRow::Fold(_) => None,
+        }
+    }
+
+    /// Rebuild the view from the collapse state: each collapsed fold becomes one
+    /// marker in place of the rows it hides; every other row appears in order.
+    fn rebuild_view(&mut self) {
+        self.view.clear();
+        let mut row = 0;
+        while row < self.document.rows.len() {
+            match self.fold_starting_at(row) {
+                Some(fold) if self.collapsed[fold] => {
+                    self.view.push(ViewRow::Fold(fold));
+                    row = self.document.folds[fold].end;
+                }
+                _ => {
+                    self.view.push(ViewRow::Row(row));
+                    row += 1;
+                }
+            }
+        }
+    }
+
+    /// The fold that begins at document `row`, if any.
+    fn fold_starting_at(&self, row: usize) -> Option<usize> {
+        self.document
+            .folds
+            .iter()
+            .position(|fold| fold.start == row)
+    }
+
+    /// The fold whose hidden range covers document `row`, if any.
+    fn fold_containing(&self, row: usize) -> Option<usize> {
+        self.document
+            .folds
+            .iter()
+            .position(|fold| fold.start <= row && row < fold.end)
+    }
+
+    /// The view index showing document `row`, if it is currently visible.
+    fn view_index_of_row(&self, row: usize) -> Option<usize> {
+        self.view
+            .iter()
+            .position(|entry| matches!(entry, ViewRow::Row(r) if *r == row))
+    }
+
+    /// The view index of `fold`'s marker, if it is currently collapsed.
+    fn view_index_of_fold(&self, fold: usize) -> Option<usize> {
+        self.view
+            .iter()
+            .position(|entry| matches!(entry, ViewRow::Fold(f) if *f == fold))
+    }
+
+    /// Expand the fold under the cursor, or collapse the fold the cursor sits
+    /// inside, landing the cursor on the revealed content or the new marker.
+    fn toggle_fold(&mut self) {
+        match self.view[self.cursor] {
+            ViewRow::Fold(fold) => {
+                self.collapsed[fold] = false;
+                let first = self.document.folds[fold].start;
+                self.rebuild_view();
+                if let Some(index) = self.view_index_of_row(first) {
+                    self.move_to(index);
+                }
+            }
+            ViewRow::Row(row) => {
+                if let Some(fold) = self.fold_containing(row) {
+                    self.collapsed[fold] = true;
+                    self.rebuild_view();
+                    if let Some(index) = self.view_index_of_fold(fold) {
+                        self.move_to(index);
+                    }
+                }
+            }
+        }
     }
 
     /// A page's worth of rows for page up/down, at least one.
@@ -117,34 +232,57 @@ impl App {
         self.height.max(1)
     }
 
-    /// The last addressable row, or zero for an empty document.
-    fn last_row(&self) -> usize {
-        self.document.rows.len().saturating_sub(1)
+    /// The last addressable view row, or zero for an empty view.
+    fn last_view(&self) -> usize {
+        self.view.len().saturating_sub(1)
     }
 
-    /// Move the cursor to `target`, clamped to the document, then scroll to keep
-    /// it in view.
+    /// The furthest the viewport can scroll while still filling the screen.
+    fn max_top(&self) -> usize {
+        self.view.len().saturating_sub(self.height)
+    }
+
+    /// Move the cursor to `target`, clamped to the view, then scroll just enough
+    /// to keep it visible.
     fn move_to(&mut self, target: usize) {
-        self.cursor = target.min(self.last_row());
+        self.cursor = target.min(self.last_view());
         self.scroll_into_view();
+    }
+
+    /// Advance a whole page: scroll the viewport down by a screen and carry the
+    /// cursor with it, as `less` does on space.
+    fn page_down(&mut self) {
+        let step = self.page();
+        self.top = (self.top + step).min(self.max_top());
+        self.cursor = (self.cursor + step).min(self.last_view());
+        self.clamp_cursor_visible();
+    }
+
+    /// Retreat a whole page: scroll the viewport up by a screen and carry the
+    /// cursor with it.
+    fn page_up(&mut self) {
+        let step = self.page();
+        self.top = self.top.saturating_sub(step);
+        self.cursor = self.cursor.saturating_sub(step);
+        self.clamp_cursor_visible();
     }
 
     /// Move the cursor to the next `landmark` row after it, if any.
     fn jump_forward(&mut self, landmark: Landmark) {
-        if let Some(row) = (self.cursor + 1..self.document.rows.len())
-            .find(|&i| landmark.matches(&self.document.rows[i].kind))
+        if let Some(index) = (self.cursor + 1..self.view.len())
+            .find(|&i| self.kind_at(i).is_some_and(|kind| landmark.matches(kind)))
         {
-            self.move_to(row);
+            self.move_to(index);
         }
     }
 
     /// Move the cursor to the nearest `landmark` row before it, if any.
     fn jump_backward(&mut self, landmark: Landmark) {
-        if let Some(row) = (0..self.cursor)
+        if let Some(index) = (0..self.cursor)
             .rev()
-            .find(|&i| landmark.matches(&self.document.rows[i].kind))
+            .find(|&i| self.kind_at(i).is_some_and(|kind| landmark.matches(kind)))
         {
-            self.move_to(row);
+            self.move_to(index);
         }
     }
 
@@ -156,16 +294,25 @@ impl App {
             self.top = self.cursor + 1 - self.height;
         }
     }
+
+    /// Pull the cursor back into the viewport after a page scroll clamped the
+    /// top, so it never sits off the visible rows.
+    fn clamp_cursor_visible(&mut self) {
+        if self.cursor < self.top {
+            self.cursor = self.top;
+        } else if self.height > 0 && self.cursor >= self.top + self.height {
+            self.cursor = self.top + self.height - 1;
+        }
+    }
 }
 
-/// Clone `line` with every span's background replaced by `bg`, keeping each
+/// Return `line` with every span's background replaced by `bg`, keeping each
 /// span's foreground and modifiers.
-fn wash(line: &Line<'static>, bg: Rgb) -> Line<'static> {
-    let mut washed = line.clone();
-    for span in &mut washed.spans {
+fn wash(mut line: Line<'static>, bg: Rgb) -> Line<'static> {
+    for span in &mut line.spans {
         span.style = span.style.bg(color(bg));
     }
-    washed
+    line
 }
 
 #[cfg(test)]
@@ -200,14 +347,42 @@ mod tests {
         DiffView::new(Theme::dark()).unwrap().render(&diff)
     }
 
-    /// Drive `actions` through a fresh app and return its cursor, top, and the
-    /// dumped visible lines.
-    fn after(height: usize, actions: &[Action]) -> (usize, usize, String) {
-        let mut app = App::new(document(), height, &Theme::dark());
+    /// A single text file whose one change is buried in long runs of unchanged
+    /// context, so the leading and trailing runs fold away.
+    fn folded_document() -> crate::render::Document {
+        let mut lines: Vec<(LineKind, String, u32)> = Vec::new();
+        for n in 1..=8 {
+            lines.push((LineKind::Context, format!("ctx{n:02}"), n));
+        }
+        lines.push((LineKind::Added, "change!".to_string(), 9));
+        for n in 9..=16 {
+            lines.push((LineKind::Context, format!("ctx{n:02}"), n + 1));
+        }
+        let borrowed: Vec<(LineKind, &str, u32)> =
+            lines.iter().map(|(k, t, n)| (*k, t.as_str(), *n)).collect();
+        let diff = Diff {
+            files: vec![file("notes.txt", FileStatus::Modified, &borrowed)],
+        };
+        DiffView::new(Theme::dark()).unwrap().render(&diff)
+    }
+
+    /// Drive `actions` through a fresh app over `document` and return its cursor,
+    /// top, and the dumped visible lines.
+    fn drive(
+        document: crate::render::Document,
+        height: usize,
+        actions: &[Action],
+    ) -> (usize, usize, String) {
+        let mut app = App::new(document, height, &Theme::dark());
         for action in actions {
             app.update(*action);
         }
         (app.cursor(), app.top(), dump(&app.visible()))
+    }
+
+    /// Drive `actions` over the two-file [`document`].
+    fn after(height: usize, actions: &[Action]) -> (usize, usize, String) {
+        drive(document(), height, actions)
     }
 
     #[test]
@@ -273,9 +448,96 @@ mod tests {
     }
 
     #[test]
+    fn space_advances_a_whole_page_like_less() {
+        // On a height-3 view, each page-down slides the viewport by a full screen
+        // and carries the cursor along, rather than nudging it one row.
+        let (cursor, top, _) = after(3, &[Action::PageDown]);
+        k9::assert_equal!(cursor, 3);
+        k9::assert_equal!(top, 3);
+
+        let (cursor, top, _) = after(3, &[Action::PageDown, Action::PageDown]);
+        k9::assert_equal!(cursor, 6);
+        k9::assert_equal!(top, 4);
+
+        let (cursor, top, _) = after(3, &[Action::PageDown, Action::PageDown, Action::PageUp]);
+        k9::assert_equal!(cursor, 3);
+        k9::assert_equal!(top, 1);
+    }
+
+    #[test]
     fn a_non_navigation_action_is_passed_back_to_the_host() {
         let mut app = App::new(document(), 10, &Theme::dark());
         k9::assert_equal!(app.update(Action::Quit), Update::Passed(Action::Quit));
         k9::assert_equal!(app.update(Action::LineDown), Update::Handled);
+    }
+
+    #[test]
+    fn long_unchanged_runs_collapse_into_fold_markers() {
+        // The whole collapsed view: the headers, a leading fold, the kept
+        // context and the change, and a trailing fold.
+        let (cursor, top, visible) = drive(folded_document(), 12, &[]);
+        k9::assert_equal!(cursor, 0);
+        k9::assert_equal!(top, 0);
+        let expected = "\
+<#c0c5ce|#4f5b66|b>modified  notes.txt
+<#96b5b4|-|->@@ -1,17 +1,17 @@
+<#8a8a8a|-|->            [5 unchanged lines]
+<#65737e|-|->   6    6   <#c0c5ce|-|->ctx06
+<#65737e|-|->   7    7   <#c0c5ce|-|->ctx07
+<#65737e|-|->   8    8   <#c0c5ce|-|->ctx08
+<#65737e|#2d3b30|->        9 + <#c0c5ce|#2d3b30|->change!
+<#65737e|-|->  10   10   <#c0c5ce|-|->ctx09
+<#65737e|-|->  11   11   <#c0c5ce|-|->ctx10
+<#65737e|-|->  12   12   <#c0c5ce|-|->ctx11
+<#8a8a8a|-|->            [5 unchanged lines]
+";
+        k9::assert_equal!(visible, expected.to_string());
+    }
+
+    #[test]
+    fn expanding_a_fold_reveals_its_hidden_rows() {
+        // The leading fold marker is the third view row; expand it there.
+        let (cursor, top, visible) = drive(
+            folded_document(),
+            6,
+            &[Action::LineDown, Action::LineDown, Action::ToggleFold],
+        );
+        k9::assert_equal!(cursor, 2);
+        k9::assert_equal!(top, 0);
+        let expected = "\
+<#c0c5ce|-|b>modified  notes.txt
+<#96b5b4|-|->@@ -1,17 +1,17 @@
+<#65737e|#4f5b66|->   1    1   <#c0c5ce|#4f5b66|->ctx01
+<#65737e|-|->   2    2   <#c0c5ce|-|->ctx02
+<#65737e|-|->   3    3   <#c0c5ce|-|->ctx03
+<#65737e|-|->   4    4   <#c0c5ce|-|->ctx04
+";
+        k9::assert_equal!(visible, expected.to_string());
+    }
+
+    #[test]
+    fn collapsing_an_expanded_fold_restores_its_marker() {
+        // Expand the leading fold, then toggle it shut again from within it.
+        let (cursor, top, visible) = drive(
+            folded_document(),
+            6,
+            &[
+                Action::LineDown,
+                Action::LineDown,
+                Action::ToggleFold,
+                Action::ToggleFold,
+            ],
+        );
+        k9::assert_equal!(cursor, 2);
+        k9::assert_equal!(top, 0);
+        let expected = "\
+<#c0c5ce|-|b>modified  notes.txt
+<#96b5b4|-|->@@ -1,17 +1,17 @@
+<#8a8a8a|#4f5b66|->            [5 unchanged lines]
+<#65737e|-|->   6    6   <#c0c5ce|-|->ctx06
+<#65737e|-|->   7    7   <#c0c5ce|-|->ctx07
+<#65737e|-|->   8    8   <#c0c5ce|-|->ctx08
+";
+        k9::assert_equal!(visible, expected.to_string());
     }
 }

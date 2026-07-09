@@ -26,7 +26,9 @@ pub fn open(session_path: &Path, config: &Config) -> anyhow::Result<()> {
     let diff = wiff_diff::parse(&text)?;
 
     let theme = Theme::dark();
-    let document = DiffView::new(theme.clone())?.render(&diff);
+    let document = DiffView::new(theme.clone())?
+        .with_display_context(config.display_context)
+        .render(&diff);
     let app = App::new(document, 0, &theme);
     let keymap = config.keymap()?;
 

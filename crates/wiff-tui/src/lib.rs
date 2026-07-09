@@ -21,6 +21,6 @@ pub use event::to_key_press;
 pub use input::Input;
 pub use key::{Chord, Key, KeyPress};
 pub use keymap::{Keymap, KeymapError, KeymapOverrides, Resolution};
-pub use render::{DiffView, Document, Row, RowKind};
+pub use render::{DiffView, Document, Fold, Row, RowKind};
 pub use run::{Exit, run};
 pub use theme::Theme;

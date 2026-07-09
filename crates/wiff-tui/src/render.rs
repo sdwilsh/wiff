@@ -21,13 +21,38 @@ use crate::theme::Theme;
 /// The gutter width for one side's line number.
 const LINENO_WIDTH: usize = 4;
 
+/// The width of the gutter before a content line: two line numbers, the change
+/// marker, and the spaces separating them. A fold marker is indented this far so
+/// it aligns under the code column.
+const GUTTER_WIDTH: usize = LINENO_WIDTH * 2 + 4;
+
+/// The shortest run of unchanged lines worth collapsing. Hiding a single line
+/// behind a one-line marker saves nothing, so only runs of two or more fold.
+const MIN_FOLD: usize = 2;
+
+/// The context lines kept on each side of a change when nothing overrides it.
+pub const DEFAULT_DISPLAY_CONTEXT: usize = 3;
+
 /// A rendered diff: the styled lines to draw, paired one-to-one with the [`Row`]
-/// metadata that says what each line is, for cursor navigation and anchoring.
+/// metadata that says what each line is, plus the runs of unchanged lines that
+/// can be folded away from view.
 pub struct Document {
     /// The styled lines, in draw order.
     pub lines: Vec<Line<'static>>,
     /// The metadata for each line, parallel to `lines`.
     pub rows: Vec<Row>,
+    /// The foldable runs of unchanged rows, in row order, non-overlapping.
+    pub folds: Vec<Fold>,
+}
+
+/// A run of unchanged rows that can be collapsed behind a single marker line.
+pub struct Fold {
+    /// The first hidden row index into [`Document::rows`].
+    pub start: usize,
+    /// One past the last hidden row index.
+    pub end: usize,
+    /// The line shown in place of the hidden rows when collapsed.
+    pub marker: Line<'static>,
 }
 
 /// What one rendered line corresponds to in the diff.
@@ -70,15 +95,25 @@ impl Document {
 pub struct DiffView {
     highlighter: Highlighter,
     theme: Theme,
+    display_context: usize,
 }
 
 impl DiffView {
-    /// Build a renderer for `theme`, loading its syntect syntax theme.
+    /// Build a renderer for `theme`, loading its syntect syntax theme, keeping
+    /// the default number of context lines around each change.
     pub fn new(theme: Theme) -> Result<Self, HighlightError> {
         Ok(Self {
             highlighter: Highlighter::with_theme(&theme.syntax_theme)?,
             theme,
+            display_context: DEFAULT_DISPLAY_CONTEXT,
         })
+    }
+
+    /// Keep `context` unchanged lines on each side of a change before folding the
+    /// rest away.
+    pub fn with_display_context(mut self, context: usize) -> Self {
+        self.display_context = context;
+        self
     }
 
     /// Render every file of `diff` into one scrollable [`Document`].
@@ -86,6 +121,7 @@ impl DiffView {
         let mut doc = Document {
             lines: Vec::new(),
             rows: Vec::new(),
+            folds: Vec::new(),
         };
         for (index, file) in diff.files.iter().enumerate() {
             self.render_file(index, file, &mut doc);
@@ -104,6 +140,7 @@ impl DiffView {
                 RowKind::HunkHeader { hunk: hunk_index },
                 self.hunk_header(hunk),
             );
+            let content_base = doc.rows.len();
             let emphasis = intraline::refine(&hunk.lines);
             for (line, ranges) in hunk.lines.iter().zip(&emphasis) {
                 let (side, lineno, highlighted) = match line.kind {
@@ -124,7 +161,30 @@ impl DiffView {
                     self.content_line(line, highlighted, ranges),
                 );
             }
+            let kinds: Vec<LineKind> = hunk.lines.iter().map(|line| line.kind).collect();
+            for run in foldable_runs(&kinds, self.display_context) {
+                doc.folds.push(Fold {
+                    start: content_base + run.start,
+                    end: content_base + run.end,
+                    marker: self.fold_marker(run.end - run.start),
+                });
+            }
         }
+    }
+
+    /// The line shown in place of `hidden` collapsed rows, indented to align
+    /// under the code column.
+    fn fold_marker(&self, hidden: usize) -> Line<'static> {
+        let plural = if hidden == 1 { "" } else { "s" };
+        let text = format!(
+            "{:indent$}[{hidden} unchanged line{plural}]",
+            "",
+            indent = GUTTER_WIDTH
+        );
+        Line::from(Span::styled(
+            text,
+            Style::default().fg(color(self.theme.fold_fg)),
+        ))
     }
 
     /// The header naming a file and how it changed.
@@ -271,6 +331,41 @@ fn lineno(number: Option<wiff_diff::LineNo>) -> String {
         Some(n) => format!("{:>width$}", n.get(), width = LINENO_WIDTH),
         None => " ".repeat(LINENO_WIDTH),
     }
+}
+
+/// The runs of unchanged content lines to fold away, given `kinds` for one
+/// hunk's lines and the number of `context` lines to keep beside each change.
+///
+/// A line is kept when it is a change or within `context` lines of one; the
+/// maximal runs of the remaining lines are folded, skipping any run too short to
+/// be worth collapsing.
+fn foldable_runs(kinds: &[LineKind], context: usize) -> Vec<Range<usize>> {
+    let mut kept = vec![false; kinds.len()];
+    for (i, kind) in kinds.iter().enumerate() {
+        if matches!(kind, LineKind::Added | LineKind::Removed) {
+            let lo = i.saturating_sub(context);
+            let hi = (i + context + 1).min(kinds.len());
+            for near in &mut kept[lo..hi] {
+                *near = true;
+            }
+        }
+    }
+    let mut runs = Vec::new();
+    let mut start = None;
+    // A kept sentinel past the end closes any run still open at the last line.
+    for (i, kept_here) in kept.iter().chain(std::iter::once(&true)).enumerate() {
+        match (!kept_here, start) {
+            (true, None) => start = Some(i),
+            (false, Some(from)) => {
+                if i - from >= MIN_FOLD {
+                    runs.push(from..i);
+                }
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    runs
 }
 
 /// A short label for a file's change status.
@@ -436,5 +531,19 @@ mod tests {
 <#65737e|#2d3b30|->        1 + <#c0c5ce|#2d3b30|->hello there <#c0c5ce|#3a5a40|->pete
 ";
         k9::assert_equal!(dump(&view.render(&diff).lines), expected.to_string());
+    }
+
+    #[test]
+    fn foldable_runs_keep_context_around_changes_and_fold_the_rest() {
+        use LineKind::{Added as A, Context as C};
+        // Leading, interior, and trailing runs of context, keeping one line on
+        // each side of the two changes.
+        let kinds = [C, C, C, A, C, C, C, C, C, A, C, C, C];
+        k9::assert_equal!(super::foldable_runs(&kinds, 1), vec![0..2, 5..8, 11..13]);
+        // With enough context to reach across every gap, nothing folds.
+        k9::assert_equal!(
+            super::foldable_runs(&kinds, 5),
+            Vec::<std::ops::Range<usize>>::new()
+        );
     }
 }

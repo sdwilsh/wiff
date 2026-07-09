@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use wiff_core::AuthorDefaults;
 use wiff_tui::keymap::Keymap;
+use wiff_tui::render::DEFAULT_DISPLAY_CONTEXT;
 use wiff_tui::{KeymapError, KeymapOverrides};
 
 /// The environment variable that overrides the config directory.
@@ -31,11 +32,15 @@ pub enum OnExit {
 }
 
 /// The whole of the user's configuration.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// How to resolve keep-or-remove when the UI exits.
     pub on_exit: OnExit,
+    /// The unchanged lines kept on each side of a change when rendering; longer
+    /// runs fold away. This is a display choice, independent of how much context
+    /// the diff was captured with.
+    pub display_context: usize,
     /// The editor command template for `open_in_editor`, with `{file}` and
     /// `{line}` placeholders; falls back to `$VISUAL`/`$EDITOR` when unset.
     pub editor: Option<String>,
@@ -45,6 +50,19 @@ pub struct Config {
     pub disable_default_keymap: bool,
     /// Per-action chord overrides layered onto the built-in defaults.
     pub keymap: KeymapOverrides,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            on_exit: OnExit::default(),
+            display_context: DEFAULT_DISPLAY_CONTEXT,
+            editor: None,
+            author: AuthorDefaults::default(),
+            disable_default_keymap: false,
+            keymap: KeymapOverrides::default(),
+        }
+    }
 }
 
 impl Config {

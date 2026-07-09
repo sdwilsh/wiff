@@ -30,6 +30,8 @@ pub struct Theme {
     pub removed_emphasis_bg: Rgb,
     /// The background washed over the row the cursor is on.
     pub cursor_bg: Rgb,
+    /// The text color of a fold marker standing in for hidden unchanged lines.
+    pub fold_fg: Rgb,
 }
 
 impl Theme {
@@ -46,6 +48,7 @@ impl Theme {
             added_emphasis_bg: rgb(0x3a, 0x5a, 0x40),
             removed_emphasis_bg: rgb(0x5a, 0x3a, 0x40),
             cursor_bg: rgb(0x4f, 0x5b, 0x66),
+            fold_fg: rgb(0x8a, 0x8a, 0x8a),
         }
     }
 }
