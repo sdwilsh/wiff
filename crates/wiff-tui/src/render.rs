@@ -16,6 +16,9 @@ use std::ops::Range;
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use ulid::Ulid;
+use wiff_core::record::{CommentTarget, Confidence};
+use wiff_core::review::CommentState;
 use wiff_diff::{
     Diff, DiffLine, FileDiff, FileStatus, HighlightError, HighlightedLine, Highlighter, LineKind,
     LineNo, Rgb, Section, SectionMatchers, Side, StyledSpan, intraline,
@@ -35,6 +38,14 @@ const GUTTER_WIDTH: usize = LINENO_WIDTH * 2 + 4;
 /// behind a one-line marker saves nothing, so only runs of two or more fold.
 const MIN_FOLD: usize = 2;
 
+/// The file index for rows not tied to a file: the review summary and its
+/// comments, which resolve to no path in the status line.
+const NO_FILE: usize = usize::MAX;
+
+/// The indent for comments not aligned to the code column, the review and
+/// whole-file comments.
+const COMMENT_INDENT: usize = 2;
+
 /// The context lines kept on each side of a change when nothing overrides it.
 pub const DEFAULT_DISPLAY_CONTEXT: usize = 3;
 
@@ -48,8 +59,22 @@ pub struct Document {
     pub rows: Vec<Row>,
     /// The foldable runs of unchanged rows, in row order, non-overlapping.
     pub folds: Vec<Fold>,
+    /// The collapsible comment bodies, in row order.
+    pub comments: Vec<CommentRegion>,
     /// The display path of each file, indexed by [`Row::file`].
     pub files: Vec<String>,
+}
+
+/// A rendered comment: its header row and the body rows that collapse behind it.
+pub struct CommentRegion {
+    /// The annotation's stable identity.
+    pub id: Ulid,
+    /// The row index of the comment's header line.
+    pub header: usize,
+    /// The body rows hidden when the comment is collapsed: `[start, end)`.
+    pub body: Range<usize>,
+    /// Whether the comment starts collapsed (resolved comments do).
+    pub collapsed_default: bool,
 }
 
 /// A run of unchanged rows that can be collapsed behind a single marker line.
@@ -87,6 +112,18 @@ pub enum RowKind {
         side: Side,
         /// The line's number on that side, absent for a malformed line.
         lineno: Option<LineNo>,
+    },
+    /// The review summary row at the top of the document.
+    ReviewSummary,
+    /// A comment's header line, naming its author and status.
+    CommentHeader {
+        /// The annotation the header belongs to.
+        id: Ulid,
+    },
+    /// One line of a comment's body.
+    CommentBody {
+        /// The annotation the body belongs to.
+        id: Ulid,
     },
 }
 
@@ -132,27 +169,59 @@ impl DiffView {
         self
     }
 
-    /// Render every file of `diff` into one scrollable [`Document`].
+    /// Render every file of `diff` into one scrollable [`Document`], with no
+    /// review overlay.
     pub fn render(&self, diff: &Diff) -> Document {
+        self.build(diff, &[], false)
+    }
+
+    /// Render `diff` with `comments` woven in: a review summary row at the top,
+    /// whole-file comments under their file header, and line comments in a block
+    /// above the line they anchor. Deleted comments are the caller's to filter.
+    pub fn render_review(&self, diff: &Diff, comments: &[CommentState]) -> Document {
+        self.build(diff, comments, true)
+    }
+
+    /// The shared render path: build the document, optionally leading with the
+    /// review summary row, then each file with its placed comments.
+    fn build(&self, diff: &Diff, comments: &[CommentState], review_row: bool) -> Document {
         let mut doc = Document {
             lines: Vec::new(),
             rows: Vec::new(),
             folds: Vec::new(),
+            comments: Vec::new(),
             files: diff
                 .files
                 .iter()
                 .map(|f| f.display_path().to_string())
                 .collect(),
         };
+        let placement = Placement::new(diff, comments);
+        if review_row {
+            doc.push(NO_FILE, RowKind::ReviewSummary, self.review_summary());
+            for comment in &placement.review {
+                self.push_comment(&mut doc, NO_FILE, comment, COMMENT_INDENT);
+            }
+        }
         for (index, file) in diff.files.iter().enumerate() {
-            self.render_file(index, file, &mut doc);
+            self.render_file(index, file, &placement.files[index], &mut doc);
         }
         doc
     }
 
-    /// Append `file`'s header and hunks to `doc`.
-    fn render_file(&self, index: usize, file: &FileDiff, doc: &mut Document) {
+    /// Append `file`'s header, its whole-file and floated comments, and its
+    /// hunks with any line comments woven in.
+    fn render_file(
+        &self,
+        index: usize,
+        file: &FileDiff,
+        placement: &FilePlacement,
+        doc: &mut Document,
+    ) {
         doc.push(index, RowKind::FileHeader, self.file_header(file));
+        for comment in &placement.header {
+            self.push_comment(doc, index, comment, COMMENT_INDENT);
+        }
         let before = self.highlighter.highlight_side(file, Side::Before);
         let after = self.highlighter.highlight_side(file, Side::After);
         for (hunk_index, hunk) in file.hunks.iter().enumerate() {
@@ -161,8 +230,8 @@ impl DiffView {
                 RowKind::HunkHeader { hunk: hunk_index },
                 self.hunk_header(hunk),
             );
-            let content_base = doc.rows.len();
             let emphasis = intraline::refine(&hunk.lines);
+            let mut line_row = Vec::with_capacity(hunk.lines.len());
             for (line, ranges) in hunk.lines.iter().zip(&emphasis) {
                 let (side, lineno, highlighted) = match line.kind {
                     LineKind::Removed => (
@@ -176,6 +245,12 @@ impl DiffView {
                         line.new_lineno.and_then(|n| after.get(&n)),
                     ),
                 };
+                if let Some(n) = lineno {
+                    for comment in placement.at(side, n.get()) {
+                        self.push_comment(doc, index, comment, GUTTER_WIDTH);
+                    }
+                }
+                line_row.push(doc.rows.len());
                 doc.push(
                     index,
                     RowKind::Content { side, lineno },
@@ -183,16 +258,91 @@ impl DiffView {
                 );
             }
             let kinds: Vec<LineKind> = hunk.lines.iter().map(|line| line.kind).collect();
+            let anchored: Vec<bool> = hunk
+                .lines
+                .iter()
+                .map(|line| line_anchor(line).is_some_and(|(s, n)| placement.covers(s, n)))
+                .collect();
             let section = self.sections.for_path(file.display_path());
-            for run in foldable_runs(&kinds, self.display_context) {
+            for run in foldable_runs(&kinds, self.display_context, &anchored) {
                 let scope = enclosing_scope(&hunk.lines, run.end, &section);
                 doc.folds.push(Fold {
-                    start: content_base + run.start,
-                    end: content_base + run.end,
+                    start: line_row[run.start],
+                    end: line_row[run.end - 1] + 1,
                     marker: self.fold_marker(run.end - run.start, scope),
                 });
             }
         }
+    }
+
+    /// The review summary row heading, the top-of-document target for review
+    /// comments and the jump-to-top landing spot.
+    fn review_summary(&self) -> Line<'static> {
+        Line::from(Span::styled(
+            "Review",
+            Style::default()
+                .fg(color(self.theme.review_fg))
+                .add_modifier(Modifier::BOLD),
+        ))
+    }
+
+    /// Append `comment` as a header row plus its body rows, indented by `indent`,
+    /// and record the collapsible region so a resolved comment starts collapsed.
+    fn push_comment(&self, doc: &mut Document, file: usize, comment: &CommentState, indent: usize) {
+        let header = doc.rows.len();
+        doc.push(
+            file,
+            RowKind::CommentHeader { id: comment.id },
+            self.comment_header(comment, indent),
+        );
+        let body_start = doc.rows.len();
+        for text in comment.body.trim_end().split('\n') {
+            doc.push(
+                file,
+                RowKind::CommentBody { id: comment.id },
+                self.comment_body(text, indent),
+            );
+        }
+        doc.comments.push(CommentRegion {
+            id: comment.id,
+            header,
+            body: body_start..doc.rows.len(),
+            collapsed_default: comment.resolved,
+        });
+    }
+
+    /// A comment's header line: a marker, the author and kind, and status badges.
+    fn comment_header(&self, comment: &CommentState, indent: usize) -> Line<'static> {
+        let mut spans = vec![
+            Span::styled(
+                format!("{:indent$}* ", ""),
+                Style::default().fg(color(self.theme.comment_flag_fg)),
+            ),
+            Span::styled(
+                format!("{} ({})", comment.author.name, comment.author.kind.as_str()),
+                Style::default().fg(color(self.theme.comment_author_fg)),
+            ),
+        ];
+        for (text, warn) in badges(comment) {
+            let fg = if warn {
+                self.theme.comment_warn_fg
+            } else {
+                self.theme.comment_flag_fg
+            };
+            spans.push(Span::styled(
+                format!(" [{text}]"),
+                Style::default().fg(color(fg)),
+            ));
+        }
+        Line::from(spans)
+    }
+
+    /// One line of a comment's body, indented under its header.
+    fn comment_body(&self, text: &str, indent: usize) -> Line<'static> {
+        Line::from(Span::styled(
+            format!("{:indent$}  {text}", ""),
+            Style::default().fg(color(self.theme.comment_fg)),
+        ))
     }
 
     /// The line shown in place of `hidden` collapsed rows, indented to align
@@ -361,15 +511,17 @@ fn lineno(number: Option<wiff_diff::LineNo>) -> String {
 }
 
 /// The runs of unchanged content lines to fold away, given `kinds` for one
-/// hunk's lines and the number of `context` lines to keep beside each change.
+/// hunk's lines, the number of `context` lines to keep beside each change, and
+/// which lines are `anchored` by a comment.
 ///
-/// A line is kept when it is a change or within `context` lines of one; the
-/// maximal runs of the remaining lines are folded, skipping any run too short to
-/// be worth collapsing.
-fn foldable_runs(kinds: &[LineKind], context: usize) -> Vec<Range<usize>> {
+/// A line is kept when it is a change, when it carries a comment, or when it is
+/// within `context` lines of either; the maximal runs of the remaining lines are
+/// folded, skipping any run too short to be worth collapsing. Keeping a comment's
+/// line splits an otherwise-foldable run around it rather than hiding it.
+fn foldable_runs(kinds: &[LineKind], context: usize, anchored: &[bool]) -> Vec<Range<usize>> {
     let mut kept = vec![false; kinds.len()];
     for (i, kind) in kinds.iter().enumerate() {
-        if matches!(kind, LineKind::Added | LineKind::Removed) {
+        if matches!(kind, LineKind::Added | LineKind::Removed) || anchored[i] {
             let lo = i.saturating_sub(context);
             let hi = (i + context + 1).min(kinds.len());
             for near in &mut kept[lo..hi] {
@@ -405,6 +557,128 @@ fn enclosing_scope<'a>(lines: &'a [DiffLine], below: usize, section: &Section) -
         .map(|i| lines[i].text.as_str())
         .find(|text| section.is_definition(text))
         .map(str::trim)
+}
+
+/// The `(side, lineno)` a diff line is addressed by, matching how content rows
+/// are emitted: removed lines by their before number, context and added lines by
+/// their after number.
+fn line_anchor(line: &DiffLine) -> Option<(Side, u32)> {
+    match line.kind {
+        LineKind::Removed => line.old_lineno.map(|n| (Side::Before, n.get())),
+        LineKind::Context | LineKind::Added => line.new_lineno.map(|n| (Side::After, n.get())),
+    }
+}
+
+/// The `(side, lineno)` pairs a file renders, so a line comment whose anchor is
+/// gone can be floated to the file header rather than dropped.
+fn rendered_anchors(file: &FileDiff) -> Vec<(Side, u32)> {
+    file.hunks
+        .iter()
+        .flat_map(|hunk| hunk.lines.iter())
+        .filter_map(line_anchor)
+        .collect()
+}
+
+/// A comment's status badges as `(text, is_warning)`, in display order.
+fn badges(comment: &CommentState) -> Vec<(&'static str, bool)> {
+    let mut out = Vec::new();
+    if comment.resolved {
+        out.push(("resolved", false));
+    }
+    match comment.confidence {
+        Some(Confidence::Approximate) => out.push(("shifted", true)),
+        Some(Confidence::Outdated) => out.push(("outdated", true)),
+        Some(Confidence::Exact) | None => {}
+    }
+    out
+}
+
+/// A live line comment with the range it anchors, so a fold splits around it.
+struct LineComment<'a> {
+    side: Side,
+    start: u32,
+    end: u32,
+    comment: &'a CommentState,
+}
+
+/// Where each live comment attaches within one render.
+struct Placement<'a> {
+    /// Review-level comments, shown under the summary row.
+    review: Vec<&'a CommentState>,
+    /// Per-file placement, indexed by file index.
+    files: Vec<FilePlacement<'a>>,
+}
+
+/// One file's placed comments.
+#[derive(Default)]
+struct FilePlacement<'a> {
+    /// Whole-file comments, and line comments whose anchor no longer matches a
+    /// rendered line, shown under the file header.
+    header: Vec<&'a CommentState>,
+    /// Line comments, each above the line it anchors.
+    lines: Vec<LineComment<'a>>,
+}
+
+impl<'a> Placement<'a> {
+    /// Sort `comments` into review, whole-file, and per-line placement. A line
+    /// comment whose anchored line is no longer rendered floats to its file
+    /// header. A comment naming an unknown file is skipped.
+    fn new(diff: &Diff, comments: &'a [CommentState]) -> Self {
+        let mut files: Vec<FilePlacement<'a>> = (0..diff.files.len())
+            .map(|_| FilePlacement::default())
+            .collect();
+        let addressable: Vec<Vec<(Side, u32)>> = diff.files.iter().map(rendered_anchors).collect();
+        let index_of = |path: &str| diff.files.iter().position(|f| f.display_path() == path);
+        let mut review = Vec::new();
+        for comment in comments {
+            match &comment.target {
+                CommentTarget::Review => review.push(comment),
+                CommentTarget::File { file } => {
+                    if let Some(i) = index_of(file) {
+                        files[i].header.push(comment);
+                    }
+                }
+                CommentTarget::Lines {
+                    file,
+                    side,
+                    start_line,
+                    end_line,
+                } => {
+                    let Some(i) = index_of(file) else { continue };
+                    let (start, end) = (start_line.get(), end_line.get());
+                    if addressable[i].contains(&(*side, start)) {
+                        files[i].lines.push(LineComment {
+                            side: *side,
+                            start,
+                            end,
+                            comment,
+                        });
+                    } else {
+                        files[i].header.push(comment);
+                    }
+                }
+            }
+        }
+        Self { review, files }
+    }
+}
+
+impl<'a> FilePlacement<'a> {
+    /// The comments anchored to start at the line `(side, lineno)` addresses.
+    fn at(&self, side: Side, lineno: u32) -> impl Iterator<Item = &'a CommentState> + '_ {
+        self.lines
+            .iter()
+            .filter(move |lc| lc.side == side && lc.start == lineno)
+            .map(|lc| lc.comment)
+    }
+
+    /// Whether any line comment's range covers `(side, lineno)`, keeping the line
+    /// out of a fold.
+    fn covers(&self, side: Side, lineno: u32) -> bool {
+        self.lines
+            .iter()
+            .any(|lc| lc.side == side && lc.start <= lineno && lineno <= lc.end)
+    }
 }
 
 /// A short label for a file's change status.
@@ -518,11 +792,67 @@ pub(crate) mod testutil {
 #[cfg(test)]
 mod tests {
     use ratatui::text::Line;
-    use wiff_diff::{Diff, FileStatus, LineKind};
+    use ulid::Ulid;
+    use wiff_core::record::{Author, AuthorKind, CommentTarget, Confidence};
+    use wiff_core::review::CommentState;
+    use wiff_diff::{Diff, FileStatus, LineKind, Side};
 
-    use super::DiffView;
-    use super::testutil::{dump, file};
+    use super::testutil::{dump, file, ln};
+    use super::{CommentRegion, DiffView};
     use crate::theme::Theme;
+
+    /// A comment with the given identity, author, target, and body; not resolved
+    /// and exactly anchored unless the test overrides those fields.
+    fn comment(
+        id: u128,
+        author: (&str, AuthorKind),
+        target: CommentTarget,
+        body: &str,
+    ) -> CommentState {
+        CommentState {
+            id: Ulid(id),
+            author: Author {
+                name: author.0.to_string(),
+                kind: author.1,
+            },
+            target,
+            version: 0,
+            anchor: None,
+            body: body.to_string(),
+            resolved: false,
+            deleted: false,
+            confidence: None,
+            created_seq: 0,
+            updated_seq: 0,
+        }
+    }
+
+    /// A line-range target on the after side over `start..=end` of `file`.
+    fn on_lines(file: &str, start: u32, end: u32) -> CommentTarget {
+        CommentTarget::Lines {
+            file: file.to_string(),
+            side: Side::After,
+            start_line: ln(start),
+            end_line: ln(end),
+        }
+    }
+
+    /// Each comment region as `id: header,body_start..body_end collapsed=<bool>`,
+    /// so the collapsible structure is asserted alongside the rendered lines.
+    fn regions(regions: &[CommentRegion]) -> String {
+        let mut out = String::new();
+        for region in regions {
+            out.push_str(&format!(
+                "{}: header {} body {}..{} collapsed={}\n",
+                region.id.0,
+                region.header,
+                region.body.start,
+                region.body.end,
+                region.collapsed_default,
+            ));
+        }
+        out
+    }
 
     #[test]
     fn renders_a_modified_file_with_headers_gutter_and_syntax_colors() {
@@ -603,11 +933,175 @@ mod tests {
         // Leading, interior, and trailing runs of context, keeping one line on
         // each side of the two changes.
         let kinds = [C, C, C, A, C, C, C, C, C, A, C, C, C];
-        k9::assert_equal!(super::foldable_runs(&kinds, 1), vec![0..2, 5..8, 11..13]);
+        let none = vec![false; kinds.len()];
+        k9::assert_equal!(
+            super::foldable_runs(&kinds, 1, &none),
+            vec![0..2, 5..8, 11..13]
+        );
         // With enough context to reach across every gap, nothing folds.
         k9::assert_equal!(
-            super::foldable_runs(&kinds, 5),
+            super::foldable_runs(&kinds, 5, &none),
             Vec::<std::ops::Range<usize>>::new()
         );
+    }
+
+    #[test]
+    fn a_line_comment_renders_in_a_block_above_the_line_it_anchors() {
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[
+                    (LineKind::Context, "let x = 1;", 1),
+                    (LineKind::Added, "let y = 2;", 2),
+                ],
+            )],
+        };
+        let comments = vec![comment(
+            1,
+            ("wez", AuthorKind::Human),
+            on_lines("src/lib.rs", 2, 2),
+            "why 2?",
+        )];
+        let doc = DiffView::new(Theme::dark())
+            .unwrap()
+            .render_review(&diff, &comments);
+        let lines = "\
+<#ebcb8b|-|b>Review
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,2 +1,2 @@
+<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#8a8a8a|-|->            * <#8fa1b3|-|->wez (human)
+<#c0c5ce|-|->              why 2?
+<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
+";
+        k9::assert_equal!(dump(&doc.lines), lines.to_string());
+        // The header row precedes the single body row, which is the collapsible
+        // range; an unresolved comment starts expanded.
+        let expected_regions = "1: header 4 body 5..6 collapsed=false\n";
+        k9::assert_equal!(regions(&doc.comments), expected_regions.to_string());
+    }
+
+    #[test]
+    fn a_resolved_comment_region_starts_collapsed() {
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[(LineKind::Added, "let y = 2;", 1)],
+            )],
+        };
+        let mut resolved = comment(
+            7,
+            ("opus", AuthorKind::Agent),
+            on_lines("src/lib.rs", 1, 1),
+            "done",
+        );
+        resolved.resolved = true;
+        let doc = DiffView::new(Theme::dark())
+            .unwrap()
+            .render_review(&diff, &[resolved]);
+        let lines = "\
+<#ebcb8b|-|b>Review
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,1 +1,1 @@
+<#8a8a8a|-|->            * <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]
+<#c0c5ce|-|->              done
+<#65737e|#2d3b30|->        1 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
+";
+        k9::assert_equal!(dump(&doc.lines), lines.to_string());
+        let expected_regions = "7: header 3 body 4..5 collapsed=true\n";
+        k9::assert_equal!(regions(&doc.comments), expected_regions.to_string());
+    }
+
+    #[test]
+    fn the_review_summary_row_leads_the_document_and_carries_review_comments() {
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[(LineKind::Added, "let y = 2;", 1)],
+            )],
+        };
+        let comments = vec![comment(
+            3,
+            ("wez", AuthorKind::Human),
+            CommentTarget::Review,
+            "looks good overall",
+        )];
+        let doc = DiffView::new(Theme::dark())
+            .unwrap()
+            .render_review(&diff, &comments);
+        let lines = "\
+<#ebcb8b|-|b>Review
+<#8a8a8a|-|->  * <#8fa1b3|-|->wez (human)
+<#c0c5ce|-|->    looks good overall
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,1 +1,1 @@
+<#65737e|#2d3b30|->        1 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
+";
+        k9::assert_equal!(dump(&doc.lines), lines.to_string());
+    }
+
+    #[test]
+    fn a_line_comment_inside_a_long_run_splits_the_fold_around_it() {
+        // A comment on a context line far from the change keeps that line and
+        // its surrounding context, leaving a fold both above and below it rather
+        // than hiding the commented line.
+        let mut lines: Vec<(LineKind, String, u32)> = (1..=19)
+            .map(|n| (LineKind::Context, format!("ctx{n:02}"), n))
+            .collect();
+        lines.push((LineKind::Added, "change!".to_string(), 20));
+        let borrowed: Vec<(LineKind, &str, u32)> =
+            lines.iter().map(|(k, t, n)| (*k, t.as_str(), *n)).collect();
+        let diff = Diff {
+            files: vec![file("notes.txt", FileStatus::Modified, &borrowed)],
+        };
+        let comments = vec![comment(
+            9,
+            ("wez", AuthorKind::Human),
+            on_lines("notes.txt", 6, 6),
+            "here",
+        )];
+        let doc = DiffView::new(Theme::dark())
+            .unwrap()
+            .render_review(&diff, &comments);
+        let markers: Vec<Line<'static>> = doc.folds.iter().map(|f| f.marker.clone()).collect();
+        let expected = "\
+<#8a8a8a|-|->            [2 unchanged lines]  ctx02
+<#8a8a8a|-|->            [7 unchanged lines]  ctx16
+";
+        k9::assert_equal!(dump(&markers), expected.to_string());
+    }
+
+    #[test]
+    fn an_outdated_comment_whose_line_is_gone_floats_to_the_file_header() {
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[(LineKind::Added, "let y = 2;", 1)],
+            )],
+        };
+        // A comment anchored to line 40, which this file does not render.
+        let mut outdated = comment(
+            5,
+            ("dev", AuthorKind::Human),
+            on_lines("src/lib.rs", 40, 40),
+            "stale",
+        );
+        outdated.confidence = Some(Confidence::Outdated);
+        let doc = DiffView::new(Theme::dark())
+            .unwrap()
+            .render_review(&diff, &[outdated]);
+        let lines = "\
+<#ebcb8b|-|b>Review
+<#c0c5ce|-|b>modified  src/lib.rs
+<#8a8a8a|-|->  * <#8fa1b3|-|->dev (human)<#d08770|-|-> [outdated]
+<#c0c5ce|-|->    stale
+<#96b5b4|-|->@@ -1,1 +1,1 @@
+<#65737e|#2d3b30|->        1 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
+";
+        k9::assert_equal!(dump(&doc.lines), lines.to_string());
     }
 }

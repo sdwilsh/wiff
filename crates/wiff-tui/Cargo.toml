@@ -11,6 +11,7 @@ workspace = true
 ratatui = { workspace = true, features = ["crossterm"] }
 serde = { workspace = true }
 thiserror.workspace = true
+ulid.workspace = true
 wiff-core.workspace = true
 wiff-diff.workspace = true
 

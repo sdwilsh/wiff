@@ -36,6 +36,16 @@ pub struct Theme {
     pub status_fg: Rgb,
     /// The background of the status line at the bottom of the screen.
     pub status_bg: Rgb,
+    /// The heading color of the review summary row at the top of the document.
+    pub review_fg: Rgb,
+    /// The body text color of a comment.
+    pub comment_fg: Rgb,
+    /// The color of a comment's author attribution.
+    pub comment_author_fg: Rgb,
+    /// The color of a muted comment badge such as `resolved`.
+    pub comment_flag_fg: Rgb,
+    /// The color of a warning comment badge such as `shifted` or `outdated`.
+    pub comment_warn_fg: Rgb,
 }
 
 impl Theme {
@@ -55,6 +65,11 @@ impl Theme {
             fold_fg: rgb(0x8a, 0x8a, 0x8a),
             status_fg: rgb(0xc0, 0xc5, 0xce),
             status_bg: rgb(0x34, 0x3d, 0x46),
+            review_fg: rgb(0xeb, 0xcb, 0x8b),
+            comment_fg: rgb(0xc0, 0xc5, 0xce),
+            comment_author_fg: rgb(0x8f, 0xa1, 0xb3),
+            comment_flag_fg: rgb(0x8a, 0x8a, 0x8a),
+            comment_warn_fg: rgb(0xd0, 0x87, 0x70),
         }
     }
 }
