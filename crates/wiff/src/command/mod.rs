@@ -5,6 +5,7 @@
 mod comment;
 mod new;
 mod render;
+mod session;
 
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -19,6 +20,7 @@ use wiff_core::session::{active_session, data_dir, session_file};
 use self::comment::CommentArgs;
 use self::new::NewArgs;
 use self::render::RenderArgs;
+use self::session::SessionArgs;
 
 /// The top-level subcommands.
 #[derive(Debug, Subcommand)]
@@ -28,7 +30,7 @@ pub enum Command {
     /// Resume an existing review session.
     Resume,
     /// Manage sessions.
-    Session,
+    Session(SessionArgs),
     /// Capture a new diff version into a session and rebase comments.
     Refresh,
     /// Add or manage comments.
@@ -44,7 +46,8 @@ impl Command {
             Command::New(args) => args.run().await,
             Command::Comment(args) => args.run().await,
             Command::Render(args) => args.run(),
-            Command::Resume | Command::Session | Command::Refresh => {
+            Command::Session(args) => args.run(),
+            Command::Resume | Command::Refresh => {
                 bail!("not yet implemented");
             }
         }
