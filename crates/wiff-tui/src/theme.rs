@@ -32,6 +32,10 @@ pub struct Theme {
     pub cursor_bg: Rgb,
     /// The text color of a fold marker standing in for hidden unchanged lines.
     pub fold_fg: Rgb,
+    /// The text color of the status line at the bottom of the screen.
+    pub status_fg: Rgb,
+    /// The background of the status line at the bottom of the screen.
+    pub status_bg: Rgb,
 }
 
 impl Theme {
@@ -49,6 +53,8 @@ impl Theme {
             removed_emphasis_bg: rgb(0x5a, 0x3a, 0x40),
             cursor_bg: rgb(0x4f, 0x5b, 0x66),
             fold_fg: rgb(0x8a, 0x8a, 0x8a),
+            status_fg: rgb(0xc0, 0xc5, 0xce),
+            status_bg: rgb(0x34, 0x3d, 0x46),
         }
     }
 }

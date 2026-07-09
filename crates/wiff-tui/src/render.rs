@@ -43,6 +43,8 @@ pub struct Document {
     pub rows: Vec<Row>,
     /// The foldable runs of unchanged rows, in row order, non-overlapping.
     pub folds: Vec<Fold>,
+    /// The display path of each file, indexed by [`Row::file`].
+    pub files: Vec<String>,
 }
 
 /// A run of unchanged rows that can be collapsed behind a single marker line.
@@ -122,6 +124,11 @@ impl DiffView {
             lines: Vec::new(),
             rows: Vec::new(),
             folds: Vec::new(),
+            files: diff
+                .files
+                .iter()
+                .map(|f| f.display_path().to_string())
+                .collect(),
         };
         for (index, file) in diff.files.iter().enumerate() {
             self.render_file(index, file, &mut doc);

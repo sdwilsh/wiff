@@ -5,14 +5,18 @@
 //! navigation [`Action`]s (line, page, file, and hunk movement, and toggling a
 //! fold) and reports any other action back to the host to handle. The cursor row
 //! is washed with the theme's selection color so the reviewer can see where they
-//! are.
+//! are, and single-line movement scrolls the view early to keep a margin of
+//! rows on either side of the cursor rather than pinning it to an edge. The
+//! cursor opens centered in the viewport so a review starts mid-screen. A status
+//! line names the file the cursor is in and how far through the view it sits.
 //!
 //! Long runs of unchanged lines are folded away: the document carries the
 //! foldable runs, and the app keeps each one collapsed until the reviewer
 //! expands it, so the cursor and viewport move over a view that reflects what is
 //! actually shown rather than every underlying row.
 
-use ratatui::text::Line;
+use ratatui::style::Style;
+use ratatui::text::{Line, Span};
 use wiff_diff::Rgb;
 
 use crate::action::Action;
@@ -64,7 +68,12 @@ pub struct App {
     cursor: usize,
     top: usize,
     height: usize,
+    /// Whether the initial cursor has been centered in the viewport, which
+    /// happens once the first real height is known.
+    positioned: bool,
     cursor_bg: Rgb,
+    status_fg: Rgb,
+    status_bg: Rgb,
 }
 
 impl App {
@@ -79,7 +88,10 @@ impl App {
             cursor: 0,
             top: 0,
             height,
+            positioned: false,
             cursor_bg: theme.cursor_bg,
+            status_fg: theme.status_fg,
+            status_bg: theme.status_bg,
         };
         app.rebuild_view();
         app
@@ -95,9 +107,16 @@ impl App {
         self.top
     }
 
-    /// Resize the viewport to `height` rows, keeping the cursor visible.
+    /// Resize the viewport to `height` rows, keeping the cursor visible. The
+    /// first time a real height is applied the cursor is centered in the
+    /// viewport, so a review opens with the cursor mid-screen and a single move
+    /// scrolls at once rather than walking to an edge.
     pub fn set_height(&mut self, height: usize) {
         self.height = height;
+        if !self.positioned && height > 0 {
+            self.positioned = true;
+            self.cursor = (height / 2).min(self.last_view());
+        }
         self.scroll_into_view();
     }
 
@@ -286,12 +305,62 @@ impl App {
         }
     }
 
-    /// Slide the viewport so the cursor row is visible.
+    /// Slide the viewport so the cursor row stays visible with a scrolloff
+    /// margin of rows above and below it, as far as the ends of the view allow.
     fn scroll_into_view(&mut self) {
-        if self.cursor < self.top {
-            self.top = self.cursor;
-        } else if self.height > 0 && self.cursor >= self.top + self.height {
-            self.top = self.cursor + 1 - self.height;
+        if self.height == 0 {
+            return;
+        }
+        // A third of the viewport is kept between the cursor and either edge so a
+        // single-line move on a tall screen still scrolls the view rather than
+        // walking the cursor a long way to the edge first. Half the height less
+        // one is the most a centered cursor leaves room for.
+        let margin = (self.height / 3).min((self.height - 1) / 2);
+        let above = self.cursor.saturating_sub(margin);
+        if self.top > above {
+            self.top = above;
+        }
+        let below = (self.cursor + margin + 1).saturating_sub(self.height);
+        if self.top < below {
+            self.top = below;
+        }
+        self.top = self.top.min(self.max_top());
+    }
+
+    /// The status line for the bottom of the screen: the file the cursor is in
+    /// and how far through the view it sits, filled to `width`.
+    pub fn status(&self, width: usize) -> Line<'static> {
+        let path = self
+            .cursor_file()
+            .and_then(|file| self.document.files.get(file))
+            .map(String::as_str)
+            .unwrap_or("");
+        let percent = self.progress_percent();
+        let text: String = format!("{path}  {percent}%").chars().take(width).collect();
+        Line::from(Span::styled(
+            format!("{text:<width$}"),
+            Style::default()
+                .fg(color(self.status_fg))
+                .bg(color(self.status_bg)),
+        ))
+    }
+
+    /// The file index the cursor is in: its own row's file, or the file of the
+    /// first row hidden by the fold the cursor is on.
+    fn cursor_file(&self) -> Option<usize> {
+        let row = match self.view.get(self.cursor)? {
+            ViewRow::Row(row) => *row,
+            ViewRow::Fold(fold) => self.document.folds[*fold].start,
+        };
+        self.document.rows.get(row).map(|row| row.file)
+    }
+
+    /// How far the cursor sits through the view, from zero at the top to a
+    /// hundred at the last row.
+    fn progress_percent(&self) -> usize {
+        match self.last_view() {
+            0 => 100,
+            last => self.cursor * 100 / last,
         }
     }
 
@@ -366,6 +435,20 @@ mod tests {
         DiffView::new(Theme::dark()).unwrap().render(&diff)
     }
 
+    /// A single added file long enough that the cursor scrolls with a margin
+    /// well before reaching the bottom of a tall viewport.
+    fn tall_document() -> crate::render::Document {
+        let lines: Vec<(LineKind, String, u32)> = (1..=20)
+            .map(|n| (LineKind::Added, format!("row{n:02}"), n))
+            .collect();
+        let borrowed: Vec<(LineKind, &str, u32)> =
+            lines.iter().map(|(k, t, n)| (*k, t.as_str(), *n)).collect();
+        let diff = Diff {
+            files: vec![file("long.txt", FileStatus::Added, &borrowed)],
+        };
+        DiffView::new(Theme::dark()).unwrap().render(&diff)
+    }
+
     /// Drive `actions` through a fresh app over `document` and return its cursor,
     /// top, and the dumped visible lines.
     fn drive(
@@ -401,26 +484,64 @@ mod tests {
     }
 
     #[test]
-    fn line_down_moves_the_cursor_and_scrolls_when_it_reaches_the_bottom() {
-        // Four line-downs on a height-3 view: the cursor reaches row 4, so the
-        // viewport has scrolled to show rows 2..5.
-        let (cursor, top, visible) = after(
-            3,
-            &[
-                Action::LineDown,
-                Action::LineDown,
-                Action::LineDown,
-                Action::LineDown,
-            ],
-        );
-        k9::assert_equal!(cursor, 4);
-        k9::assert_equal!(top, 2);
+    fn setting_the_height_centers_the_initial_cursor() {
+        // Applying a height of nine (as the first draw does) drops the cursor
+        // onto the middle visible row with the view still anchored at the top.
+        let mut app = App::new(tall_document(), 0, &Theme::dark());
+        app.set_height(9);
+        k9::assert_equal!(app.cursor(), 4);
+        k9::assert_equal!(app.top(), 0);
         let expected = "\
-<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
-<#c0c5ce|#4f5b66|b>added  notes.txt
+<#c0c5ce|-|b>added  long.txt
+<#96b5b4|-|->@@ -1,20 +1,20 @@
+<#65737e|#2d3b30|->        1 + <#c0c5ce|#2d3b30|->row01
+<#65737e|#2d3b30|->        2 + <#c0c5ce|#2d3b30|->row02
+<#65737e|#4f5b66|->        3 + <#c0c5ce|#4f5b66|->row03
+<#65737e|#2d3b30|->        4 + <#c0c5ce|#2d3b30|->row04
+<#65737e|#2d3b30|->        5 + <#c0c5ce|#2d3b30|->row05
+<#65737e|#2d3b30|->        6 + <#c0c5ce|#2d3b30|->row06
+<#65737e|#2d3b30|->        7 + <#c0c5ce|#2d3b30|->row07
+";
+        k9::assert_equal!(dump(&app.visible()), expected.to_string());
+    }
+
+    #[test]
+    fn line_down_keeps_a_third_of_the_viewport_below_the_cursor() {
+        // Twelve line-downs on a height-9 view: a third of nine is three, so the
+        // cursor scrolls to sit three rows above the bottom rather than pinned to
+        // the last visible line.
+        let actions = [Action::LineDown; 12];
+        let (cursor, top, visible) = drive(tall_document(), 9, &actions);
+        k9::assert_equal!(cursor, 12);
+        k9::assert_equal!(top, 7);
+        let expected = "\
+<#65737e|#2d3b30|->        6 + <#c0c5ce|#2d3b30|->row06
+<#65737e|#2d3b30|->        7 + <#c0c5ce|#2d3b30|->row07
+<#65737e|#2d3b30|->        8 + <#c0c5ce|#2d3b30|->row08
+<#65737e|#2d3b30|->        9 + <#c0c5ce|#2d3b30|->row09
+<#65737e|#2d3b30|->       10 + <#c0c5ce|#2d3b30|->row10
+<#65737e|#4f5b66|->       11 + <#c0c5ce|#4f5b66|->row11
+<#65737e|#2d3b30|->       12 + <#c0c5ce|#2d3b30|->row12
+<#65737e|#2d3b30|->       13 + <#c0c5ce|#2d3b30|->row13
+<#65737e|#2d3b30|->       14 + <#c0c5ce|#2d3b30|->row14
 ";
         k9::assert_equal!(visible, expected.to_string());
+    }
+
+    #[test]
+    fn the_status_line_names_the_cursor_file_and_progress() {
+        // At the top the first file is named and progress is zero; jumping to
+        // the second file names it and shows how far through the view it sits.
+        let mut app = App::new(document(), 10, &Theme::dark());
+        k9::assert_equal!(
+            dump(&[app.status(28)]),
+            "<#c0c5ce|#343d46|->src/lib.rs  0%              \n".to_string()
+        );
+        app.update(Action::NextFile);
+        k9::assert_equal!(
+            dump(&[app.status(28)]),
+            "<#c0c5ce|#343d46|->notes.txt  66%              \n".to_string()
+        );
     }
 
     #[test]

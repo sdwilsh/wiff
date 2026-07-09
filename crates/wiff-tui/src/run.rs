@@ -15,6 +15,7 @@ use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use ratatui::layout::Rect;
 use ratatui::widgets::Paragraph;
 
 use crate::action::Action;
@@ -42,13 +43,25 @@ pub fn run(app: App, keymap: Keymap) -> io::Result<Exit> {
     event_loop(&mut terminal.terminal, app, keymap)
 }
 
-/// Draw the current view: the visible lines painted over the whole area, with
-/// the app resized to the area first so its viewport matches the screen.
+/// Draw the current view: the visible lines over all but the last screen row,
+/// with a status line filling that last row. The app is resized to the document
+/// area first so its viewport matches the space the status line leaves.
 pub fn draw<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
     terminal.draw(|frame| {
         let area = frame.area();
-        app.set_height(area.height as usize);
-        frame.render_widget(Paragraph::new(app.visible()), area);
+        let doc_height = area.height.saturating_sub(1);
+        app.set_height(doc_height as usize);
+        let doc_area = Rect {
+            height: doc_height,
+            ..area
+        };
+        let status_area = Rect {
+            y: area.y + doc_height,
+            height: 1,
+            ..area
+        };
+        frame.render_widget(Paragraph::new(app.visible()), doc_area);
+        frame.render_widget(Paragraph::new(app.status(area.width as usize)), status_area);
     })?;
     Ok(())
 }
@@ -151,13 +164,14 @@ mod tests {
         let document = DiffView::new(Theme::dark()).expect("view").render(&diff);
         let app = App::new(document, 0, &Theme::dark());
 
-        // A 30x4 screen shows the three rendered rows and one blank pad row,
-        // each padded to the 30-column width.
+        // A 30x4 screen shows the three rendered rows over the top three lines
+        // and the status line filling the last, each padded to 30 columns. The
+        // cursor opens centered, halfway through the three-row view.
         let expected = concat!(
             "modified  src/lib.rs          \n",
             "@@ -1,1 +1,1 @@               \n",
             "   1    1   let x = 1;        \n",
-            "                              \n",
+            "src/lib.rs  50%               \n",
         );
         k9::assert_equal!(screen(30, 4, app), expected.to_string());
     }
