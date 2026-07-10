@@ -327,16 +327,16 @@ mod tests {
         // the box does not cover it.
         let expected = concat!(
             "Review [press c here to draft the review comment] \n",
-            "  *┌You have uncommitted comments─────────────┐   \n",
-            "   │> Commit review                           │   \n",
-            "mod│  Quit without saving                     │   \n",
-            "@@ │  Remove session                          │   \n",
-            "   │                                          │   \n",
+            "┌ w┌You have uncommitted comments─────────────┐──┐\n",
+            "│wh│> Commit review                           │  │\n",
+            "└──│  Quit without saving                     │──┘\n",
+            "mod│  Remove session                          │   \n",
+            "@@ │                                          │   \n",
             "   │  up/down move   enter select   esc cancel│   \n",
             "   └──────────────────────────────────────────┘   \n",
             "                                                  \n",
             "                                                  \n",
-            "src/lib.rs                                    100%\n",
+            "src/lib.rs                                     83%\n",
         );
         k9::assert_equal!(screen(50, 11, app), expected.to_string());
     }

@@ -344,13 +344,14 @@ impl App {
         match self.kind_at(self.cursor)? {
             RowKind::ReviewSummary => Some((
                 CommentTarget::Review,
-                self.cursor + 1,
+                self.skip_comment_rows(self.cursor + 1),
                 "new review comment".to_string(),
             )),
             RowKind::FileHeader => {
                 let path = self.document.files.get(self.cursor_file()?)?.clone();
                 let label = format!("new comment  {path}");
-                Some((CommentTarget::File { file: path }, self.cursor + 1, label))
+                let anchor = self.skip_comment_rows(self.cursor + 1);
+                Some((CommentTarget::File { file: path }, anchor, label))
             }
             RowKind::Content {
                 side,
@@ -447,10 +448,21 @@ impl App {
         // the editor does not scroll the view out from under the reviewer. Only
         // when those rows would leave no room for the editor do we scroll up.
         let above_start = self.top.max(anchor.saturating_sub(doc_shown)).min(anchor);
-        let below_end = (anchor + (doc_shown - (anchor - above_start))).min(self.view.len());
-        let filled = |i| fill_line(self.line_at(i), self.fill_at(i), width);
-        let above = (above_start..anchor).map(filled).collect();
-        let below = (anchor..below_end).map(filled).collect();
+        // When revising an existing comment, drop its rendered rows from the
+        // view below the editor so the editor stands in its place rather than
+        // sitting atop the box it is editing.
+        let below_start = anchor
+            + compose
+                .editing()
+                .map_or(0, |id| self.comment_rows(anchor, id));
+        let below_count = doc_shown - (anchor - above_start);
+        let below_end = (below_start + below_count).min(self.view.len());
+        let above = (above_start..anchor)
+            .map(|i| self.decorate(i, width))
+            .collect();
+        let below = (below_start..below_end)
+            .map(|i| self.decorate(i, width))
+            .collect();
         Some(ComposeView {
             above,
             editor: compose.editor(),
@@ -685,39 +697,42 @@ impl App {
         }
     }
 
-    /// The lines currently in view. The cursor row is washed in the selection
-    /// color across the full `width` so the highlight fills the screen; every
-    /// other row that carries a background fills its own row to that width so the
-    /// tint reaches the edge rather than stopping at the last character.
+    /// The lines currently in view, drawn out to the full `width`: comment rows
+    /// as box edges, diff rows tinted to the edge by role, and the cursor row
+    /// washed in the selection color on top of whichever of those it is.
     pub fn visible(&self, width: usize) -> Vec<Line<'static>> {
         let end = (self.top + self.height).min(self.view.len());
         (self.top..end)
             .map(|i| {
-                let line = self.line_at(i);
+                let line = self.decorate(i, width);
                 if i == self.cursor {
                     wash(line, self.cursor_bg, width)
                 } else {
-                    fill_line(line, self.fill_at(i), width)
+                    line
                 }
             })
             .collect()
     }
 
-    /// The background view row `index` fills its row width with: the document
-    /// row's fill, or the collapsed fold's fill when a marker stands in for it.
-    fn fill_at(&self, index: usize) -> Option<Rgb> {
+    /// The fully drawn line for view row `index` at `width`, before any cursor
+    /// wash: a comment's box edges, a diff row's role tint filled to the edge, or
+    /// the fold marker filled with the status color.
+    fn decorate(&self, index: usize, width: usize) -> Line<'static> {
         match self.view[index] {
-            ViewRow::Row(row) => self.document.fills[row],
-            ViewRow::Fold(fold) => self.document.folds[fold].fill,
-        }
-    }
-
-    /// The line to draw for view row `index`: the document line, or the fold's
-    /// marker when it stands in for a collapsed run.
-    fn line_at(&self, index: usize) -> Line<'static> {
-        match self.view[index] {
-            ViewRow::Row(row) => self.document.lines[row].clone(),
-            ViewRow::Fold(fold) => self.document.folds[fold].marker.clone(),
+            ViewRow::Fold(fold) => {
+                let marker = self.document.folds[fold].marker.clone();
+                fill_line(marker, self.document.folds[fold].fill, width)
+            }
+            ViewRow::Row(row) => {
+                let line = self.document.lines[row].clone();
+                let fill = self.document.fills[row];
+                match self.document.rows[row].kind {
+                    RowKind::CommentHeader { .. } => box_top(line, fill, width),
+                    RowKind::CommentBody { .. } => box_side(line, fill, width),
+                    RowKind::CommentBottom { .. } => box_bottom(fill, width),
+                    _ => fill_line(line, fill, width),
+                }
+            }
         }
     }
 
@@ -839,12 +854,52 @@ impl App {
         self.focus_comment(id);
     }
 
-    /// The comment the cursor is on, whether on its header or its body.
+    /// The comment the cursor is on, whether on the box's top edge, a body line,
+    /// or the bottom edge.
     fn comment_at_cursor(&self) -> Option<Ulid> {
         match self.kind_at(self.cursor)? {
-            RowKind::CommentHeader { id } | RowKind::CommentBody { id } => Some(*id),
+            RowKind::CommentHeader { id }
+            | RowKind::CommentBody { id }
+            | RowKind::CommentBottom { id } => Some(*id),
             _ => None,
         }
+    }
+
+    /// The count of consecutive view rows starting at `anchor` that render
+    /// comment `id`: its header, its body when expanded, and its bottom edge.
+    fn comment_rows(&self, anchor: usize, id: Ulid) -> usize {
+        let mut count = 0;
+        while anchor + count < self.view.len() {
+            match self.kind_at(anchor + count) {
+                Some(
+                    RowKind::CommentHeader { id: row_id }
+                    | RowKind::CommentBody { id: row_id }
+                    | RowKind::CommentBottom { id: row_id },
+                ) if *row_id == id => count += 1,
+                _ => break,
+            }
+        }
+        count
+    }
+
+    /// The first view row at or after `from` that is not part of a comment box,
+    /// so a newly authored comment's editor lands after the comments already
+    /// placed there, where its own rendered box will appear once saved.
+    fn skip_comment_rows(&self, from: usize) -> usize {
+        let mut index = from;
+        while index < self.view.len()
+            && matches!(
+                self.kind_at(index),
+                Some(
+                    RowKind::CommentHeader { .. }
+                        | RowKind::CommentBody { .. }
+                        | RowKind::CommentBottom { .. }
+                )
+            )
+        {
+            index += 1;
+        }
+        index
     }
 
     /// The document row of comment `id`'s header line.
@@ -1000,6 +1055,68 @@ fn status_row(left: &str, right: &str, width: usize) -> String {
     let left: String = left.chars().take(room).collect();
     let gap = room - left.chars().count();
     format!("{left}{:gap$}{right}", "")
+}
+
+/// The style for a comment box's border in `color`, or an unstyled border when
+/// no color is set.
+fn border_style(border: Option<Rgb>) -> Style {
+    match border {
+        Some(rgb) => Style::default().fg(color(rgb)),
+        None => Style::default(),
+    }
+}
+
+/// The number of columns the spans of `line` occupy.
+fn line_width(line: &Line<'static>) -> usize {
+    line.spans
+        .iter()
+        .map(|span| span.content.chars().count())
+        .sum()
+}
+
+/// Draw the top edge of a comment box out to `width`: the corner, the row's
+/// spans as the title, then a rule to the closing corner at the last column.
+fn box_top(title: Line<'static>, border: Option<Rgb>, width: usize) -> Line<'static> {
+    let style = border_style(border);
+    let mut spans = vec![Span::styled("\u{250c} ", style)];
+    let mut used = 2;
+    for span in title.spans {
+        used += span.content.chars().count();
+        spans.push(span);
+    }
+    spans.push(Span::styled(" ", style));
+    used += 1;
+    if width > used + 1 {
+        spans.push(Span::styled("\u{2500}".repeat(width - used - 1), style));
+    }
+    spans.push(Span::styled("\u{2510}", style));
+    Line::from(spans)
+}
+
+/// Draw a body row of a comment box out to `width`: the left edge, the content,
+/// blank cells to the last column, then the right edge.
+fn box_side(content: Line<'static>, border: Option<Rgb>, width: usize) -> Line<'static> {
+    let style = border_style(border);
+    let used = 1 + line_width(&content);
+    let mut spans = vec![Span::styled("\u{2502}", style)];
+    spans.extend(content.spans);
+    if width > used + 1 {
+        spans.push(Span::styled(" ".repeat(width - used - 1), Style::default()));
+    }
+    spans.push(Span::styled("\u{2502}", style));
+    Line::from(spans)
+}
+
+/// Draw the bottom edge of a comment box out to `width`: the corners joined by a
+/// rule.
+fn box_bottom(border: Option<Rgb>, width: usize) -> Line<'static> {
+    let style = border_style(border);
+    let mut text = String::from("\u{2514}");
+    if width > 2 {
+        text.push_str(&"\u{2500}".repeat(width - 2));
+    }
+    text.push('\u{2518}');
+    Line::from(Span::styled(text, style))
 }
 
 /// Return `line` padded with blank cells in `fill` out to `width`, so a row that
@@ -1526,11 +1643,13 @@ mod tests {
 <#ebcb8b|#4f5b66|b>Review<#8a8a8a|#4f5b66|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#8a8a8a|-|->            * <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]
+<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit<#65737e|-|-> <#65737e|-|->┐
+<#65737e|-|->└──────────────────────────────────────┘
 <#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#8a8a8a|-|->            * <#8fa1b3|-|->wez (human)
-<#c0c5ce|-|->              why 2?
-<#c0c5ce|-|->              say more
+<#65737e|-|->┌ <#8fa1b3|-|->wez (human)<#8a8a8a|-|->  press e to edit<#65737e|-|-> <#65737e|-|->────────<#65737e|-|->┐
+<#65737e|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#65737e|-|->│
+<#65737e|-|->│<#c0c5ce|-|->say more<-|-|->                              <#65737e|-|->│
+<#65737e|-|->└──────────────────────────────────────┘
 <#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
 ";
         k9::assert_equal!(visible, expected.to_string());
@@ -1547,7 +1666,7 @@ mod tests {
             12,
             &[Action::NextComment, Action::NextComment],
         );
-        k9::assert_equal!(cursor, 5);
+        k9::assert_equal!(cursor, 6);
         let (cursor, _, _) = drive(
             commented_document(),
             12,
@@ -1574,15 +1693,17 @@ mod tests {
                 Action::ToggleComment,
             ],
         );
-        k9::assert_equal!(cursor, 5);
+        k9::assert_equal!(cursor, 6);
         k9::assert_equal!(top, 0);
         let expected = "\
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#8a8a8a|-|->            * <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]
+<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit<#65737e|-|-> <#65737e|-|->┐
+<#65737e|-|->└──────────────────────────────────────┘
 <#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#8a8a8a|#4f5b66|->            * <#8fa1b3|#4f5b66|->wez (human)<-|#4f5b66|->               
+<#65737e|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#8a8a8a|#4f5b66|->  press e to edit<#65737e|#4f5b66|-> <#65737e|#4f5b66|->────────<#65737e|#4f5b66|->┐
+<#65737e|-|->└──────────────────────────────────────┘
 <#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
 ";
         k9::assert_equal!(visible, expected.to_string());
@@ -1597,16 +1718,18 @@ mod tests {
                 Action::ToggleComment,
             ],
         );
-        k9::assert_equal!(cursor, 5);
+        k9::assert_equal!(cursor, 6);
         let expected = "\
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#8a8a8a|-|->            * <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]
+<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit<#65737e|-|-> <#65737e|-|->┐
+<#65737e|-|->└──────────────────────────────────────┘
 <#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#8a8a8a|#4f5b66|->            * <#8fa1b3|#4f5b66|->wez (human)<-|#4f5b66|->               
-<#c0c5ce|-|->              why 2?
-<#c0c5ce|-|->              say more
+<#65737e|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#8a8a8a|#4f5b66|->  press e to edit<#65737e|#4f5b66|-> <#65737e|#4f5b66|->────────<#65737e|#4f5b66|->┐
+<#65737e|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#65737e|-|->│
+<#65737e|-|->│<#c0c5ce|-|->say more<-|-|->                              <#65737e|-|->│
+<#65737e|-|->└──────────────────────────────────────┘
 <#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
 ";
         k9::assert_equal!(visible, expected.to_string());
@@ -1625,17 +1748,19 @@ mod tests {
                 Action::ResolveComment,
             ],
         );
-        k9::assert_equal!(cursor, 5);
+        k9::assert_equal!(cursor, 6);
         k9::assert_equal!(top, 0);
         let expected = "\
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#8a8a8a|-|->            * <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]
+<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit<#65737e|-|-> <#65737e|-|->┐
+<#65737e|-|->└──────────────────────────────────────┘
 <#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#8a8a8a|#4f5b66|->            * <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<#8a8a8a|#4f5b66|-> [resolved]
-<#c0c5ce|-|->              why 2?
-<#c0c5ce|-|->              say more
+<#a3be8c|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<#8a8a8a|#4f5b66|-> [resolved]<#8a8a8a|#4f5b66|->  press e to edit<#a3be8c|#4f5b66|-> <#a3be8c|#4f5b66|->┐
+<#a3be8c|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#a3be8c|-|->│
+<#a3be8c|-|->│<#c0c5ce|-|->say more<-|-|->                              <#a3be8c|-|->│
+<#a3be8c|-|->└──────────────────────────────────────┘
 <#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
 ";
         k9::assert_equal!(visible, expected.to_string());
@@ -1655,15 +1780,17 @@ mod tests {
                 Action::DeleteComment,
             ],
         );
-        k9::assert_equal!(cursor, 5);
+        k9::assert_equal!(cursor, 6);
         k9::assert_equal!(top, 0);
         let expected = "\
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#8a8a8a|-|->            * <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]
+<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit<#65737e|-|-> <#65737e|-|->┐
+<#65737e|-|->└──────────────────────────────────────┘
 <#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#8a8a8a|#4f5b66|->            * <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<#8a8a8a|#4f5b66|-> [deleted]
+<#a3be8c|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<#8a8a8a|#4f5b66|-> [deleted]<#8a8a8a|#4f5b66|->  press e to edit<#a3be8c|#4f5b66|-> <#a3be8c|#4f5b66|->┐
+<#a3be8c|-|->└──────────────────────────────────────┘
 <#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
 ";
         k9::assert_equal!(visible, expected.to_string());
@@ -1684,17 +1811,19 @@ mod tests {
                 Action::DeleteComment,
             ],
         );
-        k9::assert_equal!(cursor, 5);
+        k9::assert_equal!(cursor, 6);
         k9::assert_equal!(top, 0);
         let expected = "\
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#8a8a8a|-|->            * <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]
+<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit<#65737e|-|-> <#65737e|-|->┐
+<#65737e|-|->└──────────────────────────────────────┘
 <#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#8a8a8a|#4f5b66|->            * <#8fa1b3|#4f5b66|->wez (human)<-|#4f5b66|->               
-<#c0c5ce|-|->              why 2?
-<#c0c5ce|-|->              say more
+<#65737e|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#8a8a8a|#4f5b66|->  press e to edit<#65737e|#4f5b66|-> <#65737e|#4f5b66|->────────<#65737e|#4f5b66|->┐
+<#65737e|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#65737e|-|->│
+<#65737e|-|->│<#c0c5ce|-|->say more<-|-|->                              <#65737e|-|->│
+<#65737e|-|->└──────────────────────────────────────┘
 <#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
 ";
         k9::assert_equal!(visible, expected.to_string());
@@ -1741,8 +1870,9 @@ mod tests {
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
 <#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#8a8a8a|#4f5b66|->            * <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<-|#4f5b66|->       
-<#c0c5ce|-|->              why 2?
+<#a3be8c|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<#8a8a8a|#4f5b66|->  press e to edit<#a3be8c|#4f5b66|-> <#a3be8c|#4f5b66|->┐
+<#a3be8c|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#a3be8c|-|->│
+<#a3be8c|-|->└──────────────────────────────────────┘
 <#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
 ";
         k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
@@ -1835,13 +1965,71 @@ why 2?
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#8a8a8a|-|->            * <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]
+<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit<#65737e|-|-> <#65737e|-|->┐
+<#65737e|-|->└──────────────────────────────────────┘
 <#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#8a8a8a|#4f5b66|->            * <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<-|#4f5b66|->       
-<#c0c5ce|-|->              use a constant
+<#a3be8c|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<#8a8a8a|#4f5b66|->  press e to edit<#a3be8c|#4f5b66|-> <#a3be8c|#4f5b66|->┐
+<#a3be8c|-|->│<#c0c5ce|-|->use a constant<-|-|->                        <#a3be8c|-|->│
+<#a3be8c|-|->└──────────────────────────────────────┘
 <#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
 ";
         k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+    }
+
+    #[test]
+    fn editing_a_comment_hides_its_rendered_box_behind_the_editor() {
+        // Editing the unresolved comment drops its rendered box from the split:
+        // the editor stands where the box was, the resolved comment above it
+        // stays, and the anchored code sits just below the editor.
+        let mut app = App::reviewing(commented_review(), 12, &Theme::dark());
+        app.update(Action::NextComment);
+        app.update(Action::NextComment);
+        app.update(Action::EditComment);
+        let view = app.compose_view(TEST_WIDTH).expect("composing");
+        let expected = "\
+<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,2 +1,2 @@
+<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit<#65737e|-|-> <#65737e|-|->┐
+<#65737e|-|->└──────────────────────────────────────┘
+<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+--editor--
+why 2?
+say more
+--below--
+<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
+";
+        k9::assert_equal!(dump_compose(&view), expected.to_string());
+    }
+
+    #[test]
+    fn a_new_review_comment_opens_below_the_existing_review_comments() {
+        // With a review comment already placed under the summary, authoring
+        // another opens the editor below it, where its box will render, rather
+        // than wedged between the summary and the existing comment.
+        let mut app = App::reviewing(commented_review(), 12, &Theme::dark());
+        app.update(Action::AddComment);
+        typed(&mut app, "first");
+        app.compose_key(save());
+        app.update(Action::Top);
+        app.update(Action::AddComment);
+        typed(&mut app, "second");
+        let view = app.compose_view(TEST_WIDTH).expect("composing");
+        let expected = "\
+<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
+<#a3be8c|-|->┌ <#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#8a8a8a|-|->  press e to edit<#a3be8c|-|-> <#a3be8c|-|->┐
+<#a3be8c|-|->│<#c0c5ce|-|->first<-|-|->                                 <#a3be8c|-|->│
+<#a3be8c|-|->└──────────────────────────────────────┘
+--editor--
+second
+--below--
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,2 +1,2 @@
+<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit<#65737e|-|-> <#65737e|-|->┐
+<#65737e|-|->└──────────────────────────────────────┘
+<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+";
+        k9::assert_equal!(dump_compose(&view), expected.to_string());
     }
 
     /// The status-line text an app currently shows at the test width.
@@ -1950,8 +2138,9 @@ why 2?
 <#96b5b4|-|->@@ -1,3 +1,3 @@
 <#65737e|#2d3b30|->        1 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> a <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->0<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
 <#65737e|-|->   2    2   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#8a8a8a|-|->            * <#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]
-<#c0c5ce|-|->              why?
+<#a3be8c|-|->┌ <#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#8a8a8a|-|->  press e to edit<#a3be8c|-|-> <#a3be8c|-|->┐
+<#a3be8c|-|->│<#c0c5ce|-|->why?<-|-|->                                  <#a3be8c|-|->│
+<#a3be8c|-|->└──────────────────────────────────────┘
 <#65737e|#2d3b30|->        3 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
 ";
         k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());

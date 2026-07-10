@@ -429,8 +429,9 @@ modified  f.txt
    1    2   alpha
    2    3   beta
    3    4   gamma
-            * wez (human)
-              why delta?
+┌ wez (human)  press e to edit ────────────────────────────────────────────────┐
+│why delta?                                                                    │
+└──────────────────────────────────────────────────────────────────────────────┘
         5 + delta
 ---
 captured v1; rebased 1 comment: 1 exact, 0 shifted, 0 outdated

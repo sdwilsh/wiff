@@ -106,6 +106,16 @@ impl Compose {
         self.kind
     }
 
+    /// The id of the comment this editor revises, or `None` when it authors a
+    /// new one. The review hides the rendered form of this comment while it is
+    /// being edited, so the editor stands in its place.
+    pub fn editing(&self) -> Option<Ulid> {
+        match self.kind {
+            ComposeKind::Edit(id) => Some(id),
+            ComposeKind::Add(_) => None,
+        }
+    }
+
     /// Whether a cancel is awaiting confirmation.
     pub fn confirming(&self) -> bool {
         self.confirming

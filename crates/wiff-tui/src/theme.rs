@@ -44,6 +44,8 @@ pub struct Theme {
     pub comment_fg: Rgb,
     /// The color of a comment's author attribution.
     pub comment_author_fg: Rgb,
+    /// The border color of a committed comment's box.
+    pub comment_border_fg: Rgb,
     /// The color of a muted comment badge such as `resolved`.
     pub comment_flag_fg: Rgb,
     /// The color of a warning comment badge such as `shifted` or `outdated`.
@@ -73,6 +75,7 @@ impl Theme {
             review_fg: rgb(0xeb, 0xcb, 0x8b),
             comment_fg: rgb(0xc0, 0xc5, 0xce),
             comment_author_fg: rgb(0x8f, 0xa1, 0xb3),
+            comment_border_fg: rgb(0x65, 0x73, 0x7e),
             comment_flag_fg: rgb(0x8a, 0x8a, 0x8a),
             comment_warn_fg: rgb(0xd0, 0x87, 0x70),
             comment_draft_fg: rgb(0xa3, 0xbe, 0x8c),

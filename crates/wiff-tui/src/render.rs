@@ -42,10 +42,6 @@ const MIN_FOLD: usize = 2;
 /// comments, which resolve to no path in the status line.
 const NO_FILE: usize = usize::MAX;
 
-/// The indent for comments not aligned to the code column, the review and
-/// whole-file comments.
-const COMMENT_INDENT: usize = 2;
-
 /// The context lines kept on each side of a change when nothing overrides it.
 pub const DEFAULT_DISPLAY_CONTEXT: usize = 3;
 
@@ -68,7 +64,9 @@ pub struct Document {
     pub files: Vec<String>,
 }
 
-/// A rendered comment: its header row and the body rows that collapse behind it.
+/// A rendered comment box: its top-edge header row and the body rows that
+/// collapse behind it, closed off by a bottom-edge row that stays visible even
+/// when the body is collapsed away.
 pub struct CommentRegion {
     /// The annotation's stable identity.
     pub id: Ulid,
@@ -120,14 +118,20 @@ pub enum RowKind {
     },
     /// The review summary row at the top of the document.
     ReviewSummary,
-    /// A comment's header line, naming its author and status.
+    /// A comment box's top edge, whose title names the author, status, and how
+    /// to edit.
     CommentHeader {
         /// The annotation the header belongs to.
         id: Ulid,
     },
-    /// One line of a comment's body.
+    /// One line of a comment's body, inside the box.
     CommentBody {
         /// The annotation the body belongs to.
+        id: Ulid,
+    },
+    /// A comment box's bottom edge, closing the box below its body.
+    CommentBottom {
+        /// The annotation the box belongs to.
         id: Ulid,
     },
 }
@@ -148,6 +152,7 @@ pub struct DiffView {
     theme: Theme,
     display_context: usize,
     sections: SectionMatchers,
+    edit_key: String,
 }
 
 impl DiffView {
@@ -159,7 +164,15 @@ impl DiffView {
             theme,
             display_context: DEFAULT_DISPLAY_CONTEXT,
             sections: SectionMatchers::builtins(),
+            edit_key: "e".to_string(),
         })
+    }
+
+    /// Show `key` in each comment box's edit hint, so the header names the actual
+    /// key the reviewer's bindings resolve the edit action to.
+    pub fn with_edit_key(mut self, key: String) -> Self {
+        self.edit_key = key;
+        self
     }
 
     /// Keep `context` unchanged lines on each side of a change before folding the
@@ -225,13 +238,7 @@ impl DiffView {
                 self.review_summary(),
             );
             for comment in &placement.review {
-                self.push_comment(
-                    &mut doc,
-                    NO_FILE,
-                    comment,
-                    COMMENT_INDENT,
-                    pending.contains(&comment.id),
-                );
+                self.push_comment(&mut doc, NO_FILE, comment, pending.contains(&comment.id));
             }
         }
         for (index, file) in diff.files.iter().enumerate() {
@@ -252,13 +259,7 @@ impl DiffView {
     ) {
         doc.push(index, RowKind::FileHeader, None, self.file_header(file));
         for comment in &placement.header {
-            self.push_comment(
-                doc,
-                index,
-                comment,
-                COMMENT_INDENT,
-                pending.contains(&comment.id),
-            );
+            self.push_comment(doc, index, comment, pending.contains(&comment.id));
         }
         let before = self.highlighter.highlight_side(file, Side::Before);
         let after = self.highlighter.highlight_side(file, Side::After);
@@ -286,13 +287,7 @@ impl DiffView {
                 };
                 if let Some(n) = lineno {
                     for comment in placement.at(side, n.get()) {
-                        self.push_comment(
-                            doc,
-                            index,
-                            comment,
-                            GUTTER_WIDTH,
-                            pending.contains(&comment.id),
-                        );
+                        self.push_comment(doc, index, comment, pending.contains(&comment.id));
                     }
                 }
                 line_row.push(doc.rows.len());
@@ -338,57 +333,62 @@ impl DiffView {
         ])
     }
 
-    /// Append `comment` as a header row plus its body rows, indented by `indent`,
-    /// and record the collapsible region so a resolved comment starts collapsed.
-    fn push_comment(
-        &self,
-        doc: &mut Document,
-        file: usize,
-        comment: &CommentState,
-        indent: usize,
-        pending: bool,
-    ) {
+    /// Append `comment` as a box: a top-edge header row, one row per body line,
+    /// and a bottom-edge row, all sharing the box border color. The header and
+    /// bottom rows stay visible when the body collapses, so a folded comment
+    /// still reads as a closed box. Records the collapsible body range so a
+    /// resolved comment starts collapsed.
+    fn push_comment(&self, doc: &mut Document, file: usize, comment: &CommentState, pending: bool) {
+        let border = self.comment_border(pending);
         let header = doc.rows.len();
         doc.push(
             file,
             RowKind::CommentHeader { id: comment.id },
-            None,
-            self.comment_header(comment, indent, pending),
+            Some(border),
+            self.comment_title(comment, pending),
         );
         let body_start = doc.rows.len();
         for text in comment.body.trim_end().split('\n') {
             doc.push(
                 file,
                 RowKind::CommentBody { id: comment.id },
-                None,
-                self.comment_body(text, indent),
+                Some(border),
+                self.comment_body(text),
             );
         }
+        let body_end = doc.rows.len();
+        doc.push(
+            file,
+            RowKind::CommentBottom { id: comment.id },
+            Some(border),
+            Line::default(),
+        );
         doc.comments.push(CommentRegion {
             id: comment.id,
             header,
-            body: body_start..doc.rows.len(),
+            body: body_start..body_end,
             collapsed_default: comment.resolved || comment.deleted,
         });
     }
 
-    /// A comment's header line: a marker, the author and kind, and status badges.
-    fn comment_header(
-        &self,
-        comment: &CommentState,
-        indent: usize,
-        pending: bool,
-    ) -> Line<'static> {
-        let mut spans = vec![
-            Span::styled(
-                format!("{:indent$}* ", ""),
-                Style::default().fg(color(self.theme.comment_flag_fg)),
-            ),
-            Span::styled(
-                format!("{} ({})", comment.author.name, comment.author.kind.as_str()),
-                Style::default().fg(color(self.theme.comment_author_fg)),
-            ),
-        ];
+    /// The box border color for a comment: the draft accent while it has
+    /// uncommitted edits, matching the editor it came from, else the muted
+    /// committed-comment border.
+    fn comment_border(&self, pending: bool) -> Rgb {
+        if pending {
+            self.theme.comment_draft_fg
+        } else {
+            self.theme.comment_border_fg
+        }
+    }
+
+    /// The title shown along a comment box's top edge: the author and kind, the
+    /// status badges, and a dimmed hint at the key that edits the comment.
+    fn comment_title(&self, comment: &CommentState, pending: bool) -> Line<'static> {
+        let mut spans = vec![Span::styled(
+            format!("{} ({})", comment.author.name, comment.author.kind.as_str()),
+            Style::default().fg(color(self.theme.comment_author_fg)),
+        )];
         for (text, style) in badges(comment, pending) {
             let fg = match style {
                 BadgeStyle::Muted => self.theme.comment_flag_fg,
@@ -400,13 +400,17 @@ impl DiffView {
                 Style::default().fg(color(fg)),
             ));
         }
+        spans.push(Span::styled(
+            format!("  press {} to edit", self.edit_key),
+            Style::default().fg(color(self.theme.fold_fg)),
+        ));
         Line::from(spans)
     }
 
-    /// One line of a comment's body, indented under its header.
-    fn comment_body(&self, text: &str, indent: usize) -> Line<'static> {
+    /// One line of a comment's body, shown inside the box.
+    fn comment_body(&self, text: &str) -> Line<'static> {
         Line::from(Span::styled(
-            format!("{:indent$}  {text}", ""),
+            text.to_string(),
             Style::default().fg(color(self.theme.comment_fg)),
         ))
     }
@@ -1124,8 +1128,9 @@ mod tests {
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
 <#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#8a8a8a|-|->            * <#8fa1b3|-|->wez (human)
-<#c0c5ce|-|->              why 2?
+<#8fa1b3|-|->wez (human)<#8a8a8a|-|->  press e to edit
+<#c0c5ce|-|->why 2?
+
 <#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
 ";
         k9::assert_equal!(dump(&doc.lines), lines.to_string());
@@ -1157,8 +1162,9 @@ mod tests {
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,1 +1,1 @@
-<#8a8a8a|-|->            * <#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]
-<#c0c5ce|-|->              why 2?
+<#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#8a8a8a|-|->  press e to edit
+<#c0c5ce|-|->why 2?
+
 <#65737e|#2d3b30|->        1 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
 ";
         k9::assert_equal!(dump(&doc.lines), lines.to_string());
@@ -1187,8 +1193,9 @@ mod tests {
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,1 +1,1 @@
-<#8a8a8a|-|->            * <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]
-<#c0c5ce|-|->              done
+<#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit
+<#c0c5ce|-|->done
+
 <#65737e|#2d3b30|->        1 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
 ";
         k9::assert_equal!(dump(&doc.lines), lines.to_string());
@@ -1216,8 +1223,9 @@ mod tests {
             .render_review(&diff, &comments, &[]);
         let lines = "\
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
-<#8a8a8a|-|->  * <#8fa1b3|-|->wez (human)
-<#c0c5ce|-|->    looks good overall
+<#8fa1b3|-|->wez (human)<#8a8a8a|-|->  press e to edit
+<#c0c5ce|-|->looks good overall
+
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,1 +1,1 @@
 <#65737e|#2d3b30|->        1 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
@@ -1279,8 +1287,9 @@ mod tests {
         let lines = "\
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
-<#8a8a8a|-|->  * <#8fa1b3|-|->dev (human)<#d08770|-|-> [outdated]
-<#c0c5ce|-|->    stale
+<#8fa1b3|-|->dev (human)<#d08770|-|-> [outdated]<#8a8a8a|-|->  press e to edit
+<#c0c5ce|-|->stale
+
 <#96b5b4|-|->@@ -1,1 +1,1 @@
 <#65737e|#2d3b30|->        1 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
 ";
