@@ -61,7 +61,7 @@ pub fn draw<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
             height: 1,
             ..area
         };
-        if let Some(compose) = app.compose_view() {
+        if let Some(compose) = app.compose_view(area.width as usize) {
             render_compose(frame, doc_area, compose);
         } else {
             frame.render_widget(Paragraph::new(app.visible(area.width as usize)), doc_area);
@@ -257,7 +257,7 @@ mod tests {
             "modified  src/lib.rs          \n",
             "@@ -1,1 +1,1 @@               \n",
             "   1    1   let x = 1;        \n",
-            "src/lib.rs  50%               \n",
+            "src/lib.rs                 50%\n",
         );
         k9::assert_equal!(screen(30, 4, app), expected.to_string());
     }
@@ -296,7 +296,7 @@ mod tests {
         // The editor renders as a bordered box titled with the target and the
         // save/cancel hint, sitting just above the added line it anchors.
         let expected = concat!(
-            "Review                        \n",
+            "Review [press c here to draft \n",
             "modified  src/lib.rs          \n",
             "@@ -1,2 +1,2 @@               \n",
             "   1    1   let x = 1;        \n",
@@ -304,7 +304,7 @@ mod tests {
             "│why 2?                      │\n",
             "└────────────────────────────┘\n",
             "        2 + let y = 2;        \n",
-            "src/lib.rs  100%              \n",
+            "src/lib.rs                100%\n",
         );
         k9::assert_equal!(screen(30, 9, app), expected.to_string());
     }
@@ -326,7 +326,7 @@ mod tests {
         // It clears the cells behind it, so the underlying diff shows only where
         // the box does not cover it.
         let expected = concat!(
-            "Review                                            \n",
+            "Review [press c here to draft the review comment] \n",
             "  *┌You have uncommitted comments─────────────┐   \n",
             "   │> Commit review                           │   \n",
             "mod│  Quit without saving                     │   \n",
@@ -336,7 +336,7 @@ mod tests {
             "   └──────────────────────────────────────────┘   \n",
             "                                                  \n",
             "                                                  \n",
-            "src/lib.rs  100%                                  \n",
+            "src/lib.rs                                    100%\n",
         );
         k9::assert_equal!(screen(50, 11, app), expected.to_string());
     }

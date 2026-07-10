@@ -55,6 +55,9 @@ pub const DEFAULT_DISPLAY_CONTEXT: usize = 3;
 pub struct Document {
     /// The styled lines, in draw order.
     pub lines: Vec<Line<'static>>,
+    /// The background each line fills its whole row width with, parallel to
+    /// `lines`; `None` for a row left to the terminal background.
+    pub fills: Vec<Option<Rgb>>,
     /// The metadata for each line, parallel to `lines`.
     pub rows: Vec<Row>,
     /// The foldable runs of unchanged rows, in row order, non-overlapping.
@@ -85,6 +88,8 @@ pub struct Fold {
     pub end: usize,
     /// The line shown in place of the hidden rows when collapsed.
     pub marker: Line<'static>,
+    /// The background the marker fills its whole row width with.
+    pub fill: Option<Rgb>,
 }
 
 /// What one rendered line corresponds to in the diff.
@@ -128,9 +133,11 @@ pub enum RowKind {
 }
 
 impl Document {
-    /// Append a styled line and its parallel row metadata.
-    fn push(&mut self, file: usize, kind: RowKind, line: Line<'static>) {
+    /// Append a styled line, the background it fills its row with, and its
+    /// parallel row metadata.
+    fn push(&mut self, file: usize, kind: RowKind, fill: Option<Rgb>, line: Line<'static>) {
         self.lines.push(line);
+        self.fills.push(fill);
         self.rows.push(Row { file, kind });
     }
 }
@@ -199,6 +206,7 @@ impl DiffView {
     ) -> Document {
         let mut doc = Document {
             lines: Vec::new(),
+            fills: Vec::new(),
             rows: Vec::new(),
             folds: Vec::new(),
             comments: Vec::new(),
@@ -210,7 +218,12 @@ impl DiffView {
         };
         let placement = Placement::new(diff, comments);
         if review_row {
-            doc.push(NO_FILE, RowKind::ReviewSummary, self.review_summary());
+            doc.push(
+                NO_FILE,
+                RowKind::ReviewSummary,
+                Some(self.theme.status_bg),
+                self.review_summary(),
+            );
             for comment in &placement.review {
                 self.push_comment(
                     &mut doc,
@@ -237,7 +250,7 @@ impl DiffView {
         pending: &[Ulid],
         doc: &mut Document,
     ) {
-        doc.push(index, RowKind::FileHeader, self.file_header(file));
+        doc.push(index, RowKind::FileHeader, None, self.file_header(file));
         for comment in &placement.header {
             self.push_comment(
                 doc,
@@ -253,6 +266,7 @@ impl DiffView {
             doc.push(
                 index,
                 RowKind::HunkHeader { hunk: hunk_index },
+                None,
                 self.hunk_header(hunk),
             );
             let emphasis = intraline::refine(&hunk.lines);
@@ -282,11 +296,8 @@ impl DiffView {
                     }
                 }
                 line_row.push(doc.rows.len());
-                doc.push(
-                    index,
-                    RowKind::Content { side, lineno },
-                    self.content_line(line, highlighted, ranges),
-                );
+                let (rendered, fill) = self.content_line(line, highlighted, ranges);
+                doc.push(index, RowKind::Content { side, lineno }, fill, rendered);
             }
             let kinds: Vec<LineKind> = hunk.lines.iter().map(|line| line.kind).collect();
             let anchored: Vec<bool> = hunk
@@ -301,20 +312,30 @@ impl DiffView {
                     start: line_row[run.start],
                     end: line_row[run.end - 1] + 1,
                     marker: self.fold_marker(run.end - run.start, scope),
+                    fill: Some(self.theme.status_bg),
                 });
             }
         }
     }
 
     /// The review summary row heading, the top-of-document target for review
-    /// comments and the jump-to-top landing spot.
+    /// comments and the jump-to-top landing spot, backed by the status bar color
+    /// with a dimmed hint at how to draft a review-level comment.
     fn review_summary(&self) -> Line<'static> {
-        Line::from(Span::styled(
-            "Review",
-            Style::default()
-                .fg(color(self.theme.review_fg))
-                .add_modifier(Modifier::BOLD),
-        ))
+        let bg = color(self.theme.status_bg);
+        Line::from(vec![
+            Span::styled(
+                "Review",
+                Style::default()
+                    .fg(color(self.theme.review_fg))
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " [press c here to draft the review comment]",
+                Style::default().fg(color(self.theme.fold_fg)).bg(bg),
+            ),
+        ])
     }
 
     /// Append `comment` as a header row plus its body rows, indented by `indent`,
@@ -331,6 +352,7 @@ impl DiffView {
         doc.push(
             file,
             RowKind::CommentHeader { id: comment.id },
+            None,
             self.comment_header(comment, indent, pending),
         );
         let body_start = doc.rows.len();
@@ -338,6 +360,7 @@ impl DiffView {
             doc.push(
                 file,
                 RowKind::CommentBody { id: comment.id },
+                None,
                 self.comment_body(text, indent),
             );
         }
@@ -403,7 +426,9 @@ impl DiffView {
         }
         Line::from(Span::styled(
             text,
-            Style::default().fg(color(self.theme.fold_fg)),
+            Style::default()
+                .fg(color(self.theme.fold_fg))
+                .bg(color(self.theme.status_bg)),
         ))
     }
 
@@ -438,13 +463,15 @@ impl DiffView {
     }
 
     /// One diff row: the gutter, the change marker, and the colored content,
-    /// tinted by the line's role with changed characters emphasized.
+    /// tinted by the line's role with changed characters emphasized. Also
+    /// returns the background the whole row fills its width with, so the tint
+    /// reaches the edge of the screen behind a shorter line.
     fn content_line(
         &self,
         line: &DiffLine,
         highlighted: Option<&HighlightedLine>,
         ranges: &[Range<usize>],
-    ) -> Line<'static> {
+    ) -> (Line<'static>, Option<Rgb>) {
         let (marker, row_bg, emphasis_bg) = match line.kind {
             LineKind::Context => (' ', None, None),
             LineKind::Added => (
@@ -459,7 +486,7 @@ impl DiffView {
             ),
         };
         let gutter_style = with_bg(Style::default().fg(color(self.theme.gutter_fg)), row_bg);
-        let mut spans = vec![Span::styled(
+        let gutter = Span::styled(
             format!(
                 "{} {} {} ",
                 lineno(line.old_lineno),
@@ -467,7 +494,8 @@ impl DiffView {
                 marker,
             ),
             gutter_style,
-        )];
+        );
+        let mut content = Vec::new();
         for piece in split_pieces(
             highlighted.map(Vec::as_slice).unwrap_or(&[]),
             &line.text,
@@ -478,13 +506,51 @@ impl DiffView {
             } else {
                 row_bg
             };
-            spans.push(Span::styled(
+            content.push(Span::styled(
                 piece.text,
                 with_bg(Style::default().fg(color(piece.fg)), bg),
             ));
         }
-        Line::from(spans)
+        // Flag trailing whitespace a change introduces, the way `git diff` warns
+        // on it, since it is easy to add and hard to see.
+        if line.kind == LineKind::Added {
+            mark_trailing_whitespace(&mut content, &line.text, self.theme.whitespace_bg);
+        }
+        let mut spans = vec![gutter];
+        spans.extend(content);
+        (Line::from(spans), row_bg)
     }
+}
+
+/// Recolor the background of any trailing whitespace in `spans`, whose text
+/// concatenates to the row content, so it stands out. Splits the span the
+/// whitespace begins in when it starts mid-span.
+fn mark_trailing_whitespace(spans: &mut Vec<Span<'static>>, text: &str, bg: Rgb) {
+    let trail = text.trim_end_matches([' ', '\t']).len();
+    if trail == text.len() {
+        return;
+    }
+    let mut out = Vec::with_capacity(spans.len());
+    let mut offset = 0;
+    for span in spans.drain(..) {
+        let start = offset;
+        let end = offset + span.content.len();
+        offset = end;
+        if end <= trail {
+            out.push(span);
+        } else if start >= trail {
+            out.push(Span::styled(span.content, span.style.bg(color(bg))));
+        } else {
+            let cut = trail - start;
+            let content = span.content.into_owned();
+            out.push(Span::styled(content[..cut].to_string(), span.style));
+            out.push(Span::styled(
+                content[cut..].to_string(),
+                span.style.bg(color(bg)),
+            ));
+        }
+    }
+    *spans = out;
 }
 
 /// A run of content sharing one foreground color and emphasis state.
@@ -966,6 +1032,31 @@ mod tests {
     }
 
     #[test]
+    fn trailing_whitespace_on_an_added_line_is_flagged() {
+        // The added line ends in two spaces, which get the whitespace warning
+        // background; the removed line's trailing space is left alone since the
+        // warning is only about whitespace a change introduces.
+        let diff = Diff {
+            files: vec![file(
+                "notes.txt",
+                FileStatus::Modified,
+                &[
+                    (LineKind::Removed, "old ", 1),
+                    (LineKind::Added, "new  ", 1),
+                ],
+            )],
+        };
+        let view = DiffView::new(Theme::dark()).unwrap();
+        let expected = "\
+<#c0c5ce|-|b>modified  notes.txt
+<#96b5b4|-|->@@ -1,2 +1,2 @@
+<#65737e|#3b2d30|->   1      - <#c0c5ce|#3b2d30|->old 
+<#65737e|#2d3b30|->        1 + <#c0c5ce|#2d3b30|->new<#c0c5ce|#9a2a2a|->  
+";
+        k9::assert_equal!(dump(&view.render(&diff).lines), expected.to_string());
+    }
+
+    #[test]
     fn a_fold_marker_names_the_enclosing_definition_of_the_content_below_it() {
         // A rust change buried below its function: the leading context folds and
         // its marker names the enclosing fn, found by scanning up past the
@@ -984,7 +1075,7 @@ mod tests {
         let doc = DiffView::new(Theme::dark()).unwrap().render(&diff);
         let markers: Vec<Line<'static>> = doc.folds.iter().map(|f| f.marker.clone()).collect();
         let expected = "\
-<#8a8a8a|-|->            [3 unchanged lines]  fn draw() {
+<#8a8a8a|#343d46|->            [3 unchanged lines]  fn draw() {
 ";
         k9::assert_equal!(dump(&markers), expected.to_string());
     }
@@ -1029,7 +1120,7 @@ mod tests {
             .unwrap()
             .render_review(&diff, &comments, &[]);
         let lines = "\
-<#ebcb8b|-|b>Review
+<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
 <#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
@@ -1063,7 +1154,7 @@ mod tests {
             .unwrap()
             .render_review(&diff, &comments, &[Ulid(1)]);
         let lines = "\
-<#ebcb8b|-|b>Review
+<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,1 +1,1 @@
 <#8a8a8a|-|->            * <#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]
@@ -1093,7 +1184,7 @@ mod tests {
             .unwrap()
             .render_review(&diff, &[resolved], &[]);
         let lines = "\
-<#ebcb8b|-|b>Review
+<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,1 +1,1 @@
 <#8a8a8a|-|->            * <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]
@@ -1124,7 +1215,7 @@ mod tests {
             .unwrap()
             .render_review(&diff, &comments, &[]);
         let lines = "\
-<#ebcb8b|-|b>Review
+<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#8a8a8a|-|->  * <#8fa1b3|-|->wez (human)
 <#c0c5ce|-|->    looks good overall
 <#c0c5ce|-|b>modified  src/lib.rs
@@ -1159,8 +1250,8 @@ mod tests {
             .render_review(&diff, &comments, &[]);
         let markers: Vec<Line<'static>> = doc.folds.iter().map(|f| f.marker.clone()).collect();
         let expected = "\
-<#8a8a8a|-|->            [2 unchanged lines]  ctx02
-<#8a8a8a|-|->            [7 unchanged lines]  ctx16
+<#8a8a8a|#343d46|->            [2 unchanged lines]  ctx02
+<#8a8a8a|#343d46|->            [7 unchanged lines]  ctx16
 ";
         k9::assert_equal!(dump(&markers), expected.to_string());
     }
@@ -1186,7 +1277,7 @@ mod tests {
             .unwrap()
             .render_review(&diff, &[outdated], &[]);
         let lines = "\
-<#ebcb8b|-|b>Review
+<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#8a8a8a|-|->  * <#8fa1b3|-|->dev (human)<#d08770|-|-> [outdated]
 <#c0c5ce|-|->    stale

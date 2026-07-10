@@ -152,8 +152,8 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
             Action::PageUp,
             vec![chord("b"), chord("ctrl-b"), chord("pageup")],
         ),
-        (Action::Top, vec![chord("g"), chord("home")]),
-        (Action::Bottom, vec![chord("G"), chord("end")]),
+        (Action::Top, vec![chord("g"), chord("<"), chord("home")]),
+        (Action::Bottom, vec![chord("G"), chord(">"), chord("end")]),
         (Action::NextFile, vec![chord(".")]),
         (Action::PrevFile, vec![chord(",")]),
         (Action::NextHunk, vec![chord("]")]),
@@ -214,6 +214,12 @@ mod tests {
         );
         k9::assert_equal!(
             map.resolve(&presses("G")),
+            Resolution::Action(Action::Bottom)
+        );
+        // less-style angle brackets also jump to the ends of the diff.
+        k9::assert_equal!(map.resolve(&presses("<")), Resolution::Action(Action::Top));
+        k9::assert_equal!(
+            map.resolve(&presses(">")),
             Resolution::Action(Action::Bottom)
         );
         k9::assert_equal!(

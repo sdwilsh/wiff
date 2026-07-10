@@ -422,7 +422,7 @@ mod tests {
         // rebased above the added delta on its new line, and the status line
         // reports the tally.
         let expected = "\
-Review
+Review [press c here to draft the review comment]
 modified  f.txt
 @@ -1,3 +1,5 @@
         1 + zero
