@@ -173,6 +173,17 @@ impl Review {
         !self.drafts.is_empty()
     }
 
+    /// How many effective comments are still open: neither resolved nor
+    /// withdrawn, with pending drafts applied so the tally follows the
+    /// reviewer's uncommitted edits.
+    pub fn open_comments(&self) -> usize {
+        self.drafts
+            .apply(&self.committed)
+            .into_iter()
+            .filter(|entry| !entry.comment.resolved && !entry.comment.deleted)
+            .count()
+    }
+
     /// Recapture the review over `diff` as version `version`, replacing the diff
     /// and its committed `comments` and rebasing pending drafts forward onto it.
     /// A drafted line comment moves through `old_diff`, which yields the parsed

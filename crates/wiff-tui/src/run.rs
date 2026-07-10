@@ -299,7 +299,7 @@ mod tests {
             "modified  src/lib.rs          \n",
             "@@ -1,1 +1,1 @@               \n",
             "   1    1   let x = 1;        \n",
-            "src/lib.rs                 50%\n",
+            "src/lib.rs         0 open  50%\n",
         );
         k9::assert_equal!(screen(30, 4, app), expected.to_string());
     }
@@ -346,7 +346,7 @@ mod tests {
             "│why 2?                      │\n",
             "└────────────────────────────┘\n",
             "        2 + let y = 2;        \n",
-            "src/lib.rs                100%\n",
+            "src/lib.rs        0 open  100%\n",
         );
         k9::assert_equal!(screen(30, 9, app), expected.to_string());
     }
@@ -378,7 +378,7 @@ mod tests {
             "   └──────────────────────────────────────────┘   \n",
             "                                                  \n",
             "                                                  \n",
-            "src/lib.rs                                     83%\n",
+            "src/lib.rs                           * 1 open  83%\n",
         );
         k9::assert_equal!(screen(50, 11, app), expected.to_string());
     }

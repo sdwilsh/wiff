@@ -1377,7 +1377,7 @@ impl App {
                 .and_then(|file| self.document.files.get(file))
                 .map(String::as_str)
                 .unwrap_or("");
-            status_row(path, &percent, width)
+            status_row(path, &self.status_meta(&percent), width)
         };
         Line::from(Span::styled(
             format!("{text:<width$}"),
@@ -1385,6 +1385,15 @@ impl App {
                 .fg(color(self.status_fg))
                 .bg(color(self.status_bg)),
         ))
+    }
+
+    /// The right-aligned status segment for the file view: a `*` when
+    /// uncommitted drafts are buffered, the number of open comments, and
+    /// `percent`, how far the cursor sits through the view.
+    fn status_meta(&self, percent: &str) -> String {
+        let marker = if self.has_drafts() { "* " } else { "" };
+        let open = self.review.as_ref().map_or(0, Review::open_comments);
+        format!("{marker}{open} open  {percent}")
     }
 
     /// The file index the cursor is in: its own row's file, or the file of the
@@ -1882,12 +1891,33 @@ mod tests {
         let mut app = App::new(document(), 10, &Theme::dark());
         k9::assert_equal!(
             dump(&[app.status(28)]),
-            "<#c0c5ce|#343d46|->src/lib.rs                0%\n".to_string()
+            "<#c0c5ce|#343d46|->src/lib.rs        0 open  0%\n".to_string()
         );
         app.update(Action::NextFile);
         k9::assert_equal!(
             dump(&[app.status(28)]),
-            "<#c0c5ce|#343d46|->notes.txt                66%\n".to_string()
+            "<#c0c5ce|#343d46|->notes.txt        0 open  66%\n".to_string()
+        );
+    }
+
+    #[test]
+    fn the_status_line_counts_open_comments_and_marks_uncommitted_edits() {
+        // The review holds one open comment and one resolved; the status counts
+        // the open one and shows no dirty marker. Reopening the resolved comment
+        // buffers a draft, so the count rises to two and a `*` marks the
+        // uncommitted edit.
+        let mut app = App::reviewing(commented_review(), 12, &Theme::dark());
+        for _ in 0..3 {
+            app.update(Action::LineDown);
+        }
+        k9::assert_equal!(
+            dump(&[app.status(28)]),
+            "<#c0c5ce|#343d46|->src/lib.rs       1 open  30%\n".to_string()
+        );
+        app.update(Action::ResolveComment);
+        k9::assert_equal!(
+            dump(&[app.status(28)]),
+            "<#c0c5ce|#343d46|->src/lib.rs     * 2 open  30%\n".to_string()
         );
     }
 
