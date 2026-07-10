@@ -46,7 +46,9 @@ pub fn open(session_path: &Path, config: &Config) -> anyhow::Result<()> {
     // anchored against the diff version being reviewed.
     let author = config.author.resolve(AuthorKind::Human);
     let review = Review::new(view, diff, author, version.number, comments);
-    let app = App::reviewing(review, 0, &theme).with_exit_default(exit_default(config.on_exit));
+    let app = App::reviewing(review, 0, &theme)
+        .with_exit_default(exit_default(config.on_exit))
+        .with_keymap(keymap.clone());
 
     // Refresh recaptures the diff and reloads the app in place; save commits the
     // pending drafts and keeps the review open. Any failure is reported in the
@@ -535,7 +537,7 @@ new file mode 100644
         for c in "why alpha?".chars() {
             app.compose_key(KeyPress::new(Key::Char(c)));
         }
-        app.compose_key(KeyPress::with_modifiers(Key::Char('s'), true, false, false));
+        app.compose_key(KeyPress::with_modifiers(Key::Char('d'), true, false, false));
 
         save_in_place(&session_path, &mut app).expect("save in place");
 

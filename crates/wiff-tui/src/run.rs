@@ -325,7 +325,7 @@ mod tests {
         for c in "why?".chars() {
             app.compose_key(KeyPress::new(Key::Char(c)));
         }
-        app.compose_key(KeyPress::with_modifiers(Key::Char('s'), true, false, false));
+        app.compose_key(KeyPress::with_modifiers(Key::Char('d'), true, false, false));
         app.update(Action::Quit);
 
         // The three-choice dialog floats centered over the review, the first

@@ -283,8 +283,9 @@ no thousand-line nested match driving the UI.
 
 Input is decoded into an **action** (an enum of intents: page up/down, next/prev
 file, next/prev hunk, next/prev comment, toggle fold, toggle comment, add
-comment, edit comment, resolve comment, delete comment, save, refresh,
-`open_in_editor`, `quit`, `quit_keep`, `quit_remove`, etc.). Nothing in the UI
+comment, edit comment, resolve comment, delete comment, submit comment, cancel
+comment, save, refresh, `open_in_editor`, `quit`, `quit_keep`, `quit_remove`,
+etc.). Nothing in the UI
 logic branches on raw keys; it branches on actions. This keeps bindings
 reassignable and keeps the update logic small.
 
@@ -356,6 +357,15 @@ is committed. Drafts render distinctly (a `draft` badge) so pending work is
 obvious. Reviews are not heavily concurrent (typically one human and sometimes
 one agent), so buffering the whole review and flushing on commit is acceptable;
 a crash loses only uncommitted drafts, like an editor's unsaved buffer.
+
+The inline comment editor is a separate input mode: while it is open the app
+hands most presses to the text buffer and honors only two actions,
+`submit_comment` (default `ctrl-d`) to move the typed body into the drafts and
+`cancel_comment` (default `esc`) to abandon it, confirming first when the body
+has changed. These are ordinary keymap actions, so they route through config
+like the rest. Submitting into the drafts is deliberately a different key and
+concept from `save`, which flushes the whole draft buffer to disk: an accidental
+repeat of the editor's confirm key cannot cross the draft-to-committed boundary.
 
 Committing flushes the pending drafts as append events. The `save` action does
 this while leaving the review open; leaving via the Commit choice does it on the

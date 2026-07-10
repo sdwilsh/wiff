@@ -4,7 +4,7 @@
 //! become: authoring one anchors it above the line it targets, revising one
 //! anchors it above the comment's header. The editor owns its own keys (cursor
 //! motion, word and line kills, undo); the app hands it every press except the
-//! two that leave it, save and cancel. Cancelling after the body has changed
+//! two that leave it, submit and cancel. Cancelling after the body has changed
 //! asks for confirmation first so an accidental keystroke cannot discard work.
 
 use ratatui::style::Style;
@@ -36,6 +36,8 @@ pub struct Compose {
     original: String,
     /// The heading naming what is being written, shown on the editor border.
     label: String,
+    /// The submit/cancel key hint shown alongside the label on the border.
+    hint: String,
     /// The color of the editor's border.
     border: Rgb,
     /// Whether a cancel with unsaved changes is awaiting a yes/no answer.
@@ -44,8 +46,16 @@ pub struct Compose {
 
 impl Compose {
     /// An editor for `kind`, rendered above view row `anchor`, seeded with
-    /// `seed` (empty when authoring), titled `label`, and bordered in `border`.
-    pub fn new(kind: ComposeKind, anchor: usize, seed: &str, label: String, border: Rgb) -> Self {
+    /// `seed` (empty when authoring), titled `label` with the submit/cancel
+    /// `hint` beside it, and bordered in `border`.
+    pub fn new(
+        kind: ComposeKind,
+        anchor: usize,
+        seed: &str,
+        label: String,
+        hint: String,
+        border: Rgb,
+    ) -> Self {
         let lines: Vec<String> = if seed.is_empty() {
             vec![String::new()]
         } else {
@@ -64,6 +74,7 @@ impl Compose {
             anchor,
             original: seed.to_string(),
             label,
+            hint,
             border,
             confirming: false,
         };
@@ -134,12 +145,12 @@ impl Compose {
     }
 
     /// Set the editor's border and title from its current state: the label plus
-    /// either the save/cancel hint or the discard confirmation.
+    /// either the submit/cancel hint or the discard confirmation.
     fn apply_block(&mut self) {
         let title = if self.confirming {
             format!(" {}  discard changes? y/n ", self.label)
         } else {
-            format!(" {}  ctrl-s save  esc cancel ", self.label)
+            format!(" {}  {} ", self.label, self.hint)
         };
         self.textarea.set_block(
             Block::default()

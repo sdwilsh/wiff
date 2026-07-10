@@ -28,6 +28,7 @@ use crate::action::Action;
 use crate::compose::{Compose, ComposeKind};
 use crate::exit::{Exit, ExitColors, ExitDefault, ExitDialog, ExitPlan, plan_exit};
 use crate::key::{Key, KeyPress};
+use crate::keymap::{Keymap, Resolution};
 use crate::render::{Document, RowKind, color};
 use crate::review::Review;
 use crate::theme::Theme;
@@ -127,6 +128,10 @@ pub struct App {
     status_bg: Rgb,
     /// The border color of the inline comment editor.
     compose_border: Rgb,
+    /// The active bindings, resolving a press to an action. In the review view
+    /// the host's own loop resolves keys; the app keeps the map to resolve the
+    /// inline editor's own submit and cancel keys while composing.
+    keymap: Keymap,
     /// The colors the exit dialog paints with.
     exit_colors: ExitColors,
     /// A transient note shown in the status line until the next key press, used
@@ -162,6 +167,7 @@ impl App {
             status_fg: theme.status_fg,
             status_bg: theme.status_bg,
             compose_border: theme.comment_draft_fg,
+            keymap: Keymap::defaults(),
             exit_colors: ExitColors {
                 border: theme.review_fg,
                 selected_bg: theme.cursor_bg,
@@ -186,6 +192,27 @@ impl App {
     pub fn with_exit_default(mut self, default: ExitDefault) -> Self {
         self.exit_default = default;
         self
+    }
+
+    /// Adopt the reviewer's `keymap`, so the inline editor's submit and cancel
+    /// keys match their configured bindings.
+    pub fn with_keymap(mut self, keymap: Keymap) -> Self {
+        self.keymap = keymap;
+        self
+    }
+
+    /// The editor border hint naming the keys that submit and cancel a comment,
+    /// resolved from the active keymap so it shows the reviewer's own bindings.
+    fn editor_hint(&self) -> String {
+        let submit = self
+            .keymap
+            .primary_label(Action::SubmitComment)
+            .unwrap_or_default();
+        let cancel = self
+            .keymap
+            .primary_label(Action::CancelComment)
+            .unwrap_or_default();
+        format!("{submit} submit  {cancel} cancel")
     }
 
     /// Take the pending draft records to be committed to the session log,
@@ -297,11 +324,13 @@ impl App {
             return Update::Passed(Action::AddComment);
         }
         if let Some((target, anchor, label)) = self.add_target_at_cursor() {
+            let hint = self.editor_hint();
             self.compose = Some(Compose::new(
                 ComposeKind::Add(target),
                 anchor,
                 "",
                 label,
+                hint,
                 self.compose_border,
             ));
         }
@@ -325,11 +354,13 @@ impl App {
                 .as_ref()
                 .and_then(|review| review.comment_body(id))
                 .unwrap_or_default();
+            let hint = self.editor_hint();
             self.compose = Some(Compose::new(
                 ComposeKind::Edit(id),
                 anchor,
                 &body,
                 "edit comment".to_string(),
+                hint,
                 self.compose_border,
             ));
         }
@@ -378,9 +409,11 @@ impl App {
         self.compose.is_some()
     }
 
-    /// Feed a key press to the open editor: save on ctrl-s, cancel on escape
-    /// (confirming first when the body has unsaved changes), and otherwise let
-    /// the editor handle the press. Does nothing when the editor is closed.
+    /// Feed a key press to the open editor: submit on the [`Action::SubmitComment`]
+    /// binding, cancel on [`Action::CancelComment`] (confirming first when the
+    /// body has unsaved changes), and otherwise let the editor handle the press.
+    /// Only single-press bindings act, since the editor keeps no pending chord
+    /// state. Does nothing when the editor is closed.
     pub fn compose_key(&mut self, press: KeyPress) {
         let Some(compose) = self.compose.as_mut() else {
             return;
@@ -392,16 +425,16 @@ impl App {
             }
             return;
         }
-        if press.ctrl && press.key == Key::Char('s') {
-            self.submit_compose();
-        } else if press.key == Key::Escape {
-            if compose.is_dirty() {
-                compose.begin_confirm();
-            } else {
-                self.compose = None;
+        match self.keymap.resolve(std::slice::from_ref(&press)) {
+            Resolution::Action(Action::SubmitComment) => self.submit_compose(),
+            Resolution::Action(Action::CancelComment) => {
+                if compose.is_dirty() {
+                    compose.begin_confirm();
+                } else {
+                    self.compose = None;
+                }
             }
-        } else {
-            compose.input(press);
+            _ => compose.input(press),
         }
     }
 
@@ -1203,7 +1236,8 @@ mod tests {
     use super::{App, ComposeView, Update};
     use crate::action::Action;
     use crate::exit::{Exit, ExitDefault};
-    use crate::key::{Key, KeyPress};
+    use crate::key::{Chord, Key, KeyPress};
+    use crate::keymap::{Keymap, KeymapOverrides};
     use crate::render::DiffView;
     use crate::render::testutil::{dump, file, ln};
     use crate::review::Review;
@@ -1221,9 +1255,9 @@ mod tests {
         }
     }
 
-    /// The save chord for the editor.
-    fn save() -> KeyPress {
-        KeyPress::with_modifiers(Key::Char('s'), true, false, false)
+    /// The submit chord for the editor.
+    fn submit() -> KeyPress {
+        KeyPress::with_modifiers(Key::Char('d'), true, false, false)
     }
 
     /// A review over a two-line Rust file with no comments yet, for authoring
@@ -1895,7 +1929,7 @@ mod tests {
         app.update(Action::AddComment);
         k9::assert_equal!(app.composing(), true);
         typed(&mut app, "why 2?");
-        app.compose_key(save());
+        app.compose_key(submit());
         k9::assert_equal!(app.composing(), false);
         let expected = "\
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
@@ -1967,9 +2001,48 @@ why 2?
         // Saving an untouched editor authors nothing.
         let mut app = App::reviewing(plain_review(), 12, &Theme::dark());
         app.update(Action::AddComment);
-        app.compose_key(save());
+        app.compose_key(submit());
         k9::assert_equal!(app.composing(), false);
         k9::assert_equal!(app.take_drafts(), Vec::new());
+    }
+
+    #[test]
+    fn the_editor_submit_key_follows_the_configured_keymap() {
+        // Rebind the editor's submit key to ctrl-g. The default ctrl-d then
+        // reaches the text buffer instead of confirming, and the border hint
+        // names the configured key, so the editor's keys route through config
+        // like every other action.
+        let overrides: KeymapOverrides = [(
+            Action::SubmitComment,
+            vec!["ctrl-g".parse::<Chord>().unwrap()],
+        )]
+        .into_iter()
+        .collect();
+        let keymap = Keymap::resolve_config(&overrides, false).unwrap();
+        let mut app = App::reviewing(plain_review(), 12, &Theme::dark()).with_keymap(keymap);
+        for _ in 0..4 {
+            app.update(Action::LineDown);
+        }
+        app.update(Action::AddComment);
+        k9::assert_equal!(app.editor_hint(), "ctrl-g submit  esc cancel".to_string());
+        typed(&mut app, "why 2?");
+        // The former submit key is now ordinary input, so the editor stays open.
+        app.compose_key(submit());
+        k9::assert_equal!(app.composing(), true);
+        // The configured key confirms the comment as a draft above its line.
+        app.compose_key(KeyPress::with_modifiers(Key::Char('g'), true, false, false));
+        k9::assert_equal!(app.composing(), false);
+        let expected = "\
+<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,2 +1,2 @@
+<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#a3be8c|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<#8a8a8a|#4f5b66|->  press e to edit  r to resolve  d to delete<#a3be8c|#4f5b66|-> <#a3be8c|#4f5b66|->┐
+<#a3be8c|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#a3be8c|-|->│
+<#a3be8c|-|->└──────────────────────────────────────┘
+<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
+";
+        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
 
     #[test]
@@ -1991,7 +2064,7 @@ why 2?
             app.compose_key(KeyPress::new(Key::Backspace));
         }
         typed(&mut app, "use a constant");
-        app.compose_key(save());
+        app.compose_key(submit());
         k9::assert_equal!(app.composing(), false);
         let expected = "\
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
@@ -2042,7 +2115,7 @@ say more
         let mut app = App::reviewing(commented_review(), 12, &Theme::dark());
         app.update(Action::AddComment);
         typed(&mut app, "first");
-        app.compose_key(save());
+        app.compose_key(submit());
         app.update(Action::Top);
         app.update(Action::AddComment);
         typed(&mut app, "second");
@@ -2132,7 +2205,7 @@ second
         for c in "why?".chars() {
             app.compose_key(KeyPress::new(Key::Char(c)));
         }
-        app.compose_key(save());
+        app.compose_key(submit());
 
         let old = Diff {
             files: vec![file(

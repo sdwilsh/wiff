@@ -13,13 +13,17 @@ use wiff_core::record::{Author, CommentTarget, RecordBody};
 use wiff_core::review::CommentState;
 use wiff_diff::Diff;
 
-use crate::render::{DiffView, Document};
+use crate::render::{DiffView, Document, FileHighlights};
 
 /// A diff under review together with its committed comments and the buffered
 /// edits layered over them.
 pub struct Review {
     view: DiffView,
     diff: Diff,
+    /// The diff's syntax highlighting, computed once per diff so a comment edit
+    /// re-renders without re-running the highlighter. Refreshed alongside the
+    /// diff.
+    highlights: Vec<FileHighlights>,
     /// The author newly drafted comments are attributed to.
     author: Author,
     /// The diff version drafted comments are authored against.
@@ -42,9 +46,11 @@ impl Review {
         version: u32,
         comments: Vec<CommentState>,
     ) -> Self {
+        let highlights = view.highlight(&diff);
         Self {
             view,
             diff,
+            highlights,
             author,
             version,
             committed: comments,
@@ -66,7 +72,8 @@ impl Review {
             .filter(|entry| entry.pending)
             .map(|entry| entry.comment.id)
             .collect();
-        self.view.render_review(&self.diff, &comments, &pending)
+        self.view
+            .render_review_cached(&self.diff, &comments, &pending, &self.highlights)
     }
 
     /// Flip the resolved state of comment `id`, buffering the change.
@@ -140,6 +147,7 @@ impl Review {
         old_diff: impl FnMut(u32) -> wiff_core::Result<Diff>,
     ) -> wiff_core::Result<()> {
         self.drafts.rebase(version, &diff, old_diff)?;
+        self.highlights = self.view.highlight(&diff);
         self.diff = diff;
         self.committed = comments;
         self.version = version;

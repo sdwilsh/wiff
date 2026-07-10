@@ -47,6 +47,12 @@ pub enum Action {
     ResolveComment,
     /// Delete the focused comment, or restore it when already deleted.
     DeleteComment,
+    /// Confirm the comment being composed, moving it into the pending drafts.
+    /// Only acts while the inline editor is open.
+    SubmitComment,
+    /// Abandon the comment being composed, closing the inline editor. Only acts
+    /// while the editor is open, confirming first when the body has changed.
+    CancelComment,
     /// Commit the pending draft edits to the session log, keeping the review
     /// open.
     Save,
@@ -84,6 +90,8 @@ impl Action {
             Action::EditComment => "edit_comment",
             Action::ResolveComment => "resolve_comment",
             Action::DeleteComment => "delete_comment",
+            Action::SubmitComment => "submit_comment",
+            Action::CancelComment => "cancel_comment",
             Action::Save => "save",
             Action::Refresh => "refresh",
             Action::OpenInEditor => "open_in_editor",

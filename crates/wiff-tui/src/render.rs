@@ -12,6 +12,7 @@
 //! it, recovered by [`wiff_diff::SectionMatchers`] since the wide-context
 //! capture merges each file into one hunk with no per-change context header.
 
+use std::collections::BTreeMap;
 use std::ops::Range;
 
 use ratatui::style::{Color, Modifier, Style};
@@ -148,6 +149,15 @@ impl Document {
     }
 }
 
+/// A file's highlighted content on both sides, indexed by line number, so a
+/// render can look up each row's colored spans without re-running the syntax
+/// highlighter. Produced by [`DiffView::highlight`] and reused across renders of
+/// the same diff.
+pub struct FileHighlights {
+    before: BTreeMap<LineNo, HighlightedLine>,
+    after: BTreeMap<LineNo, HighlightedLine>,
+}
+
 /// A renderer pairing a syntax highlighter with a color theme.
 pub struct DiffView {
     highlighter: Highlighter,
@@ -251,7 +261,21 @@ impl DiffView {
     /// Render every file of `diff` into one scrollable [`Document`], with no
     /// review overlay.
     pub fn render(&self, diff: &Diff) -> Document {
-        self.build(diff, &[], &[], false)
+        self.build(diff, &[], &[], false, None)
+    }
+
+    /// Highlight every file in `diff`, once, so the result can be reused across
+    /// re-renders that only change comments. The syntect pass is the costly part
+    /// of a render; the diff content is fixed between comment edits, so a review
+    /// highlights on capture and reuses it until the next refresh.
+    pub fn highlight(&self, diff: &Diff) -> Vec<FileHighlights> {
+        diff.files
+            .iter()
+            .map(|file| FileHighlights {
+                before: self.highlighter.highlight_side(file, Side::Before),
+                after: self.highlighter.highlight_side(file, Side::After),
+            })
+            .collect()
     }
 
     /// Render `diff` with `comments` woven in: a review summary row at the top,
@@ -264,7 +288,20 @@ impl DiffView {
         comments: &[CommentState],
         pending: &[Ulid],
     ) -> Document {
-        self.build(diff, comments, pending, true)
+        self.build(diff, comments, pending, true, None)
+    }
+
+    /// Like [`render_review`](Self::render_review) but reusing `highlights` from
+    /// an earlier [`highlight`](Self::highlight) of the same diff, so a comment
+    /// edit re-renders without re-running the syntect pass.
+    pub fn render_review_cached(
+        &self,
+        diff: &Diff,
+        comments: &[CommentState],
+        pending: &[Ulid],
+        highlights: &[FileHighlights],
+    ) -> Document {
+        self.build(diff, comments, pending, true, Some(highlights))
     }
 
     /// The shared render path: build the document, optionally leading with the
@@ -275,6 +312,7 @@ impl DiffView {
         comments: &[CommentState],
         pending: &[Ulid],
         review_row: bool,
+        highlights: Option<&[FileHighlights]>,
     ) -> Document {
         let mut doc = Document {
             lines: Vec::new(),
@@ -301,7 +339,15 @@ impl DiffView {
             }
         }
         for (index, file) in diff.files.iter().enumerate() {
-            self.render_file(index, file, &placement.files[index], pending, &mut doc);
+            let highlight = highlights.map(|cached| &cached[index]);
+            self.render_file(
+                index,
+                file,
+                &placement.files[index],
+                pending,
+                highlight,
+                &mut doc,
+            );
         }
         doc
     }
@@ -314,14 +360,26 @@ impl DiffView {
         file: &FileDiff,
         placement: &FilePlacement,
         pending: &[Ulid],
+        highlight: Option<&FileHighlights>,
         doc: &mut Document,
     ) {
         doc.push(index, RowKind::FileHeader, None, self.file_header(file));
         for comment in &placement.header {
             self.push_comment(doc, index, comment, pending.contains(&comment.id));
         }
-        let before = self.highlighter.highlight_side(file, Side::Before);
-        let after = self.highlighter.highlight_side(file, Side::After);
+        // Reuse the cached highlight when the caller passed one; otherwise run
+        // the syntect pass for this file now.
+        let computed;
+        let (before, after) = match highlight {
+            Some(cached) => (&cached.before, &cached.after),
+            None => {
+                computed = FileHighlights {
+                    before: self.highlighter.highlight_side(file, Side::Before),
+                    after: self.highlighter.highlight_side(file, Side::After),
+                };
+                (&computed.before, &computed.after)
+            }
+        };
         for (hunk_index, hunk) in file.hunks.iter().enumerate() {
             doc.push(
                 index,
@@ -1214,6 +1272,13 @@ mod tests {
         // range; an unresolved comment starts expanded.
         let expected_regions = "1: header 4 body 5..6 collapsed=false\n";
         k9::assert_equal!(regions(&doc.comments), expected_regions.to_string());
+
+        // The cached render, reusing a prior highlight of the same diff, must
+        // produce the identical lines; caching is a speed-up, not a change.
+        let view = DiffView::new(Theme::dark()).unwrap();
+        let highlights = view.highlight(&diff);
+        let cached = view.render_review_cached(&diff, &comments, &[], &highlights);
+        k9::assert_equal!(dump(&cached.lines), lines.to_string());
     }
 
     #[test]
