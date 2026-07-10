@@ -119,11 +119,11 @@ Unknown/reserved record types are skipped on read so the format can grow.
 A `DiffSource` trait produces a unified diff (with as much context as the source
 can give). v0 implementations:
 
-- **git**: runs `git diff` / `git diff --cached` (and an explicit revision
-  range later), requesting expanded context (a large `-U`) so hunks carry as
-  much of each file as possible for better highlighting and more reliable
-  rebasing, while the diff stays the single artifact. Regenerable, so
-  `wiff refresh` can capture a new `DiffVersion`.
+- **git**: runs `git diff`, `git diff --cached`, or the diff a named revision
+  introduces (like `git show REF`), requesting expanded context (a large `-U`)
+  so hunks carry as much of each file as possible for better highlighting and
+  more reliable rebasing, while the diff stays the single artifact. Regenerable,
+  so `wiff refresh` can capture a new `DiffVersion`.
 - **stdin unified diff**: parses a unified diff piped in, with whatever context
   it happens to carry. Not regenerable; such a session is a one-shot snapshot.
 
@@ -221,9 +221,11 @@ The binary is `wiff`. There is no bare-invocation review mode: every action is
 an explicit subcommand, so behavior is unambiguous. Subcommands (v0):
 
 - `wiff new`: create a session from a source and launch the TUI. Source flags
-  select the diff (`--cached`, an explicit range later, or reading stdin when
-  piped). `--project <name>` forces the project bucket when it cannot be
-  derived from the cwd.
+  select the diff: `--cached` for the staged index, `--rev <REF>` for the
+  changes a revision introduces, `--head` as sugar for `--rev HEAD`, or a
+  unified diff read from stdin when piped. `--no-tui` creates the session
+  without launching the TUI. `--project <name>` forces the project bucket when
+  it cannot be derived from the cwd.
 - `wiff resume`: resume a session (the active one by default, or `--session`)
   and launch the TUI.
 - `wiff session list`: list sessions (optionally across all projects).
@@ -255,16 +257,22 @@ through the append + lock path.
 
 - `wiff render --format {markdown,json}` produces the review state for an
   agent prompt (markdown) or programmatic use (json). Markdown groups comments
-  by file, showing author and kind, the target location, resolved/outdated
-  state, the body, and a fenced code block of the surrounding context. JSON is
+  by file, leading each comment with its id (so it can be resolved or withdrawn
+  straight from the render) and showing author and kind, the target location,
+  resolved/outdated state, the body, and a fenced code block of the surrounding
+  context. JSON is
   the folded current state (not the raw event log) under a versioned schema
   (`{ schema_version, session, files, comments }`); the raw log
   remains available by reading the JSONL directly.
 - `wiff comment add` lets an agent contribute comments, setting its author name
   and `--author-kind agent`.
-- A shipped `skill.md` documents, for an agent: how to discover the session for
-  the cwd, how to read review state with `wiff render`, and how to add comments
-  with `wiff comment add`.
+- `wiff skill-path` writes the bundled agent skill into the data directory and
+  prints the path to its `SKILL.md`. The skill documents, for an agent: how to
+  select the session for the cwd, how to read a review with `wiff render`, and
+  how to leave and revise comments with `wiff comment add` and its siblings. It
+  is checked into the repository at `skills/wiff-review/` as a directory that
+  already works as a skill for anyone with `wiff` on their PATH; installation
+  rewrites each `wiff` invocation to the running binary's absolute path.
 
 ## TUI
 
@@ -274,8 +282,8 @@ no thousand-line nested match driving the UI.
 ### Action model
 
 Input is decoded into an **action** (an enum of intents: page up/down, next/prev
-file, next/prev hunk, next/prev comment, toggle comment, add comment, edit
-comment, resolve comment, delete comment, refresh, save,
+file, next/prev hunk, next/prev comment, toggle fold, toggle comment, add
+comment, edit comment, resolve comment, delete comment, refresh,
 `open_in_editor`, `quit`, `quit_keep`, `quit_remove`, etc.). Nothing in the UI
 logic branches on raw keys; it branches on actions. This keeps bindings
 reassignable and keeps the update logic small.
@@ -287,7 +295,7 @@ reassignable and keeps the update logic small.
 - A chord is a sequence of key presses; v0 needs single keys and ctrl/alt/shift
   modified keys, but the schema is a sequence so leader-key and multi-key chords
   can be added without a format change.
-- Defaults resemble `less` for navigation (space, b, g, G, /, q, ...) plus
+- Defaults resemble `less` for navigation (space, b, g, G, q, ...) plus
   review actions layered on top. Sequence navigation follows a paired scheme:
   `,`/`.` prev/next file, `[`/`]` prev/next hunk, `{`/`}` prev/next comment.
   (`n`/`p` are left free to become search `n`/`N` later.) The review summary sits
@@ -349,9 +357,10 @@ obvious. Reviews are not heavily concurrent (typically one human and sometimes
 one agent), so buffering the whole review and flushing on commit is acceptable;
 a crash loses only uncommitted drafts, like an editor's unsaved buffer.
 
-A `save` action commits the pending drafts as append events and leaves the review
-open, which also gives a future `--watch` / auto-refresh mode a natural flush
-point.
+Committing flushes the pending drafts as append events. In v0 this happens when
+leaving the review via the Commit choice (see Exit behavior). A standalone save
+that flushes while leaving the review open is a natural future addition and the
+flush point a `--watch` / auto-refresh mode would use.
 
 A draft holds the same anchor data a committed comment does (snippet, surrounding
 context, authored-against version and side), so `refresh` rebases drafts forward
@@ -402,15 +411,17 @@ configured as a command template with `{file}` and `{line}` placeholders (a
 template without `{line}` simply opens the file), so the focused line can be
 passed through where the editor supports it.
 
-This is designed into the model but may land after v0 if v0 scope is tight; the
-reconstitution path it depends on is shared with rebasing and highlighting, so
-the groundwork is present regardless.
+As of v0 this is designed but not yet wired: the `open_in_editor` action and its
+default `o` binding exist, but the materialization and editor launch are not
+implemented. The reconstitution path they depend on is shared with rebasing and
+highlighting, so the groundwork is present, and the feature is expected to land
+after the rest of v0.
 
 ## Configuration
 
 - TOML at `$XDG_CONFIG_HOME/wiff/config.toml` (e.g. `~/.config/wiff`).
 - Keymap is `action -> [chords]`, action names in snake_case (`page_down`,
-  `next_hunk`, `next_comment`, `add_comment`, `save`, `quit_keep`, ...). A chord
+  `next_hunk`, `next_comment`, `add_comment`, `refresh`, `quit_keep`, ...). A chord
   is a space-separated
   sequence of key presses; each press is a key with optional `ctrl-`/`alt-`/
   `shift-` modifier prefixes, lowercased (e.g. `"ctrl-f"`, `"g g"`).
