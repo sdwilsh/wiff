@@ -3,7 +3,8 @@
 use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
 use ulid::Ulid;
-use wiff_core::record::{Author, AuthorKind, CommentTarget};
+use wiff_config::Config;
+use wiff_core::record::{AuthorKind, CommentTarget};
 use wiff_core::review::ReviewState;
 use wiff_core::{DraftComment, SessionLog, delete_comment, set_resolved};
 use wiff_diff::{LineNo, Side};
@@ -81,14 +82,18 @@ impl CommentAddArgs {
         let path = resolve_session(self.session.as_deref(), self.project.as_deref())?;
         let target = self.target()?;
         let body = comment_body(self.body.clone()).await?;
-        let author = Author {
-            name: self.author.clone().unwrap_or_else(default_author_name),
-            kind: if self.agent {
-                AuthorKind::Agent
-            } else {
-                AuthorKind::Human
-            },
+        let kind = if self.agent {
+            AuthorKind::Agent
+        } else {
+            AuthorKind::Human
         };
+        // The default name follows the kind acted as -- an agent annotates as
+        // "assistant", a human as $USER -- honoring any configured name, which
+        // an explicit --author overrides in turn.
+        let mut author = Config::load()?.author.resolve(kind);
+        if let Some(name) = self.author.clone() {
+            author.name = name;
+        }
         let mut log = SessionLog::open(&path)?;
         let added = DraftComment {
             author,
@@ -252,13 +257,4 @@ async fn comment_body(body: Option<String>) -> anyhow::Result<String> {
         bail!("provide the comment with --body or pipe it on stdin");
     };
     Ok(text.trim_end().to_string())
-}
-
-/// The default author display name: the `USER` environment value, else a
-/// generic fallback.
-fn default_author_name() -> String {
-    std::env::var("USER")
-        .ok()
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "reviewer".to_string())
 }
