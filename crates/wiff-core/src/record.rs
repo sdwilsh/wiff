@@ -81,6 +81,11 @@ pub enum SourceKind {
     GitWorktree,
     /// `git diff --cached` of the index against HEAD.
     GitIndex,
+    /// `git show REF`: the changes a single revision introduces.
+    GitRev {
+        /// The revision to show, as the user named it (a ref, a sha, or `HEAD`).
+        rev: String,
+    },
     /// A unified diff read from stdin; not regenerable.
     Stdin,
 }
@@ -88,7 +93,10 @@ pub enum SourceKind {
 impl SourceKind {
     /// Whether a new diff version can be captured for this source.
     pub fn regenerable(&self) -> bool {
-        matches!(self, SourceKind::GitWorktree | SourceKind::GitIndex)
+        match self {
+            SourceKind::GitWorktree | SourceKind::GitIndex | SourceKind::GitRev { .. } => true,
+            SourceKind::Stdin => false,
+        }
     }
 
     /// The stable identifier for this source, matching its serialized form.
@@ -96,6 +104,7 @@ impl SourceKind {
         match self {
             SourceKind::GitWorktree => "git_worktree",
             SourceKind::GitIndex => "git_index",
+            SourceKind::GitRev { .. } => "git_rev",
             SourceKind::Stdin => "stdin",
         }
     }
@@ -260,4 +269,22 @@ pub struct CommentReanchor {
     pub target: CommentTarget,
     /// How confidently it was relocated.
     pub confidence: Confidence,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SourceKind;
+
+    #[test]
+    fn a_revision_source_round_trips_through_json() {
+        let source = SourceKind::GitRev {
+            rev: "HEAD".to_string(),
+        };
+        let json = serde_json::to_string(&source).expect("serialize");
+        k9::assert_equal!(json, r#"{"kind":"git_rev","rev":"HEAD"}"#.to_string());
+        let back: SourceKind = serde_json::from_str(&json).expect("deserialize");
+        k9::assert_equal!(back, source);
+        k9::assert_equal!(source.regenerable(), true);
+        k9::assert_equal!(source.as_str(), "git_rev");
+    }
 }

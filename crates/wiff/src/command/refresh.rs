@@ -1,13 +1,13 @@
 //! `wiff refresh`: capture a new diff version into a session and rebase its
 //! comments onto it.
 
-use anyhow::{Context, bail};
+use anyhow::bail;
 use clap::Args;
-use wiff_core::record::{SessionHeader, SourceKind};
+use wiff_core::record::SessionHeader;
 use wiff_core::review::ReviewState;
-use wiff_core::{RefreshOutcome, ScmType, SessionLog, refresh_session};
+use wiff_core::{RefreshOutcome, SessionLog, refresh_session};
 
-use super::{capture_scm_diff, read_piped_stdin, resolve_session};
+use super::{read_piped_stdin, recapture_diff, resolve_session};
 
 /// Arguments for `wiff refresh`.
 #[derive(Debug, Args)]
@@ -39,26 +39,15 @@ impl RefreshArgs {
     }
 }
 
-/// Recapture the diff from the session's original source: rerun git for a git
-/// source, or read a fresh diff piped on stdin for a stdin source.
+/// Recapture the diff from the session's original source: rerun the SCM for a
+/// regenerable source, or read a fresh diff piped on stdin for a stdin source.
 async fn recapture(header: &SessionHeader) -> anyhow::Result<String> {
-    match header.source {
-        SourceKind::GitWorktree | SourceKind::GitIndex => {
-            let root = header.repo_root.clone().context(
-                "the session records no repository root, so its git diff cannot be recaptured",
-            )?;
-            let captured = capture_scm_diff(
-                Some(ScmType::Git),
-                root.into(),
-                header.source == SourceKind::GitIndex,
-            )
-            .await?;
-            Ok(captured.text)
-        }
-        SourceKind::Stdin => match read_piped_stdin().await? {
-            Some(text) => Ok(text),
-            None => bail!("this session's diff came from stdin; pipe the new diff on stdin"),
-        },
+    if let Some(text) = recapture_diff(header).await? {
+        return Ok(text);
+    }
+    match read_piped_stdin().await? {
+        Some(text) => Ok(text),
+        None => bail!("this session's diff came from stdin; pipe the new diff on stdin"),
     }
 }
 

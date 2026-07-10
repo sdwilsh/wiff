@@ -19,12 +19,23 @@ use crate::source::{CapturedDiff, DiffSource};
 /// with while the diff stays the single artifact.
 const GIT_CONTEXT_LINES: u32 = 3000;
 
-/// A git diff of a repository, either the whole uncommitted working copy state
-/// or the index against `HEAD`.
+/// Which slice of the repository a [`GitSource`] captures.
+#[derive(Debug, Clone)]
+enum Mode {
+    /// The uncommitted working copy (`git diff` plus intent-to-add untracked).
+    Worktree,
+    /// The index against `HEAD` (`git diff --cached`).
+    Index,
+    /// The changes a single revision introduces (`git show REF`).
+    Rev(String),
+}
+
+/// A git diff of a repository: the uncommitted working copy, the staged index
+/// against `HEAD`, or the changes a single revision introduces.
 #[derive(Debug, Clone)]
 pub struct GitSource {
     repo_root: PathBuf,
-    cached: bool,
+    mode: Mode,
 }
 
 impl GitSource {
@@ -33,7 +44,7 @@ impl GitSource {
     pub fn worktree(repo_root: impl Into<PathBuf>) -> Self {
         Self {
             repo_root: repo_root.into(),
-            cached: false,
+            mode: Mode::Worktree,
         }
     }
 
@@ -41,15 +52,23 @@ impl GitSource {
     pub fn index(repo_root: impl Into<PathBuf>) -> Self {
         Self {
             repo_root: repo_root.into(),
-            cached: true,
+            mode: Mode::Index,
+        }
+    }
+
+    /// A source for the changes `rev` introduces (`git show REF`).
+    pub fn rev(repo_root: impl Into<PathBuf>, rev: impl Into<String>) -> Self {
+        Self {
+            repo_root: repo_root.into(),
+            mode: Mode::Rev(rev.into()),
         }
     }
 
     fn kind(&self) -> SourceKind {
-        if self.cached {
-            SourceKind::GitIndex
-        } else {
-            SourceKind::GitWorktree
+        match &self.mode {
+            Mode::Worktree => SourceKind::GitWorktree,
+            Mode::Index => SourceKind::GitIndex,
+            Mode::Rev(rev) => SourceKind::GitRev { rev: rev.clone() },
         }
     }
 
@@ -137,12 +156,27 @@ impl GitSource {
             "diff".into(),
             format!("--unified={GIT_CONTEXT_LINES}").into(),
         ];
-        if self.cached {
+        if matches!(self.mode, Mode::Index) {
             args.push("--cached".into());
         }
         let output = self.git(args, index).await?;
         String::from_utf8(output.stdout)
             .map_err(|source| Error::Source(format!("git diff was not valid UTF-8: {source}")))
+    }
+
+    /// The patch a single revision introduces (`git show REF`).
+    async fn capture_rev(&self, rev: &str) -> Result<String> {
+        // An empty --format= suppresses the commit log, so the sideband holds
+        // only the diff.
+        let args: [OsString; 4] = [
+            "show".into(),
+            "--format=".into(),
+            format!("--unified={GIT_CONTEXT_LINES}").into(),
+            rev.into(),
+        ];
+        let output = self.git(args, None).await?;
+        String::from_utf8(output.stdout)
+            .map_err(|source| Error::Source(format!("git show was not valid UTF-8: {source}")))
     }
 
     /// Run a git subcommand under the repo and return its output on success.
@@ -201,14 +235,94 @@ impl GitSource {
 #[async_trait]
 impl DiffSource for GitSource {
     async fn capture(&self) -> Result<CapturedDiff> {
-        let text = if self.cached {
-            self.run_diff(None).await?
-        } else {
-            self.capture_worktree().await?
+        let text = match &self.mode {
+            Mode::Worktree => self.capture_worktree().await?,
+            Mode::Index => self.run_diff(None).await?,
+            Mode::Rev(rev) => self.capture_rev(rev).await?,
         };
         Ok(CapturedDiff {
             text,
             source: self.kind(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::process::Command;
+
+    use super::GitSource;
+    use crate::record::SourceKind;
+    use crate::source::DiffSource;
+
+    /// Run `git` with `args` in `repo` under a laundered environment so neither
+    /// the setup nor the capture under test can pick up host or per-user git
+    /// configuration: the environment is emptied, `HOME` points at an empty
+    /// `home` directory, and system config is disabled outright.
+    fn git(repo: &Path, home: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .env_clear()
+            .env("HOME", home)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .args(["-c", "user.name=wez", "-c", "user.email=wez@example.com"])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// Blank the variable `index <old>..<new>` blob hashes so the captured patch
+    /// can be asserted whole.
+    fn stable(text: &str) -> String {
+        text.lines()
+            .map(|line| {
+                if line.starts_with("index ") {
+                    "index HASHES".to_string()
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[tokio::test]
+    async fn a_revision_source_captures_the_commit_patch() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        git(repo.path(), home.path(), &["init", "-q"]);
+        std::fs::write(repo.path().join("f.txt"), "alpha\nbeta\n").expect("write");
+        git(repo.path(), home.path(), &["add", "f.txt"]);
+        git(repo.path(), home.path(), &["commit", "-q", "-m", "add f"]);
+
+        let captured = GitSource::rev(repo.path(), "HEAD")
+            .capture()
+            .await
+            .expect("capture");
+        let expected = "\
+diff --git a/f.txt b/f.txt
+new file mode 100644
+index HASHES
+--- /dev/null
++++ b/f.txt
+@@ -0,0 +1,2 @@
++alpha
++beta";
+        k9::assert_equal!(stable(&captured.text), expected.to_string());
+        k9::assert_equal!(
+            captured.source,
+            SourceKind::GitRev {
+                rev: "HEAD".to_string()
+            }
+        );
     }
 }

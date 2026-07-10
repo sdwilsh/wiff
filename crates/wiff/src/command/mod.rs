@@ -16,6 +16,7 @@ use anyhow::{Context, bail};
 use clap::Subcommand;
 use tokio::io::AsyncReadExt;
 use ulid::Ulid;
+use wiff_core::record::{SessionHeader, SourceKind};
 use wiff_core::session::{active_session, data_dir, session_file};
 use wiff_core::{CapturedDiff, DiffSource, GitSource, ProjectIdentity, ScmType};
 
@@ -73,18 +74,34 @@ fn resolve_session(session: Option<&str>, project: Option<&str>) -> anyhow::Resu
     }
 }
 
-/// Capture a diff from the repository at `root` using its detected `scm`, taking
-/// the index against `HEAD` when `cached` is set, else the working tree. Errors
-/// when the repository is of a kind wiff cannot yet capture from, or when there
-/// is nothing to review, so callers need not repeat those checks.
+/// Which slice of a repository to capture, independent of the source-control
+/// system it lives in.
+#[derive(Debug, Clone)]
+pub(crate) enum DiffSelection {
+    /// The uncommitted working tree.
+    Worktree,
+    /// The staged index against `HEAD`.
+    Staged,
+    /// The changes a single revision introduces.
+    Rev(String),
+}
+
+/// Capture `selection` from the repository at `root` using its detected `scm`.
+/// Errors when the repository is of a kind wiff cannot yet capture from, or when
+/// there is nothing to review, so callers need not repeat those checks. This is
+/// the single point that turns a selection into a running SCM command; adding a
+/// new source-control system means adding its arm here.
 pub(crate) async fn capture_scm_diff(
     scm: Option<ScmType>,
     root: PathBuf,
-    cached: bool,
+    selection: DiffSelection,
 ) -> anyhow::Result<CapturedDiff> {
     let source = match scm {
-        Some(ScmType::Git) if cached => GitSource::index(root),
-        Some(ScmType::Git) => GitSource::worktree(root),
+        Some(ScmType::Git) => match selection {
+            DiffSelection::Worktree => GitSource::worktree(root),
+            DiffSelection::Staged => GitSource::index(root),
+            DiffSelection::Rev(rev) => GitSource::rev(root, rev),
+        },
         Some(other) => bail!(
             "{} is a {other} repository, which wiff cannot capture from yet; pipe a unified diff on stdin instead",
             root.display()
@@ -99,6 +116,26 @@ pub(crate) async fn capture_scm_diff(
         bail!("no changes to review");
     }
     Ok(captured)
+}
+
+/// Recapture a session's diff from the source recorded in its `header`, or
+/// `None` when that source is a one-shot diff (piped on stdin) that cannot be
+/// regenerated. Both `wiff refresh` and the in-TUI refresh flow through here, so
+/// the mapping from a recorded source back to a live capture lives in one place.
+pub(crate) async fn recapture_diff(header: &SessionHeader) -> anyhow::Result<Option<String>> {
+    let selection = match &header.source {
+        SourceKind::GitWorktree => DiffSelection::Worktree,
+        SourceKind::GitIndex => DiffSelection::Staged,
+        SourceKind::GitRev { rev } => DiffSelection::Rev(rev.clone()),
+        SourceKind::Stdin => return Ok(None),
+    };
+    let root = header
+        .repo_root
+        .clone()
+        .context("the session records no repository root, so its diff cannot be recaptured")?;
+    // Every regenerable source recorded today is a git one.
+    let captured = capture_scm_diff(Some(ScmType::Git), root.into(), selection).await?;
+    Ok(Some(captured.text))
 }
 
 /// Read content piped on stdin, returning `None` when stdin is a terminal or

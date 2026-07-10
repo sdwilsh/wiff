@@ -6,14 +6,14 @@
 
 use std::path::Path;
 
-use anyhow::{Context, bail};
+use anyhow::Context;
 use wiff_config::{Config, OnExit};
-use wiff_core::record::{AuthorKind, RecordBody, SessionHeader, SourceKind};
+use wiff_core::record::{AuthorKind, RecordBody, SessionHeader};
 use wiff_core::session::remove_session;
-use wiff_core::{RefreshOutcome, ReviewState, ScmType, SessionLog, refresh_session};
+use wiff_core::{RefreshOutcome, ReviewState, SessionLog, refresh_session};
 use wiff_tui::{App, DiffView, Exit, ExitDefault, Review, Theme, run};
 
-use crate::command::capture_scm_diff;
+use crate::command::recapture_diff;
 
 /// Open `session_path` in the review TUI, then keep or remove the session per
 /// the reviewer's choice and the configured `on_exit` default.
@@ -94,31 +94,18 @@ fn refresh_in_place(session_path: &Path, app: &mut App) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Recapture the diff from the session's original source. A git source reruns
-/// git; a stdin source cannot be reread inside the TUI, since stdin is now the
-/// terminal, so it is directed to the `wiff refresh` command instead.
+/// Recapture the diff from the session's original source. A stdin source cannot
+/// be reread inside the TUI, since stdin is now the terminal, so it is directed
+/// to the `wiff refresh` command instead.
 fn recapture(header: &SessionHeader) -> anyhow::Result<String> {
-    match header.source {
-        SourceKind::GitWorktree | SourceKind::GitIndex => {
-            let root = header.repo_root.clone().context(
-                "the session records no repository root, so its git diff cannot be recaptured",
-            )?;
-            let cached = header.source == SourceKind::GitIndex;
-            // The event loop runs on a tokio worker, so block on the async
-            // capture without standing up a nested runtime.
-            let captured = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(capture_scm_diff(
-                    Some(ScmType::Git),
-                    root.into(),
-                    cached,
-                ))
-            })?;
-            Ok(captured.text)
-        }
-        SourceKind::Stdin => bail!(
-            "this session's diff came from stdin; refresh it with `wiff refresh` and a new piped diff"
-        ),
-    }
+    // The event loop runs on a tokio worker, so block on the async recapture
+    // without standing up a nested runtime.
+    let text = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(recapture_diff(header))
+    })?;
+    text.context(
+        "this session's diff came from stdin; refresh it with `wiff refresh` and a new piped diff",
+    )
 }
 
 /// The status-line tally of a refresh: the captured version and how its comments
@@ -196,7 +183,8 @@ mod tests {
     use wiff_diff::{LineNo, Side};
     use wiff_tui::{App, DiffView, Review, Theme};
 
-    use super::{capture_scm_diff, commit_drafts, recapture, refresh_in_place, refresh_report};
+    use super::{commit_drafts, recapture, refresh_in_place, refresh_report};
+    use crate::command::{DiffSelection, capture_scm_diff};
 
     /// A bare session header from `source`, for exercising recapture routing.
     fn source_header(source: SourceKind) -> SessionHeader {
@@ -282,10 +270,12 @@ mod tests {
         k9::assert_equal!(got, vec![(0, header(ulid))]);
     }
 
-    #[test]
-    fn a_stdin_session_cannot_be_recaptured_in_the_tui() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stdin_session_cannot_be_recaptured_in_the_tui() {
         // Stdin is the terminal once the TUI is open, so a stdin-sourced session
         // is directed to the `wiff refresh` command instead of being reread.
+        // The recapture blocks on the runtime, so it needs one even though the
+        // stdin arm never reaches git.
         let error = recapture(&source_header(SourceKind::Stdin)).unwrap_err();
         k9::assert_equal!(
             error.to_string(),
@@ -373,9 +363,13 @@ mod tests {
             repo_root: Some(repo.path().to_path_buf()),
             scm: Some(ScmType::Git),
         };
-        let captured = capture_scm_diff(Some(ScmType::Git), repo.path().to_path_buf(), false)
-            .await
-            .expect("capture v0");
+        let captured = capture_scm_diff(
+            Some(ScmType::Git),
+            repo.path().to_path_buf(),
+            DiffSelection::Worktree,
+        )
+        .await
+        .expect("capture v0");
         let mut log =
             create_session(data.path(), &identity, repo.path(), &captured).expect("create session");
         let session_path = log.path().to_path_buf();
