@@ -31,7 +31,7 @@ use crate::exit::{Exit, ExitColors, ExitDefault, ExitDialog, ExitPlan, plan_exit
 use crate::key::{Key, KeyPress};
 use crate::keymap::{Keymap, Resolution};
 use crate::render::{Document, RowKind, color};
-use crate::review::Review;
+use crate::review::{CommentSync, Review};
 use crate::search::{Direction, Matcher, Search, SearchInput};
 use crate::theme::Theme;
 
@@ -671,16 +671,21 @@ impl App {
     /// folded live set persisted from the drafts, and re-render in place. The
     /// diff is unchanged, so folds keep their state; only comment collapse
     /// state is reconciled by identity, and the cursor returns to its spot.
-    /// Passes through silently when no review is attached.
-    pub fn reload_comments(&mut self, comments: Vec<wiff_core::review::CommentState>) {
+    /// Reports how the reloaded set differs from what was shown, so the host can
+    /// tell the reviewer what another actor changed. Passes through silently
+    /// when no review is attached.
+    pub fn reload_comments(
+        &mut self,
+        comments: Vec<wiff_core::review::CommentState>,
+    ) -> CommentSync {
         if self.review.is_none() {
-            return;
+            return CommentSync::default();
         }
         let spot = self.cursor_spot();
-        let document = {
+        let (sync, document) = {
             let review = self.review.as_mut().expect("review present");
-            review.set_committed(comments);
-            review.document()
+            let sync = review.set_committed(comments);
+            (sync, review.document())
         };
         self.comment_collapsed = document
             .comments
@@ -697,6 +702,7 @@ impl App {
         self.document = document;
         self.rebuild_view();
         self.restore_spot(spot);
+        sync
     }
 
     /// Show `message` in the status line until the reviewer's next action, used

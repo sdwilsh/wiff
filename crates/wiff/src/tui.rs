@@ -9,9 +9,9 @@ use std::path::Path;
 use anyhow::Context;
 use wiff_config::{Config, OnExit};
 use wiff_core::record::{AuthorKind, RecordBody, SessionHeader};
-use wiff_core::session::remove_session;
+use wiff_core::session::{SessionWatcher, remove_session};
 use wiff_core::{RefreshOutcome, ReviewState, SessionLog, refresh_session};
-use wiff_tui::{App, DiffView, Exit, ExitDefault, KeyHints, Review, Theme, run};
+use wiff_tui::{App, CommentSync, DiffView, Exit, ExitDefault, KeyHints, Review, Theme, run};
 
 use crate::command::recapture_diff;
 
@@ -63,8 +63,29 @@ pub fn open(session_path: &Path, config: &Config) -> anyhow::Result<()> {
             app.set_message(format!("save failed: {err}"));
         }
     };
+    // Between key presses, pick up comments another actor (an agent, or a second
+    // human) has committed to this session and fold them in. The watcher is a
+    // cheap stat, so it costs nothing while the file is untouched.
+    let mut watcher = SessionWatcher::new(session_path);
+    let sync = |app: &mut App| {
+        let Some(fingerprint) = watcher.changed() else {
+            return false;
+        };
+        // Act only on a successful read. A read that fails because a line is
+        // still being appended leaves the change unacknowledged, so the next
+        // wakeup retries it once the line is whole.
+        let Ok(summary) = reload_committed(session_path, app) else {
+            return false;
+        };
+        watcher.acknowledge(fingerprint);
+        if summary.is_empty() {
+            return false;
+        }
+        app.set_message(sync_report(&summary));
+        true
+    };
 
-    let (exit, drafts) = run(app, keymap, refresh, save)?;
+    let (exit, drafts) = run(app, keymap, refresh, save, sync)?;
     resolve_exit(exit, session_path, drafts)
 }
 
@@ -114,6 +135,17 @@ fn save_in_place(session_path: &Path, app: &mut App) -> anyhow::Result<()> {
     }
     let count = drafts.len();
     commit_drafts(session_path, drafts)?;
+    reload_committed(session_path, app)?;
+    app.set_message(format!(
+        "committed {count} change{}",
+        if count == 1 { "" } else { "s" }
+    ));
+    Ok(())
+}
+
+/// Reload the review's committed comments from the session log, dropping the
+/// withdrawn ones, and report how they differ from what the app was showing.
+fn reload_committed(session_path: &Path, app: &mut App) -> anyhow::Result<CommentSync> {
     let state = ReviewState::load(session_path)?;
     let comments: Vec<_> = state
         .comments
@@ -121,12 +153,23 @@ fn save_in_place(session_path: &Path, app: &mut App) -> anyhow::Result<()> {
         .filter(|comment| !comment.deleted)
         .cloned()
         .collect();
-    app.reload_comments(comments);
-    app.set_message(format!(
-        "committed {count} change{}",
-        if count == 1 { "" } else { "s" }
-    ));
-    Ok(())
+    Ok(app.reload_comments(comments))
+}
+
+/// A terse status note naming what another actor changed, joining only the parts
+/// that are non-zero.
+fn sync_report(summary: &CommentSync) -> String {
+    let mut parts = Vec::new();
+    if summary.added > 0 {
+        parts.push(format!("{} added", summary.added));
+    }
+    if summary.changed > 0 {
+        parts.push(format!("{} updated", summary.changed));
+    }
+    if summary.removed > 0 {
+        parts.push(format!("{} removed", summary.removed));
+    }
+    format!("synced: {}", parts.join(", "))
 }
 
 /// Recapture the diff from the session's original source. A stdin source cannot
@@ -208,18 +251,21 @@ mod tests {
 
     use ulid::Ulid;
     use wiff_core::record::{
-        Author, AuthorKind, CommentDelete, CommentResolve, CommentTarget, RecordBody,
-        SessionHeader, SourceKind,
+        Author, AuthorKind, CommentDelete, CommentRecord, CommentResolve, CommentTarget,
+        RecordBody, SessionHeader, SourceKind,
     };
-    use wiff_core::session::{SessionLog, read_records};
+    use wiff_core::session::{SessionLog, SessionWatcher, read_records};
     use wiff_core::{
         CapturedDiff, DraftComment, ProjectIdentity, RefreshOutcome, ReviewState, ScmType,
         create_session,
     };
     use wiff_diff::{LineNo, Side};
-    use wiff_tui::{Action, App, DiffView, Key, KeyPress, Review, Theme};
+    use wiff_tui::{Action, App, CommentSync, DiffView, Key, KeyPress, Review, Theme};
 
-    use super::{commit_drafts, recapture, refresh_in_place, refresh_report, save_in_place};
+    use super::{
+        commit_drafts, recapture, refresh_in_place, refresh_report, reload_committed,
+        save_in_place, sync_report,
+    };
     use crate::command::{DiffSelection, capture_scm_diff};
 
     /// A bare session header from `source`, for exercising recapture routing.
@@ -575,6 +621,120 @@ added  f.txt
         4 + delta
 ---
 committed 1 change
+";
+        k9::assert_equal!(screen(&app, 80), expected.to_string());
+    }
+
+    #[test]
+    fn syncing_picks_up_a_comment_committed_by_another_actor() {
+        // A session over a one-file diff, opened with no comments. While it is
+        // being reviewed an agent commits a comment on the first added line; the
+        // watcher registers the append, the reload folds it in as a committed
+        // comment, and the tally reports one added.
+        let data = tempfile::tempdir().expect("data tempdir");
+        let identity = ProjectIdentity {
+            canonical: "demo".to_string(),
+            repo_root: Some(data.path().to_path_buf()),
+            scm: Some(ScmType::Git),
+        };
+        let captured = CapturedDiff {
+            text: "\
+diff --git a/f.txt b/f.txt
+new file mode 100644
+--- /dev/null
++++ b/f.txt
+@@ -0,0 +1,4 @@
++alpha
++beta
++gamma
++delta
+"
+            .to_string(),
+            source: SourceKind::GitWorktree,
+        };
+        let log =
+            create_session(data.path(), &identity, data.path(), &captured).expect("create session");
+        let session_path = log.path().to_path_buf();
+        drop(log);
+
+        let theme = Theme::dark();
+        let state = ReviewState::load(&session_path).expect("load state");
+        let version = state.latest_version().expect("a version").number;
+        let diff = wiff_diff::parse(
+            &SessionLog::open(&session_path)
+                .unwrap()
+                .read_diff(version)
+                .unwrap(),
+        )
+        .expect("parse v0");
+        let review = Review::new(
+            DiffView::new(theme.clone()).expect("view"),
+            diff,
+            Author {
+                name: "wez".to_string(),
+                kind: AuthorKind::Human,
+            },
+            version,
+            state.comments.clone(),
+        );
+        let mut app = App::reviewing(review, 40, &theme);
+
+        // The watcher takes the freshly created session as its baseline, so it
+        // registers no change until another actor writes.
+        let mut watcher = SessionWatcher::new(&session_path);
+        k9::assert_equal!(watcher.changed().is_some(), false);
+
+        // An agent commits a comment on the alpha line straight to the log.
+        let mut log = SessionLog::open(&session_path).expect("open");
+        log.append_locked(RecordBody::Comment(CommentRecord {
+            id: Ulid(7),
+            author: Author {
+                name: "assistant".to_string(),
+                kind: AuthorKind::Agent,
+            },
+            target: CommentTarget::Lines {
+                file: "f.txt".to_string(),
+                side: Side::After,
+                start_line: LineNo::new(1).unwrap(),
+                end_line: LineNo::new(1).unwrap(),
+            },
+            version,
+            anchor: None,
+            body: "alpha looks off".to_string(),
+        }))
+        .expect("append comment");
+
+        let fingerprint = watcher.changed().expect("the append registers");
+        let summary = reload_committed(&session_path, &mut app).expect("reload");
+        watcher.acknowledge(fingerprint);
+        app.set_message(sync_report(&summary));
+
+        k9::assert_equal!(
+            summary,
+            CommentSync {
+                added: 1,
+                changed: 0,
+                removed: 0,
+            }
+        );
+        // The acknowledged change no longer registers.
+        k9::assert_equal!(watcher.changed().is_some(), false);
+
+        // The agent's comment now shows as committed above the alpha line, and
+        // the status line reports what was synced.
+        let expected = "\
+Review [press c here to draft the review comment]
+added  f.txt
+@@ -0,0 +1,4 @@
+┌ assistant (agent)  press e to edit  r to resolve  d to delete ───────────────┐
+│alpha looks off                                                               │
+└──────────────────────────────────────────────────────────────────────────────┘
+        1 + alpha
+        2 + beta
+        3 + gamma
+        4 + delta
+---
+synced: 1 added
 ";
         k9::assert_equal!(screen(&app, 80), expected.to_string());
     }

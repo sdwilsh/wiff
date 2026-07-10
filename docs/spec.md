@@ -26,8 +26,9 @@ deferred past v0 so the v0 architecture leaves room for them.
 - Side-by-side diff view (unified only in v0; the view is designed to be
   selectable later).
 - Suggested code-change blocks (plain-text comments only in v0).
-- Live reload of another process's edits while the TUI is open (manual refresh
-  in v0; `--watch` later).
+- Auto-reloading a new diff capture from another process while the TUI is open
+  (a new diff version still needs a manual refresh in v0; another actor's
+  committed comment edits are picked up on their own).
 - Forge integration (git-pkgs/forge), jj source, whitespace-ignoring diffs.
 
 ## Terminology
@@ -82,6 +83,13 @@ $XDG_DATA_HOME/wiff/                 (e.g. ~/.local/share/wiff)
 - Each record's `seq` is its 0-based line position and its stable id within the
   session. External references are `(session-ulid, seq)`.
 - A header record is written first, under the lock, at creation.
+- While the review sits idle the TUI periodically stat-checks the session file (a
+  cheap size and mtime check, no inotify) and, when another actor has appended,
+  folds the new committed comments in without disturbing the reviewer's cursor,
+  folds, or pending drafts, noting in the status line what was added, updated, or
+  removed. The reload waits while a comment edit, search prompt, or exit dialog
+  is open and resumes when the reviewer returns to the plain view. A capture of a
+  new diff version is left for a manual refresh.
 
 ### Record schema
 
@@ -490,7 +498,7 @@ A cargo workspace under `crates/`:
 - Suggested code-change blocks in comments.
 - Markdown rendering of comment bodies in the TUI (plain wrapped text in v0).
 - Side-by-side view; ignore-whitespace and other diff options.
-- `--watch` live reload of concurrent edits.
+- `--watch` live reload of a new diff capture from another process.
 - Opening files in an editor (`open_in_editor`): the action and its default
   binding exist, but materialization and editor launch, single-file then
   whole-tree, and feeding editor changes back into the review are deferred.

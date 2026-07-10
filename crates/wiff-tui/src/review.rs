@@ -7,6 +7,8 @@
 //! over the committed comments and badges the ones that carry an uncommitted
 //! change, so pending work is visible until it is committed.
 
+use std::collections::{HashMap, HashSet};
+
 use ulid::Ulid;
 use wiff_core::draft::{DraftBuffer, draft_record};
 use wiff_core::record::{Author, CommentTarget, RecordBody};
@@ -14,6 +16,42 @@ use wiff_core::review::CommentState;
 use wiff_diff::Diff;
 
 use crate::render::{DiffView, Document, FileHighlights};
+
+/// How a reload of committed comments differed from the set already shown, so a
+/// reviewer can be told what another actor changed while they were reading.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CommentSync {
+    /// Comments that appeared that were not shown before.
+    pub added: usize,
+    /// Comments shown before whose content changed.
+    pub changed: usize,
+    /// Comments shown before that are gone, withdrawn by another actor.
+    pub removed: usize,
+}
+
+impl CommentSync {
+    /// Whether nothing changed, so there is nothing to report.
+    pub fn is_empty(&self) -> bool {
+        self.added == 0 && self.changed == 0 && self.removed == 0
+    }
+
+    /// Compare the previously shown comments to the freshly loaded set, matching
+    /// by identity and counting a comment as changed when its latest event moved.
+    fn between(before: &[CommentState], after: &[CommentState]) -> Self {
+        let seen: HashMap<Ulid, u64> = before.iter().map(|c| (c.id, c.updated_seq)).collect();
+        let kept: HashSet<Ulid> = after.iter().map(|c| c.id).collect();
+        let mut sync = CommentSync::default();
+        for comment in after {
+            match seen.get(&comment.id) {
+                None => sync.added += 1,
+                Some(&updated_seq) if updated_seq != comment.updated_seq => sync.changed += 1,
+                Some(_) => {}
+            }
+        }
+        sync.removed = before.iter().filter(|c| !kept.contains(&c.id)).count();
+        sync
+    }
+}
 
 /// A diff under review together with its committed comments and the buffered
 /// edits layered over them.
@@ -163,7 +201,66 @@ impl Review {
     /// Replace the committed comments with `comments`, the freshly folded live
     /// set after the pending drafts were persisted. The caller has already
     /// taken the drafts, so the review now reflects them as committed.
-    pub fn set_committed(&mut self, comments: Vec<CommentState>) {
+    pub fn set_committed(&mut self, comments: Vec<CommentState>) -> CommentSync {
+        let sync = CommentSync::between(&self.committed, &comments);
         self.committed = comments;
+        sync
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wiff_core::record::{Author, AuthorKind, CommentTarget};
+
+    use super::{CommentState, CommentSync};
+
+    /// A committed comment with identity `id` whose most recent event is `seq`,
+    /// the only fields the sync tally compares.
+    fn committed(id: u128, updated_seq: u64) -> CommentState {
+        CommentState {
+            id: ulid::Ulid(id),
+            author: Author {
+                name: "agent".to_string(),
+                kind: AuthorKind::Agent,
+            },
+            target: CommentTarget::Review,
+            version: 0,
+            anchor: None,
+            body: "note".to_string(),
+            resolved: false,
+            deleted: false,
+            confidence: None,
+            created_seq: updated_seq,
+            updated_seq,
+        }
+    }
+
+    #[test]
+    fn a_sync_tally_counts_added_changed_and_removed_comments() {
+        // Against a set holding comments 1 and 2, a reload that keeps 1 as it
+        // was, advances 2 to a later event, and introduces 3 counts one added
+        // and one changed; comment 1 is unchanged and comment 2 is not removed.
+        let before = vec![committed(1, 5), committed(2, 5)];
+        let after = vec![committed(1, 5), committed(2, 9), committed(3, 1)];
+        k9::assert_equal!(
+            CommentSync::between(&before, &after),
+            CommentSync {
+                added: 1,
+                changed: 1,
+                removed: 0,
+            }
+        );
+
+        // Dropping comment 2 from the reloaded set counts as one removed, and an
+        // identical reload reports nothing at all.
+        k9::assert_equal!(
+            CommentSync::between(&before, &[committed(1, 5)]),
+            CommentSync {
+                added: 0,
+                changed: 0,
+                removed: 1,
+            }
+        );
+        k9::assert_equal!(CommentSync::between(&before, &before).is_empty(), true);
     }
 }

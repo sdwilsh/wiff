@@ -9,6 +9,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use nix::fcntl::{Flock, FlockArg};
 use time::OffsetDateTime;
@@ -252,6 +253,60 @@ pub fn read_records(path: &Path) -> Result<Vec<Record>> {
     Ok(records)
 }
 
+/// A cheap change detector for a session file, so a reader can pick up another
+/// actor's appends without inotify. The log only ever grows, so its size paired
+/// with its modification time is an exact change signal without reading or
+/// hashing the file.
+#[derive(Debug, Clone)]
+pub struct SessionWatcher {
+    path: PathBuf,
+    seen: Option<Fingerprint>,
+}
+
+/// An opaque snapshot of a session file's state, compared to tell whether it has
+/// advanced. A caller passes one from [`SessionWatcher::changed`] back to
+/// [`SessionWatcher::acknowledge`] without inspecting it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fingerprint {
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+fn fingerprint(path: &Path) -> Option<Fingerprint> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some(Fingerprint {
+        len: meta.len(),
+        modified: meta.modified().ok(),
+    })
+}
+
+impl SessionWatcher {
+    /// Watch the session file at `path`, taking its current state as the
+    /// baseline so only later appends register as a change.
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
+        let seen = fingerprint(&path);
+        Self { path, seen }
+    }
+
+    /// The file's current fingerprint when it differs from the last acknowledged
+    /// one, meaning another actor has appended since. `None` when it is
+    /// unchanged, or when it cannot be stat-ed (a removed session simply stops
+    /// registering changes).
+    pub fn changed(&self) -> Option<Fingerprint> {
+        let current = fingerprint(&self.path)?;
+        (Some(current) != self.seen).then_some(current)
+    }
+
+    /// Record `fingerprint` as seen, so the change it stands for does not
+    /// register again. Held apart from [`changed`](Self::changed) so a caller
+    /// that fails to act on a change (a torn read of a line still being written)
+    /// can leave it unacknowledged and retry on the next check.
+    pub fn acknowledge(&mut self, fingerprint: Fingerprint) {
+        self.seen = Some(fingerprint);
+    }
+}
+
 /// Recover a session's ULID from its `<ULID>.jsonl` path.
 fn ulid_from_path(path: &Path) -> Result<Ulid> {
     path.file_stem()
@@ -338,4 +393,36 @@ pub fn remove_session(path: &Path) -> Result<()> {
         Err(source) => return Err(Error::io(&sideband, source)),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    use super::SessionWatcher;
+
+    #[test]
+    fn a_watcher_registers_an_append_once_until_it_is_acknowledged() {
+        // A fresh watcher takes the file as its baseline and sees no change; an
+        // append registers as changed and keeps registering until the change is
+        // acknowledged, after which a further append registers anew.
+        let mut file = tempfile::NamedTempFile::new().expect("temp file");
+        file.write_all(b"one\n").expect("seed");
+        file.flush().expect("flush");
+
+        let mut watcher = SessionWatcher::new(file.path());
+        k9::assert_equal!(watcher.changed().is_some(), false);
+
+        file.write_all(b"two\n").expect("append");
+        file.flush().expect("flush");
+        let seen = watcher.changed().expect("the append registers");
+        k9::assert_equal!(watcher.changed().is_some(), true);
+
+        watcher.acknowledge(seen);
+        k9::assert_equal!(watcher.changed().is_some(), false);
+
+        file.write_all(b"three\n").expect("append");
+        file.flush().expect("flush");
+        k9::assert_equal!(watcher.changed().is_some(), true);
+    }
 }

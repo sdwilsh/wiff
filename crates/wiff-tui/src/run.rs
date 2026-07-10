@@ -7,6 +7,7 @@
 //! the terminal is always restored, including on a draw or read error.
 
 use std::io::{self, Stdout};
+use std::time::Duration;
 
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::crossterm::event::{self, Event};
@@ -29,11 +30,19 @@ use crate::input::Input;
 use crate::keymap::Keymap;
 use crate::render::color;
 
+/// How long the loop waits for a key before waking to pick up another actor's
+/// changes to the session. Long enough that an idle review costs almost nothing,
+/// short enough that an update lands promptly.
+const POLL_INTERVAL: Duration = Duration::from_millis(750);
+
 /// Run the review loop over `app`, resolving key events through `keymap`, until
 /// a quit action ends it. A [`Action::Refresh`] is handed to `refresh`, which
 /// recaptures the diff and reloads the app in place, and a [`Action::Save`] to
 /// `save`, which commits the pending drafts and keeps the review open; both
-/// report their own outcome through the app's status line. The terminal is put
+/// report their own outcome through the app's status line. While the review sits
+/// idle the loop periodically calls `sync`, which picks up another actor's
+/// updates to the session and folds them into the app, returning whether it
+/// changed anything so the loop repaints only when it did. The terminal is put
 /// into raw mode on an alternate screen for the duration and restored before
 /// returning. Returns how the reviewer chose to leave together with any buffered
 /// draft edits still to commit.
@@ -42,9 +51,10 @@ pub fn run(
     keymap: Keymap,
     refresh: impl FnMut(&mut App),
     save: impl FnMut(&mut App),
+    sync: impl FnMut(&mut App) -> bool,
 ) -> io::Result<(Exit, Vec<RecordBody>)> {
     let mut terminal = TerminalGuard::enter()?;
-    event_loop(&mut terminal.terminal, app, keymap, refresh, save)
+    event_loop(&mut terminal.terminal, app, keymap, refresh, save, sync)
 }
 
 /// Draw the current view: the visible lines over all but the last screen row,
@@ -129,11 +139,33 @@ fn event_loop<B: Backend>(
     keymap: Keymap,
     mut refresh: impl FnMut(&mut App),
     mut save: impl FnMut(&mut App),
+    mut sync: impl FnMut(&mut App) -> bool,
 ) -> io::Result<(Exit, Vec<RecordBody>)> {
     let mut input = Input::new(keymap);
+    // Repaint only when the view might have changed, so an idle poll that finds
+    // no session update does not redraw. Set the first time through to paint the
+    // opening frame.
+    let mut dirty = true;
     loop {
-        draw(terminal, &mut app)?;
-        // A resize is handled by the next draw, which resizes the app to match.
+        if dirty {
+            draw(terminal, &mut app)?;
+            dirty = false;
+        }
+        // A wait bounded by the poll interval, so a lull between key presses
+        // wakes the loop to fold in another actor's session updates. A pending
+        // key press is delivered at once, so responsiveness is unaffected.
+        if !event::poll(POLL_INTERVAL)? {
+            // Only pick up updates in the plain review view: a comment edit,
+            // search prompt, or exit dialog owns a spot or buffer that a reload
+            // would disturb, so the change waits until the reviewer returns.
+            if !app.composing() && !app.searching() && !app.exiting() && sync(&mut app) {
+                dirty = true;
+            }
+            continue;
+        }
+        // Any event may move the view or resize the terminal, so repaint once it
+        // is handled. A resize is picked up by that next draw.
+        dirty = true;
         let Event::Key(key) = event::read()? else {
             continue;
         };
