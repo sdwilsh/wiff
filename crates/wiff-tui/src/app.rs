@@ -26,6 +26,7 @@ use wiff_diff::Rgb;
 
 use crate::action::Action;
 use crate::compose::{Compose, ComposeKind};
+use crate::exit::{Exit, ExitColors, ExitDefault, ExitDialog, ExitPlan, plan_exit};
 use crate::key::{Key, KeyPress};
 use crate::render::{Document, RowKind, color};
 use crate::review::Review;
@@ -89,6 +90,14 @@ pub struct App {
     review: Option<Review>,
     /// The inline comment editor, present while authoring or revising a comment.
     compose: Option<Compose>,
+    /// The modal asking how to leave, present once a quit begins and until it is
+    /// confirmed or cancelled.
+    exit_dialog: Option<ExitDialog>,
+    /// The chosen way to leave, set once a quit resolves, which the host reads
+    /// to end the loop.
+    exit: Option<Exit>,
+    /// The default a quit resolves to, from the host's configured on-exit policy.
+    exit_default: ExitDefault,
     /// Whether each of the document's folds is currently collapsed.
     collapsed: Vec<bool>,
     /// Whether each comment's body is currently collapsed, keyed by its stable
@@ -107,6 +116,8 @@ pub struct App {
     status_bg: Rgb,
     /// The border color of the inline comment editor.
     compose_border: Rgb,
+    /// The colors the exit dialog paints with.
+    exit_colors: ExitColors,
 }
 
 impl App {
@@ -123,6 +134,9 @@ impl App {
             document,
             review: None,
             compose: None,
+            exit_dialog: None,
+            exit: None,
+            exit_default: ExitDefault::Prompt,
             collapsed,
             comment_collapsed,
             view: Vec::new(),
@@ -134,6 +148,12 @@ impl App {
             status_fg: theme.status_fg,
             status_bg: theme.status_bg,
             compose_border: theme.comment_draft_fg,
+            exit_colors: ExitColors {
+                border: theme.review_fg,
+                selected_bg: theme.cursor_bg,
+                text: theme.comment_fg,
+                hint: theme.fold_fg,
+            },
         };
         app.rebuild_view();
         app
@@ -145,6 +165,12 @@ impl App {
         let mut app = Self::new(review.document(), height, theme);
         app.review = Some(review);
         app
+    }
+
+    /// Set the default a quit resolves to, from the host's on-exit policy.
+    pub fn with_exit_default(mut self, default: ExitDefault) -> Self {
+        self.exit_default = default;
+        self
     }
 
     /// Take the pending draft records to be committed to the session log,
@@ -200,6 +226,9 @@ impl App {
             Action::DeleteComment => return self.delete_comment(),
             Action::AddComment => return self.start_add_comment(),
             Action::EditComment => return self.start_edit_comment(),
+            quit @ (Action::Quit | Action::QuitKeep | Action::QuitRemove) => {
+                return self.request_exit(quit);
+            }
             other => return Update::Passed(other),
         }
         Update::Handled
@@ -406,6 +435,65 @@ impl App {
             editor: compose.editor(),
             below,
         })
+    }
+
+    /// Begin leaving the review for a quit `action`: resolve it against the
+    /// configured default and any pending drafts, either settling how to leave
+    /// at once or opening the dialog to ask.
+    fn request_exit(&mut self, action: Action) -> Update {
+        match plan_exit(action, self.exit_default, self.has_drafts()) {
+            ExitPlan::Now(exit) => self.exit = Some(exit),
+            ExitPlan::Ask {
+                title,
+                choices,
+                selected,
+            } => {
+                self.exit_dialog =
+                    Some(ExitDialog::new(title, choices, selected, self.exit_colors));
+            }
+        }
+        Update::Handled
+    }
+
+    /// Whether the review has uncommitted draft edits that leaving would lose.
+    fn has_drafts(&self) -> bool {
+        self.review.as_ref().is_some_and(Review::has_drafts)
+    }
+
+    /// Whether the exit dialog is open, so the host routes raw key presses to it
+    /// rather than resolving them into actions.
+    pub fn exiting(&self) -> bool {
+        self.exit_dialog.is_some()
+    }
+
+    /// The open exit dialog, for the host to render centered over the view.
+    pub fn exit_dialog(&self) -> Option<&ExitDialog> {
+        self.exit_dialog.as_ref()
+    }
+
+    /// The chosen way to leave once a quit has resolved, which the host reads to
+    /// end the loop. Absent until the reviewer settles the choice.
+    pub fn pending_exit(&self) -> Option<Exit> {
+        self.exit
+    }
+
+    /// Feed a key press to the open exit dialog: move the highlight with the
+    /// arrows, confirm the highlighted choice on enter, and cancel back to the
+    /// review on escape. Does nothing when the dialog is closed.
+    pub fn exit_key(&mut self, press: KeyPress) {
+        let Some(dialog) = self.exit_dialog.as_mut() else {
+            return;
+        };
+        match press.key {
+            Key::Up | Key::Char('k') => dialog.select_prev(),
+            Key::Down | Key::Char('j') => dialog.select_next(),
+            Key::Enter => {
+                self.exit = Some(dialog.selected_exit());
+                self.exit_dialog = None;
+            }
+            Key::Escape => self.exit_dialog = None,
+            _ => {}
+        }
     }
 
     /// Re-render the document from the review after a buffered edit, preserving
@@ -773,6 +861,7 @@ mod tests {
 
     use super::{App, ComposeView, Update};
     use crate::action::Action;
+    use crate::exit::{Exit, ExitDefault};
     use crate::key::{Key, KeyPress};
     use crate::render::DiffView;
     use crate::render::testutil::{dump, file, ln};
@@ -1124,8 +1213,44 @@ mod tests {
     #[test]
     fn a_non_navigation_action_is_passed_back_to_the_host() {
         let mut app = App::new(document(), 10, &Theme::dark());
-        k9::assert_equal!(app.update(Action::Quit), Update::Passed(Action::Quit));
+        k9::assert_equal!(app.update(Action::Refresh), Update::Passed(Action::Refresh));
         k9::assert_equal!(app.update(Action::LineDown), Update::Handled);
+    }
+
+    #[test]
+    fn quitting_a_clean_viewport_resolves_by_the_configured_default() {
+        // With no drafts to lose, a keep default leaves at once with no dialog
+        // and settles on keeping the session.
+        let mut app = App::new(document(), 10, &Theme::dark()).with_exit_default(ExitDefault::Keep);
+        k9::assert_equal!(app.update(Action::Quit), Update::Handled);
+        k9::assert_equal!(app.exiting(), false);
+        k9::assert_equal!(app.pending_exit(), Some(Exit::Commit));
+    }
+
+    #[test]
+    fn a_prompt_default_opens_the_dialog_and_the_choice_settles_the_exit() {
+        // A prompt default with nothing buffered asks keep-or-remove; moving to
+        // the second choice and confirming removes the session.
+        let mut app =
+            App::new(document(), 10, &Theme::dark()).with_exit_default(ExitDefault::Prompt);
+        k9::assert_equal!(app.update(Action::Quit), Update::Handled);
+        k9::assert_equal!(app.exiting(), true);
+        k9::assert_equal!(app.pending_exit(), None);
+        app.exit_key(KeyPress::new(Key::Down));
+        app.exit_key(KeyPress::new(Key::Enter));
+        k9::assert_equal!(app.exiting(), false);
+        k9::assert_equal!(app.pending_exit(), Some(Exit::Remove));
+    }
+
+    #[test]
+    fn cancelling_the_exit_dialog_returns_to_the_review() {
+        // Escape closes the dialog without choosing, leaving the exit unresolved.
+        let mut app =
+            App::new(document(), 10, &Theme::dark()).with_exit_default(ExitDefault::Prompt);
+        app.update(Action::Quit);
+        app.exit_key(KeyPress::new(Key::Escape));
+        k9::assert_equal!(app.exiting(), false);
+        k9::assert_equal!(app.pending_exit(), None);
     }
 
     #[test]

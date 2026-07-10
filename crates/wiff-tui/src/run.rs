@@ -15,27 +15,18 @@ use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::layout::Rect;
-use ratatui::widgets::Paragraph;
+use ratatui::style::Style;
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::{Frame, Terminal};
 
 use wiff_core::record::RecordBody;
 
-use crate::action::Action;
-use crate::app::{App, ComposeView, Update};
+use crate::app::{App, ComposeView};
 use crate::event::to_key_press;
+use crate::exit::{Exit, ExitDialog};
 use crate::input::Input;
 use crate::keymap::Keymap;
-
-/// How the reviewer chose to leave the session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Exit {
-    /// Leave per the configured on-exit default, which the host resolves.
-    Default,
-    /// Keep the session for later resumption.
-    Keep,
-    /// Remove the session.
-    Remove,
-}
+use crate::render::color;
 
 /// Run the review loop over `app`, resolving key events through `keymap`, until
 /// a quit action ends it. The terminal is put into raw mode on an alternate
@@ -69,8 +60,31 @@ pub fn draw<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
             frame.render_widget(Paragraph::new(app.visible(area.width as usize)), doc_area);
         }
         frame.render_widget(Paragraph::new(app.status(area.width as usize)), status_area);
+        // The exit dialog floats centered over whatever it interrupts.
+        if let Some(dialog) = app.exit_dialog() {
+            render_exit_dialog(frame, doc_area, dialog);
+        }
     })?;
     Ok(())
+}
+
+/// Draw the exit dialog centered over `area`, clearing the cells behind it so
+/// the underlying view does not show through the box.
+fn render_exit_dialog(frame: &mut Frame, area: Rect, dialog: &ExitDialog) {
+    let width = (dialog.width() as u16 + 2).min(area.width);
+    let height = (dialog.height() as u16 + 2).min(area.height);
+    let rect = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color(dialog.border())))
+        .title(dialog.title().to_string());
+    frame.render_widget(Clear, rect);
+    frame.render_widget(Paragraph::new(dialog.lines()).block(block), rect);
 }
 
 /// Draw the inline comment editor into `area`: the document lines above it, the
@@ -114,29 +128,19 @@ fn event_loop<B: Backend>(
         let Some(press) = to_key_press(key) else {
             continue;
         };
-        // While the inline editor is open, raw presses go to it rather than
-        // being resolved into review actions.
+        // While the inline editor or the exit dialog is open, raw presses go to
+        // it rather than being resolved into review actions.
         if app.composing() {
             app.compose_key(press);
-            continue;
+        } else if app.exiting() {
+            app.exit_key(press);
+        } else if let Some(action) = input.press(press) {
+            app.update(action);
         }
-        if let Some(action) = input.press(press)
-            && let Update::Passed(passed) = app.update(action)
-            && let Some(exit) = exit_for(passed)
-        {
+        // A quit action or a confirmed dialog choice settles how to leave.
+        if let Some(exit) = app.pending_exit() {
             return Ok((exit, app.take_drafts()));
         }
-    }
-}
-
-/// The exit a passed-back action calls for, or `None` when the action is not a
-/// quit and is left for a later feature to handle.
-fn exit_for(action: Action) -> Option<Exit> {
-    match action {
-        Action::Quit => Some(Exit::Default),
-        Action::QuitKeep => Some(Exit::Keep),
-        Action::QuitRemove => Some(Exit::Remove),
-        _ => None,
     }
 }
 
@@ -173,14 +177,38 @@ mod tests {
 
     use wiff_core::record::{Author, AuthorKind};
 
-    use super::{Exit, draw, exit_for};
+    use super::draw;
     use crate::action::Action;
     use crate::app::App;
+    use crate::exit::ExitDefault;
     use crate::key::{Key, KeyPress};
     use crate::render::DiffView;
     use crate::render::testutil::file;
     use crate::review::Review;
     use crate::theme::Theme;
+
+    /// A review over a one-line added file authored by a human, for driving the
+    /// exit dialog after a draft is made.
+    fn draft_review() -> Review {
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[(LineKind::Added, "let y = 2;", 1)],
+            )],
+        };
+        let author = Author {
+            name: "wez".to_string(),
+            kind: AuthorKind::Human,
+        };
+        Review::new(
+            DiffView::new(Theme::dark()).expect("view"),
+            diff,
+            author,
+            0,
+            Vec::new(),
+        )
+    }
 
     /// The screen after drawing `app` into a `width` x `height` test terminal,
     /// as one text row per line so placement and truncation are asserted.
@@ -270,10 +298,34 @@ mod tests {
     }
 
     #[test]
-    fn only_quit_actions_end_the_loop() {
-        k9::assert_equal!(exit_for(Action::Quit), Some(Exit::Default));
-        k9::assert_equal!(exit_for(Action::QuitKeep), Some(Exit::Keep));
-        k9::assert_equal!(exit_for(Action::QuitRemove), Some(Exit::Remove));
-        k9::assert_equal!(exit_for(Action::AddComment), None);
+    fn draws_the_exit_dialog_centered_over_the_view_with_pending_drafts() {
+        let mut app = App::reviewing(draft_review(), 0, &Theme::dark())
+            .with_exit_default(ExitDefault::Prompt);
+        // Author a comment so a draft is pending, then quit to raise the dialog.
+        app.update(Action::AddComment);
+        for c in "why?".chars() {
+            app.compose_key(KeyPress::new(Key::Char(c)));
+        }
+        app.compose_key(KeyPress::with_modifiers(Key::Char('s'), true, false, false));
+        app.update(Action::Quit);
+
+        // The three-choice dialog floats centered over the review, the first
+        // choice highlighted with its marker and the key hint along the bottom.
+        // It clears the cells behind it, so the underlying diff shows only where
+        // the box does not cover it.
+        let expected = concat!(
+            "Review                                            \n",
+            "  *┌You have uncommitted comments─────────────┐   \n",
+            "   │> Commit review                           │   \n",
+            "mod│  Quit without saving                     │   \n",
+            "@@ │  Remove session                          │   \n",
+            "   │                                          │   \n",
+            "   │  up/down move   enter select   esc cancel│   \n",
+            "   └──────────────────────────────────────────┘   \n",
+            "                                                  \n",
+            "                                                  \n",
+            "src/lib.rs  100%                                  \n",
+        );
+        k9::assert_equal!(screen(50, 11, app), expected.to_string());
     }
 }

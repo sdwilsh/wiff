@@ -122,6 +122,12 @@ impl Review {
             .map(|entry| entry.comment.body)
     }
 
+    /// Whether any uncommitted draft edits are buffered, so the reviewer is
+    /// warned before leaving that leaving without committing loses them.
+    pub fn has_drafts(&self) -> bool {
+        !self.drafts.is_empty()
+    }
+
     /// Take the buffered drafts as the append events that persist them, emptying
     /// the buffer. Used at commit time when the reviewer keeps the session.
     pub fn take_drafts(&mut self) -> Vec<RecordBody> {

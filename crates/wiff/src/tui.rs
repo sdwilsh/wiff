@@ -2,10 +2,8 @@
 //!
 //! This is the bridge from the persisted session to the interactive review: it
 //! loads the latest captured diff, renders it, and runs the terminal loop, then
-//! resolves how the reviewer chose to leave against the configured `on_exit`
-//! default, keeping or removing the session accordingly.
+//! keeps or removes the session according to how the reviewer chose to leave.
 
-use std::io::{IsTerminal, Write};
 use std::path::Path;
 
 use anyhow::Context;
@@ -13,7 +11,7 @@ use wiff_config::{Config, OnExit};
 use wiff_core::record::{AuthorKind, RecordBody};
 use wiff_core::session::remove_session;
 use wiff_core::{ReviewState, SessionLog};
-use wiff_tui::{App, DiffView, Exit, Review, Theme, run};
+use wiff_tui::{App, DiffView, Exit, ExitDefault, Review, Theme, run};
 
 /// Open `session_path` in the review TUI, then keep or remove the session per
 /// the reviewer's choice and the configured `on_exit` default.
@@ -44,33 +42,40 @@ pub fn open(session_path: &Path, config: &Config) -> anyhow::Result<()> {
     // anchored against the diff version being reviewed.
     let author = config.author.resolve(AuthorKind::Human);
     let review = Review::new(view, diff, author, version.number, comments);
-    let app = App::reviewing(review, 0, &theme);
+    let app = App::reviewing(review, 0, &theme).with_exit_default(exit_default(config.on_exit));
     let keymap = config.keymap()?;
 
     let (exit, drafts) = run(app, keymap)?;
-    resolve_exit(exit, config, session_path, drafts)
+    resolve_exit(exit, session_path, drafts)
 }
 
-/// Keep or remove the session for `exit`, resolving the configured default and
-/// prompting when neither the reviewer nor the config settled the choice. When
-/// the session is kept, the reviewer's buffered draft edits are committed to the
-/// log; when it is removed, they are discarded along with it.
-fn resolve_exit(
-    exit: Exit,
-    config: &Config,
-    session_path: &Path,
-    drafts: Vec<RecordBody>,
-) -> anyhow::Result<()> {
-    let keep = match keep_decision(exit, config.on_exit) {
-        Some(keep) => keep,
-        None => prompt_keep()?,
-    };
-    if keep {
-        commit_drafts(session_path, drafts)?;
-        println!("kept session at {}", session_path.display());
-    } else {
-        remove_session(session_path)?;
-        println!("removed session");
+/// The TUI's exit default matching the configured `on_exit` policy.
+fn exit_default(on_exit: OnExit) -> ExitDefault {
+    match on_exit {
+        OnExit::Keep => ExitDefault::Keep,
+        OnExit::Remove => ExitDefault::Remove,
+        OnExit::Prompt => ExitDefault::Prompt,
+    }
+}
+
+/// Carry out the reviewer's chosen `exit`: commit the buffered drafts and keep
+/// the session, keep it and drop the drafts, or remove it entirely.
+fn resolve_exit(exit: Exit, session_path: &Path, drafts: Vec<RecordBody>) -> anyhow::Result<()> {
+    match exit {
+        Exit::Commit => {
+            commit_drafts(session_path, drafts)?;
+            println!("kept session at {}", session_path.display());
+        }
+        Exit::Discard => {
+            println!(
+                "kept session at {} (drafts discarded)",
+                session_path.display()
+            );
+        }
+        Exit::Remove => {
+            remove_session(session_path)?;
+            println!("removed session");
+        }
     }
     Ok(())
 }
@@ -88,59 +93,13 @@ fn commit_drafts(session_path: &Path, drafts: Vec<RecordBody>) -> anyhow::Result
     Ok(())
 }
 
-/// Whether to keep the session for `exit`, or `None` when the choice is left to
-/// the reviewer: an explicit quit-keep or quit-remove decides itself, and a
-/// plain quit follows `on_exit` unless it is `Prompt`.
-fn keep_decision(exit: Exit, on_exit: OnExit) -> Option<bool> {
-    match exit {
-        Exit::Keep => Some(true),
-        Exit::Remove => Some(false),
-        Exit::Default => match on_exit {
-            OnExit::Keep => Some(true),
-            OnExit::Remove => Some(false),
-            OnExit::Prompt => None,
-        },
-    }
-}
-
-/// Ask on the terminal whether to keep the session, defaulting to keeping it
-/// when there is no terminal to ask or the answer is empty, so a session is
-/// never dropped without an explicit no.
-fn prompt_keep() -> anyhow::Result<bool> {
-    if !std::io::stdin().is_terminal() {
-        return Ok(true);
-    }
-    loop {
-        print!("keep this session? [Y/n] ");
-        std::io::stdout()
-            .flush()
-            .context("could not write the exit prompt")?;
-        let mut answer = String::new();
-        let read = std::io::stdin()
-            .read_line(&mut answer)
-            .context("could not read the exit answer")?;
-        // A closed stdin (no bytes read) keeps the session rather than looping
-        // forever on end-of-input.
-        if read == 0 {
-            return Ok(true);
-        }
-        match answer.trim().to_ascii_lowercase().as_str() {
-            "" | "y" | "yes" => return Ok(true),
-            "n" | "no" => return Ok(false),
-            _ => println!("please answer yes or no"),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use ulid::Ulid;
-    use wiff_config::OnExit;
     use wiff_core::record::{CommentDelete, CommentResolve, RecordBody, SessionHeader, SourceKind};
     use wiff_core::session::{SessionLog, read_records};
-    use wiff_tui::Exit;
 
-    use super::{commit_drafts, keep_decision};
+    use super::commit_drafts;
 
     /// A session header for `ulid`, the first record of a fresh log.
     fn header(ulid: Ulid) -> RecordBody {
@@ -212,19 +171,5 @@ mod tests {
             .map(|record| (record.seq, record.body))
             .collect();
         k9::assert_equal!(got, vec![(0, header(ulid))]);
-    }
-
-    #[test]
-    fn an_explicit_choice_decides_regardless_of_config() {
-        // quit-keep and quit-remove settle themselves whatever on_exit says.
-        k9::assert_equal!(keep_decision(Exit::Keep, OnExit::Remove), Some(true));
-        k9::assert_equal!(keep_decision(Exit::Remove, OnExit::Keep), Some(false));
-    }
-
-    #[test]
-    fn a_plain_quit_follows_the_configured_default_or_asks() {
-        k9::assert_equal!(keep_decision(Exit::Default, OnExit::Keep), Some(true));
-        k9::assert_equal!(keep_decision(Exit::Default, OnExit::Remove), Some(false));
-        k9::assert_equal!(keep_decision(Exit::Default, OnExit::Prompt), None);
     }
 }
