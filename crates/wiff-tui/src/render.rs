@@ -345,7 +345,7 @@ impl DiffView {
             id: comment.id,
             header,
             body: body_start..doc.rows.len(),
-            collapsed_default: comment.resolved,
+            collapsed_default: comment.resolved || comment.deleted,
         });
     }
 
@@ -633,11 +633,16 @@ enum BadgeStyle {
 }
 
 /// A comment's status badges, in display order. A pending comment leads with a
-/// `draft` badge so uncommitted work stands out.
+/// `draft` badge so uncommitted work stands out. A deleted comment shows only
+/// that it is withdrawn, its other status being moot until it is restored.
 fn badges(comment: &CommentState, pending: bool) -> Vec<(&'static str, BadgeStyle)> {
     let mut out = Vec::new();
     if pending {
         out.push(("draft", BadgeStyle::Draft));
+    }
+    if comment.deleted {
+        out.push(("deleted", BadgeStyle::Muted));
+        return out;
     }
     if comment.resolved {
         out.push(("resolved", BadgeStyle::Muted));

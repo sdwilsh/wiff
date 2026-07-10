@@ -20,10 +20,12 @@ use std::collections::HashMap;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ulid::Ulid;
+use wiff_core::record::RecordBody;
 use wiff_diff::Rgb;
 
 use crate::action::Action;
 use crate::render::{Document, RowKind, color};
+use crate::review::Review;
 use crate::theme::Theme;
 
 /// The result of feeding an [`Action`] to the [`App`].
@@ -67,6 +69,9 @@ enum ViewRow {
 /// The review view over a rendered diff.
 pub struct App {
     document: Document,
+    /// The review being edited, present when the app can author comments. When
+    /// absent the app is a read-only viewport and editing actions pass through.
+    review: Option<Review>,
     /// Whether each of the document's folds is currently collapsed.
     collapsed: Vec<bool>,
     /// Whether each comment's body is currently collapsed, keyed by its stable
@@ -97,6 +102,7 @@ impl App {
             .collect();
         let mut app = Self {
             document,
+            review: None,
             collapsed,
             comment_collapsed,
             view: Vec::new(),
@@ -110,6 +116,23 @@ impl App {
         };
         app.rebuild_view();
         app
+    }
+
+    /// Build the view over `review`, rendering its current state and retaining
+    /// it so buffered edits re-render in place. Otherwise like [`new`](App::new).
+    pub fn reviewing(review: Review, height: usize, theme: &Theme) -> Self {
+        let mut app = Self::new(review.document(), height, theme);
+        app.review = Some(review);
+        app
+    }
+
+    /// Take the pending draft records to be committed to the session log,
+    /// emptying the buffer. Empty when no review is attached.
+    pub fn take_drafts(&mut self) -> Vec<RecordBody> {
+        self.review
+            .as_mut()
+            .map(Review::take_drafts)
+            .unwrap_or_default()
     }
 
     /// The view row the cursor is on.
@@ -152,9 +175,94 @@ impl App {
             Action::PrevComment => self.jump_backward(Landmark::Comment),
             Action::ToggleFold => self.toggle_fold(),
             Action::ToggleComment => self.toggle_comment(),
+            Action::ResolveComment => return self.resolve_comment(),
+            Action::DeleteComment => return self.delete_comment(),
             other => return Update::Passed(other),
         }
         Update::Handled
+    }
+
+    /// Toggle the resolved state of the comment the cursor is on, buffering the
+    /// change and re-rendering. Passes through when no review is being edited;
+    /// does nothing when the cursor is not on a comment.
+    fn resolve_comment(&mut self) -> Update {
+        if self.review.is_none() {
+            return Update::Passed(Action::ResolveComment);
+        }
+        if let Some(id) = self.comment_at_cursor() {
+            if let Some(review) = self.review.as_mut() {
+                review.toggle_resolved(id);
+            }
+            self.rerender();
+            self.focus_comment(id);
+        }
+        Update::Handled
+    }
+
+    /// Toggle the deleted state of the comment the cursor is on, buffering the
+    /// change and re-rendering. Deleting collapses the comment to its header,
+    /// shown as withdrawn, so an accidental delete is visible and can be undone
+    /// with the same action; restoring expands it again. Passes through when no
+    /// review is being edited; does nothing when the cursor is not on a comment.
+    fn delete_comment(&mut self) -> Update {
+        if self.review.is_none() {
+            return Update::Passed(Action::DeleteComment);
+        }
+        if let Some(id) = self.comment_at_cursor() {
+            if let Some(review) = self.review.as_mut() {
+                let deleted = review.toggle_deleted(id);
+                self.comment_collapsed.insert(id, deleted);
+            }
+            self.rerender();
+            self.focus_comment(id);
+        }
+        Update::Handled
+    }
+
+    /// Re-render the document from the review after a buffered edit, preserving
+    /// the fold and comment collapse state and keeping the cursor in view.
+    fn rerender(&mut self) {
+        let Some(review) = self.review.as_ref() else {
+            return;
+        };
+        let document = review.document();
+        self.reload_document(document);
+    }
+
+    /// Swap in a freshly rendered `document`, carrying the collapse state over.
+    /// A comment edit leaves the diff unchanged, so the fold structure matches
+    /// and its collapse state survives; each surviving comment keeps its
+    /// collapse state and a new one takes its rendered default.
+    fn reload_document(&mut self, document: Document) {
+        if document.folds.len() != self.collapsed.len() {
+            self.collapsed = vec![true; document.folds.len()];
+        }
+        self.comment_collapsed = document
+            .comments
+            .iter()
+            .map(|region| {
+                let collapsed = self
+                    .comment_collapsed
+                    .get(&region.id)
+                    .copied()
+                    .unwrap_or(region.collapsed_default);
+                (region.id, collapsed)
+            })
+            .collect();
+        self.document = document;
+        self.rebuild_view();
+        self.cursor = self.cursor.min(self.last_view());
+        self.scroll_into_view();
+    }
+
+    /// Move the cursor to comment `id`'s header row, if it is in view.
+    fn focus_comment(&mut self, id: Ulid) {
+        if let Some(index) = self
+            .comment_header_row(id)
+            .and_then(|row| self.view_index_of_row(row))
+        {
+            self.move_to(index);
+        }
     }
 
     /// The lines currently in view, with the cursor row washed in the selection
@@ -296,11 +404,8 @@ impl App {
         };
         let collapsed = self.is_comment_collapsed(id);
         self.comment_collapsed.insert(id, !collapsed);
-        let header = self.comment_header_row(id);
         self.rebuild_view();
-        if let Some(index) = header.and_then(|row| self.view_index_of_row(row)) {
-            self.move_to(index);
-        }
+        self.focus_comment(id);
     }
 
     /// The comment the cursor is on, whether on its header or its body.
@@ -481,6 +586,7 @@ mod tests {
     use crate::action::Action;
     use crate::render::DiffView;
     use crate::render::testutil::{dump, file, ln};
+    use crate::review::Review;
     use crate::theme::Theme;
 
     /// An after-side line comment on `line` of `path` by `author`, with `body`,
@@ -516,9 +622,9 @@ mod tests {
         }
     }
 
-    /// A one-file document whose second line carries an unresolved two-line
-    /// comment and whose first line carries a resolved one.
-    fn commented_document() -> crate::render::Document {
+    /// A one-file diff whose second line carries an unresolved two-line comment
+    /// and whose first line carries a resolved one.
+    fn commented_diff() -> (Diff, Vec<CommentState>) {
         let diff = Diff {
             files: vec![file(
                 "src/lib.rs",
@@ -540,9 +646,22 @@ mod tests {
                 false,
             ),
         ];
+        (diff, comments)
+    }
+
+    /// The [`commented_diff`] rendered as a static document, with no review
+    /// attached, for navigation and collapse tests.
+    fn commented_document() -> crate::render::Document {
+        let (diff, comments) = commented_diff();
         DiffView::new(Theme::dark())
             .unwrap()
             .render_review(&diff, &comments, &[])
+    }
+
+    /// The [`commented_diff`] as an editable review, for comment-authoring tests.
+    fn commented_review() -> Review {
+        let (diff, comments) = commented_diff();
+        Review::new(DiffView::new(Theme::dark()).unwrap(), diff, comments)
     }
 
     /// A two-file document: a Rust modification and a short text edit.
@@ -621,6 +740,16 @@ mod tests {
     /// Drive `actions` over the two-file [`document`].
     fn after(height: usize, actions: &[Action]) -> (usize, usize, String) {
         drive(document(), height, actions)
+    }
+
+    /// Drive `actions` through a fresh app editing `review` and return its
+    /// cursor, top, and the dumped visible lines.
+    fn drive_review(review: Review, height: usize, actions: &[Action]) -> (usize, usize, String) {
+        let mut app = App::reviewing(review, height, &Theme::dark());
+        for action in actions {
+            app.update(*action);
+        }
+        (app.cursor(), app.top(), dump(&app.visible(TEST_WIDTH)))
     }
 
     #[test]
@@ -912,5 +1041,108 @@ mod tests {
 <#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
 ";
         k9::assert_equal!(visible, expected.to_string());
+    }
+
+    #[test]
+    fn resolving_the_focused_comment_badges_it_as_a_resolved_draft() {
+        // Land on the unresolved comment and resolve it: it gains a draft badge
+        // ahead of the resolved one, and the cursor stays on its header.
+        let (cursor, top, visible) = drive_review(
+            commented_review(),
+            12,
+            &[
+                Action::NextComment,
+                Action::NextComment,
+                Action::ResolveComment,
+            ],
+        );
+        k9::assert_equal!(cursor, 5);
+        k9::assert_equal!(top, 0);
+        let expected = "\
+<#ebcb8b|-|b>Review
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,2 +1,2 @@
+<#8a8a8a|-|->            * <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]
+<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#8a8a8a|#4f5b66|->            * <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<#8a8a8a|#4f5b66|-> [resolved]
+<#c0c5ce|-|->              why 2?
+<#c0c5ce|-|->              say more
+<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
+";
+        k9::assert_equal!(visible, expected.to_string());
+    }
+
+    #[test]
+    fn deleting_the_focused_comment_collapses_it_shown_as_a_deleted_draft() {
+        // Land on the unresolved comment and delete it: it stays in the view as a
+        // collapsed [draft] [deleted] header rather than vanishing, so the
+        // deletion is visible and reversible.
+        let (cursor, top, visible) = drive_review(
+            commented_review(),
+            12,
+            &[
+                Action::NextComment,
+                Action::NextComment,
+                Action::DeleteComment,
+            ],
+        );
+        k9::assert_equal!(cursor, 5);
+        k9::assert_equal!(top, 0);
+        let expected = "\
+<#ebcb8b|-|b>Review
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,2 +1,2 @@
+<#8a8a8a|-|->            * <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]
+<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#8a8a8a|#4f5b66|->            * <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<#8a8a8a|#4f5b66|-> [deleted]
+<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
+";
+        k9::assert_equal!(visible, expected.to_string());
+    }
+
+    #[test]
+    fn deleting_then_deleting_again_restores_the_focused_comment() {
+        // A second delete on a deleted comment undoes it: the body returns and
+        // no draft badge remains, since the comment is back to its committed
+        // state.
+        let (cursor, top, visible) = drive_review(
+            commented_review(),
+            12,
+            &[
+                Action::NextComment,
+                Action::NextComment,
+                Action::DeleteComment,
+                Action::DeleteComment,
+            ],
+        );
+        k9::assert_equal!(cursor, 5);
+        k9::assert_equal!(top, 0);
+        let expected = "\
+<#ebcb8b|-|b>Review
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,2 +1,2 @@
+<#8a8a8a|-|->            * <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]
+<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#8a8a8a|#4f5b66|->            * <#8fa1b3|#4f5b66|->wez (human)<-|#4f5b66|->               
+<#c0c5ce|-|->              why 2?
+<#c0c5ce|-|->              say more
+<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
+";
+        k9::assert_equal!(visible, expected.to_string());
+    }
+
+    #[test]
+    fn an_editing_action_passes_through_when_no_review_is_attached() {
+        // Without a review the app is a read-only viewport, so resolve and
+        // delete are handed back to the host untouched.
+        let mut app = App::new(commented_document(), 12, &Theme::dark());
+        k9::assert_equal!(
+            app.update(Action::ResolveComment),
+            Update::Passed(Action::ResolveComment)
+        );
+        k9::assert_equal!(
+            app.update(Action::DeleteComment),
+            Update::Passed(Action::DeleteComment)
+        );
     }
 }

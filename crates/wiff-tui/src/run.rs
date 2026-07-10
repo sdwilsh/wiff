@@ -18,6 +18,8 @@ use ratatui::crossterm::terminal::{
 use ratatui::layout::Rect;
 use ratatui::widgets::Paragraph;
 
+use wiff_core::record::RecordBody;
+
 use crate::action::Action;
 use crate::app::{App, Update};
 use crate::event::to_key_press;
@@ -37,8 +39,9 @@ pub enum Exit {
 
 /// Run the review loop over `app`, resolving key events through `keymap`, until
 /// a quit action ends it. The terminal is put into raw mode on an alternate
-/// screen for the duration and restored before returning.
-pub fn run(app: App, keymap: Keymap) -> io::Result<Exit> {
+/// screen for the duration and restored before returning. Returns how the
+/// reviewer chose to leave together with any buffered draft edits to commit.
+pub fn run(app: App, keymap: Keymap) -> io::Result<(Exit, Vec<RecordBody>)> {
     let mut terminal = TerminalGuard::enter()?;
     event_loop(&mut terminal.terminal, app, keymap)
 }
@@ -71,7 +74,7 @@ fn event_loop<B: Backend>(
     terminal: &mut Terminal<B>,
     mut app: App,
     keymap: Keymap,
-) -> io::Result<Exit> {
+) -> io::Result<(Exit, Vec<RecordBody>)> {
     let mut input = Input::new(keymap);
     loop {
         draw(terminal, &mut app)?;
@@ -82,7 +85,7 @@ fn event_loop<B: Backend>(
             && let Update::Passed(passed) = app.update(action)
             && let Some(exit) = exit_for(passed)
         {
-            return Ok(exit);
+            return Ok((exit, app.take_drafts()));
         }
     }
 }

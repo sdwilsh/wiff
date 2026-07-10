@@ -10,9 +10,10 @@ use std::path::Path;
 
 use anyhow::Context;
 use wiff_config::{Config, OnExit};
+use wiff_core::record::RecordBody;
 use wiff_core::session::remove_session;
 use wiff_core::{ReviewState, SessionLog};
-use wiff_tui::{App, DiffView, Exit, Theme, run};
+use wiff_tui::{App, DiffView, Exit, Review, Theme, run};
 
 /// Open `session_path` in the review TUI, then keep or remove the session per
 /// the reviewer's choice and the configured `on_exit` default.
@@ -36,29 +37,49 @@ pub fn open(session_path: &Path, config: &Config) -> anyhow::Result<()> {
         .filter(|comment| !comment.deleted)
         .cloned()
         .collect();
-    let document = DiffView::new(theme.clone())?
+    let view = DiffView::new(theme.clone())?
         .with_display_context(config.display_context)
-        .with_section_matchers(sections)
-        .render_review(&diff, &comments, &[]);
-    let app = App::new(document, 0, &theme);
+        .with_section_matchers(sections);
+    let app = App::reviewing(Review::new(view, diff, comments), 0, &theme);
     let keymap = config.keymap()?;
 
-    let exit = run(app, keymap)?;
-    resolve_exit(exit, config, session_path)
+    let (exit, drafts) = run(app, keymap)?;
+    resolve_exit(exit, config, session_path, drafts)
 }
 
 /// Keep or remove the session for `exit`, resolving the configured default and
-/// prompting when neither the reviewer nor the config settled the choice.
-fn resolve_exit(exit: Exit, config: &Config, session_path: &Path) -> anyhow::Result<()> {
+/// prompting when neither the reviewer nor the config settled the choice. When
+/// the session is kept, the reviewer's buffered draft edits are committed to the
+/// log; when it is removed, they are discarded along with it.
+fn resolve_exit(
+    exit: Exit,
+    config: &Config,
+    session_path: &Path,
+    drafts: Vec<RecordBody>,
+) -> anyhow::Result<()> {
     let keep = match keep_decision(exit, config.on_exit) {
         Some(keep) => keep,
         None => prompt_keep()?,
     };
     if keep {
+        commit_drafts(session_path, drafts)?;
         println!("kept session at {}", session_path.display());
     } else {
         remove_session(session_path)?;
         println!("removed session");
+    }
+    Ok(())
+}
+
+/// Append the reviewer's buffered draft edits to the session log in order, each
+/// taking the file lock transiently. Does nothing when there are no drafts.
+fn commit_drafts(session_path: &Path, drafts: Vec<RecordBody>) -> anyhow::Result<()> {
+    if drafts.is_empty() {
+        return Ok(());
+    }
+    let mut log = SessionLog::open(session_path)?;
+    for body in drafts {
+        log.append_locked(body)?;
     }
     Ok(())
 }
@@ -109,10 +130,85 @@ fn prompt_keep() -> anyhow::Result<bool> {
 
 #[cfg(test)]
 mod tests {
+    use ulid::Ulid;
     use wiff_config::OnExit;
+    use wiff_core::record::{CommentDelete, CommentResolve, RecordBody, SessionHeader, SourceKind};
+    use wiff_core::session::{SessionLog, read_records};
     use wiff_tui::Exit;
 
-    use super::keep_decision;
+    use super::{commit_drafts, keep_decision};
+
+    /// A session header for `ulid`, the first record of a fresh log.
+    fn header(ulid: Ulid) -> RecordBody {
+        RecordBody::Session(SessionHeader {
+            ulid,
+            version: wiff_core::record::FORMAT_VERSION,
+            project: "demo".to_string(),
+            repo_root: Some("/repos/demo".to_string()),
+            cwd: "/repos/demo".to_string(),
+            source: SourceKind::GitWorktree,
+        })
+    }
+
+    #[test]
+    fn committing_drafts_appends_them_to_the_session_log_in_order() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let (log, lock) = SessionLog::create(base.path(), "demo", header).expect("create");
+        let path = log.path().to_path_buf();
+        let ulid = log.ulid();
+        drop(lock);
+        drop(log);
+
+        let drafts = vec![
+            RecordBody::CommentResolve(CommentResolve {
+                id: Ulid(1),
+                resolved: true,
+            }),
+            RecordBody::CommentDelete(CommentDelete { id: Ulid(2) }),
+        ];
+        commit_drafts(&path, drafts).expect("commit");
+
+        // The header is followed by the two drafts in the order they were made;
+        // the non-deterministic `at` timestamp is dropped from the comparison.
+        let records = read_records(&path).expect("read");
+        let got: Vec<(u64, RecordBody)> = records
+            .into_iter()
+            .map(|record| (record.seq, record.body))
+            .collect();
+        k9::assert_equal!(
+            got,
+            vec![
+                (0, header(ulid)),
+                (
+                    1,
+                    RecordBody::CommentResolve(CommentResolve {
+                        id: Ulid(1),
+                        resolved: true,
+                    })
+                ),
+                (2, RecordBody::CommentDelete(CommentDelete { id: Ulid(2) })),
+            ]
+        );
+    }
+
+    #[test]
+    fn committing_no_drafts_leaves_the_log_untouched() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let (log, lock) = SessionLog::create(base.path(), "demo", header).expect("create");
+        let path = log.path().to_path_buf();
+        let ulid = log.ulid();
+        drop(lock);
+        drop(log);
+
+        commit_drafts(&path, Vec::new()).expect("commit");
+
+        let records = read_records(&path).expect("read");
+        let got: Vec<(u64, RecordBody)> = records
+            .into_iter()
+            .map(|record| (record.seq, record.body))
+            .collect();
+        k9::assert_equal!(got, vec![(0, header(ulid))]);
+    }
 
     #[test]
     fn an_explicit_choice_decides_regardless_of_config() {

@@ -11,11 +11,13 @@
 //! A drafted comment carries the same anchor data a committed one does, so a
 //! refresh rebases pending line-range comments forward alongside persisted ones.
 //!
-//! The buffer trusts its caller: an edit, resolve, or delete names a comment
-//! that is present in the current effective set, either a committed comment or a
-//! drafted addition. It keeps itself minimal as edits pile up, folding repeated
-//! changes to one comment together and dropping a drafted addition entirely when
-//! it is deleted before ever being committed.
+//! The buffer trusts its caller: an edit, resolve, delete, or restore names a
+//! comment that is present in the current effective set, either a committed
+//! comment or a drafted addition. It keeps itself minimal as edits pile up,
+//! folding repeated changes to one comment together. A deletion is reversible
+//! until commit, so a deleted comment stays buffered rather than being discarded;
+//! at commit time a drafted addition that is still deleted, and any edits folded
+//! into a comment that ends deleted, are pruned so they never reach the log.
 
 use ulid::Ulid;
 
@@ -107,18 +109,29 @@ impl DraftBuffer {
         self.ops.push(DraftOp::Resolve { id, resolved });
     }
 
-    /// Buffer a withdrawal of comment `id`. Deleting a drafted addition that was
-    /// never committed discards it and its buffered edits outright; deleting a
-    /// committed comment drops its buffered edits and records a tombstone.
+    /// Buffer a withdrawal of comment `id`, marking it deleted until commit. The
+    /// comment stays in the effective set so it can be shown as deleted and the
+    /// withdrawal undone with [`restore`](Self::restore). Deleting is idempotent.
     pub fn delete(&mut self, id: Ulid) {
-        let was_drafted = self
-            .ops
-            .iter()
-            .any(|op| matches!(op, DraftOp::Add(record) if record.id == id));
-        self.ops.retain(|op| op.id() != id);
-        if !was_drafted {
-            self.ops.push(DraftOp::Delete { id });
+        if self.is_deleting(id) {
+            return;
         }
+        self.ops.push(DraftOp::Delete { id });
+    }
+
+    /// Undo a buffered withdrawal of comment `id`, bringing it back into the
+    /// review. A drafted addition is restored whole since its authoring draft is
+    /// kept alongside the deletion.
+    pub fn restore(&mut self, id: Ulid) {
+        self.ops
+            .retain(|op| !matches!(op, DraftOp::Delete { id: other } if *other == id));
+    }
+
+    /// Whether a withdrawal of comment `id` is currently buffered.
+    fn is_deleting(&self, id: Ulid) -> bool {
+        self.ops
+            .iter()
+            .any(|op| matches!(op, DraftOp::Delete { id: other } if *other == id))
     }
 
     /// The effective comments after applying the pending drafts over
@@ -158,7 +171,10 @@ impl DraftBuffer {
         order
             .into_iter()
             .filter_map(|id| find_mut(&mut states, id).map(|state| (id, state.clone())))
-            .filter(|(_, state)| !state.deleted)
+            // A buffered deletion keeps the comment in view (shown as deleted) so
+            // it can be undone; a comment that arrived already withdrawn stays
+            // hidden.
+            .filter(|(id, state)| !state.deleted || pending.contains(id))
             .map(|(id, comment)| EffectiveComment {
                 pending: pending.contains(&id),
                 comment,
@@ -167,10 +183,38 @@ impl DraftBuffer {
     }
 
     /// The append events that persist the pending drafts, in the order they were
-    /// made. Consumed because committing empties the buffer.
+    /// made. Consumed because committing empties the buffer. A drafted addition
+    /// that is still deleted, and edits or resolves folded into a comment that
+    /// ends deleted, are pruned so only a tombstone for a committed comment and
+    /// live authoring reach the log.
     pub fn into_records(self) -> Vec<RecordBody> {
+        let deleted: Vec<Ulid> = self
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                DraftOp::Delete { id } => Some(*id),
+                _ => None,
+            })
+            .collect();
+        let added: Vec<Ulid> = self
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                DraftOp::Add(record) => Some(record.id),
+                _ => None,
+            })
+            .collect();
         self.ops
             .into_iter()
+            .filter(|op| {
+                let id = op.id();
+                if !deleted.contains(&id) {
+                    return true;
+                }
+                // A drafted addition that ends deleted leaves nothing behind;
+                // a committed comment that ends deleted keeps only its tombstone.
+                !added.contains(&id) && matches!(op, DraftOp::Delete { .. })
+            })
             .map(|op| match op {
                 DraftOp::Add(record) => RecordBody::Comment(record),
                 DraftOp::Edit { id, body } => RecordBody::CommentEdit(CommentEdit { id, body }),
@@ -318,31 +362,96 @@ mod tests {
     }
 
     #[test]
-    fn deleting_a_committed_comment_drops_it_from_the_effective_view() {
+    fn deleting_a_committed_comment_keeps_it_shown_as_deleted_and_pending() {
         let committed = vec![
             committed_comment(1, "a", false),
             committed_comment(2, "b", false),
         ];
         let mut buffer = DraftBuffer::new();
         buffer.delete(Ulid(1));
+        let mut deleted = committed_comment(1, "a", false);
+        deleted.deleted = true;
         k9::assert_equal!(
             buffer.apply(&committed),
-            vec![EffectiveComment {
-                comment: committed_comment(2, "b", false),
-                pending: false,
-            }]
+            vec![
+                EffectiveComment {
+                    comment: deleted,
+                    pending: true,
+                },
+                EffectiveComment {
+                    comment: committed_comment(2, "b", false),
+                    pending: false,
+                },
+            ]
         );
     }
 
     #[test]
-    fn deleting_a_drafted_comment_discards_it_and_leaves_no_records() {
+    fn restoring_a_deleted_committed_comment_brings_it_back_unchanged() {
+        let committed = vec![committed_comment(1, "a", false)];
+        let mut buffer = DraftBuffer::new();
+        buffer.delete(Ulid(1));
+        buffer.restore(Ulid(1));
+        k9::assert_equal!(buffer.is_empty(), true);
+        k9::assert_equal!(
+            buffer.apply(&committed),
+            vec![EffectiveComment {
+                comment: committed_comment(1, "a", false),
+                pending: false,
+            }]
+        );
+        k9::assert_equal!(buffer.into_records(), Vec::<RecordBody>::new());
+    }
+
+    #[test]
+    fn deleting_a_committed_comment_commits_only_its_tombstone() {
+        let mut buffer = DraftBuffer::new();
+        buffer.edit(Ulid(1), "reworded".to_string());
+        buffer.delete(Ulid(1));
+        k9::assert_equal!(
+            buffer.into_records(),
+            vec![RecordBody::CommentDelete(crate::record::CommentDelete {
+                id: Ulid(1),
+            })]
+        );
+    }
+
+    #[test]
+    fn a_deleted_drafted_comment_stays_shown_but_leaves_no_records() {
         let mut buffer = DraftBuffer::new();
         let id = buffer.add(drafted(2, "never mind"));
         buffer.edit(id, "second thoughts".to_string());
         buffer.delete(id);
-        k9::assert_equal!(buffer.is_empty(), true);
-        k9::assert_equal!(buffer.apply(&[]), Vec::<EffectiveComment>::new());
+        let mut deleted = CommentState {
+            author: Author {
+                name: "opus".to_string(),
+                kind: AuthorKind::Agent,
+            },
+            ..committed_comment(2, "second thoughts", false)
+        };
+        deleted.deleted = true;
+        deleted.created_seq = 0;
+        deleted.updated_seq = 0;
+        k9::assert_equal!(
+            buffer.apply(&[]),
+            vec![EffectiveComment {
+                comment: deleted,
+                pending: true,
+            }]
+        );
         k9::assert_equal!(buffer.into_records(), Vec::<RecordBody>::new());
+    }
+
+    #[test]
+    fn restoring_a_deleted_drafted_comment_recovers_its_authoring() {
+        let mut buffer = DraftBuffer::new();
+        let id = buffer.add(drafted(2, "keep me"));
+        buffer.delete(id);
+        buffer.restore(id);
+        k9::assert_equal!(
+            buffer.into_records(),
+            vec![RecordBody::Comment(drafted(2, "keep me"))]
+        );
     }
 
     #[test]

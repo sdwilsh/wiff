@@ -12,6 +12,7 @@ pub mod input;
 pub mod key;
 pub mod keymap;
 pub mod render;
+pub mod review;
 pub mod run;
 pub mod theme;
 
@@ -22,5 +23,6 @@ pub use input::Input;
 pub use key::{Chord, Key, KeyPress};
 pub use keymap::{Keymap, KeymapError, KeymapOverrides, Resolution};
 pub use render::{DiffView, Document, Fold, Row, RowKind};
+pub use review::Review;
 pub use run::{Exit, run};
 pub use theme::Theme;

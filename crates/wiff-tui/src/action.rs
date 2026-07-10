@@ -45,7 +45,7 @@ pub enum Action {
     EditComment,
     /// Toggle the focused comment's resolved state.
     ResolveComment,
-    /// Delete the focused comment.
+    /// Delete the focused comment, or restore it when already deleted.
     DeleteComment,
     /// Capture a new diff version and rebase comments.
     Refresh,
