@@ -31,6 +31,7 @@ use crate::key::{Key, KeyPress};
 use crate::keymap::{Keymap, Resolution};
 use crate::render::{Document, RowKind, color};
 use crate::review::Review;
+use crate::search::{self, Direction, Search, SearchInput};
 use crate::theme::Theme;
 
 /// The result of feeding an [`Action`] to the [`App`].
@@ -137,6 +138,19 @@ pub struct App {
     /// A transient note shown in the status line until the next key press, used
     /// to report the tally of a refresh.
     message: Option<String>,
+    /// The open search prompt, present while the reviewer is typing a pattern.
+    search: Option<Search>,
+    /// The last accepted search, so `search_next` and `search_prev` can repeat
+    /// it after the prompt closes.
+    last_search: Option<(String, Direction)>,
+    /// The accepted search shown in the status bar until the reviewer's next
+    /// unrelated action: its pattern and direction, so the bar names the term,
+    /// the repeat keys, and the live match tally.
+    active_search: Option<(String, Direction)>,
+    /// A note appended to the accepted search bar when a repeat wraps past an
+    /// end of the document, shown alongside the tally rather than replacing it
+    /// so the wrap is reported without wiping the position.
+    search_note: Option<String>,
 }
 
 impl App {
@@ -175,6 +189,10 @@ impl App {
                 hint: theme.fold_fg,
             },
             message: None,
+            search: None,
+            last_search: None,
+            active_search: None,
+            search_note: None,
         };
         app.rebuild_view();
         app
@@ -249,9 +267,11 @@ impl App {
 
     /// Handle a navigation action, or pass any other action back to the host.
     pub fn update(&mut self, action: Action) -> Update {
-        // Any action clears a lingering refresh note so it does not outstay the
-        // reviewer's next move.
+        // Any action clears a lingering refresh note or search tally so neither
+        // outstays the reviewer's next move.
         self.message = None;
+        self.active_search = None;
+        self.search_note = None;
         match action {
             Action::LineDown => self.move_to(self.cursor + 1),
             Action::LineUp => self.move_to(self.cursor.saturating_sub(1)),
@@ -271,6 +291,10 @@ impl App {
             Action::DeleteComment => return self.delete_comment(),
             Action::AddComment => return self.start_add_comment(),
             Action::EditComment => return self.start_edit_comment(),
+            Action::SearchForward => self.start_search(Direction::Forward),
+            Action::SearchBackward => self.start_search(Direction::Backward),
+            Action::SearchNext => self.repeat_search(false),
+            Action::SearchPrev => self.repeat_search(true),
             quit @ (Action::Quit | Action::QuitKeep | Action::QuitRemove) => {
                 return self.request_exit(quit);
             }
@@ -678,6 +702,219 @@ impl App {
         self.message = Some(message);
     }
 
+    /// Whether the search prompt is open, so the host routes raw key presses to
+    /// it rather than resolving them into actions.
+    pub fn searching(&self) -> bool {
+        self.search.is_some()
+    }
+
+    /// Feed a key press to the open search prompt: extend or edit the pattern and
+    /// jump to the first match as it changes, accept the pattern, or abandon the
+    /// prompt and return to where it opened. Does nothing when it is closed.
+    pub fn search_key(&mut self, press: KeyPress) {
+        let Some(search) = self.search.as_mut() else {
+            return;
+        };
+        match search.key(press) {
+            SearchInput::Edited => {
+                let pattern = search.pattern().to_string();
+                let direction = search.direction();
+                let origin = search.origin();
+                match self.find_match(&pattern, direction, origin, true) {
+                    Some(row) => self.reveal_and_focus(row),
+                    None => self.focus_doc_row(origin),
+                }
+            }
+            SearchInput::Submit => {
+                let pattern = search.pattern().to_string();
+                let direction = search.direction();
+                self.search = None;
+                if !pattern.is_empty() {
+                    self.active_search = Some((pattern.clone(), direction));
+                    self.last_search = Some((pattern, direction));
+                }
+            }
+            SearchInput::Cancel => {
+                let origin = search.origin();
+                self.search = None;
+                self.focus_doc_row(origin);
+            }
+            SearchInput::Ignored => {}
+        }
+    }
+
+    /// Open the search prompt scanning `direction`, anchored to the row the
+    /// cursor is on so an abandoned or empty search returns there.
+    fn start_search(&mut self, direction: Direction) {
+        self.search = Some(Search::new(direction, self.cursor_doc_row()));
+    }
+
+    /// The left of the status bar while a search is live. While typing it is the
+    /// prompt with its lead character and the live match tally; once `accepted`
+    /// it also names the keys that repeat the search in each direction, so the
+    /// reviewer sees the term, how to step through the matches, and where the
+    /// cursor sits among them.
+    fn search_bar(&self, pattern: &str, direction: Direction, accepted: bool) -> String {
+        let lead = direction.lead();
+        if pattern.is_empty() {
+            return lead.to_string();
+        }
+        let tally = self.match_tally(pattern);
+        if accepted {
+            let next = self
+                .keymap
+                .primary_label(Action::SearchNext)
+                .unwrap_or_default();
+            let prev = self
+                .keymap
+                .primary_label(Action::SearchPrev)
+                .unwrap_or_default();
+            let mut bar = format!("{lead}{pattern}  {next} next  {prev} prev  {tally}");
+            if let Some(note) = &self.search_note {
+                bar.push_str("  ");
+                bar.push_str(note);
+            }
+            bar
+        } else {
+            format!("{lead}{pattern}  {tally}")
+        }
+    }
+
+    /// The document rows matching `pattern` in document order, skipping rows
+    /// hidden inside a collapsed fold, so the tally counts the same matches the
+    /// search steps through.
+    fn match_rows(&self, pattern: &str) -> Vec<usize> {
+        (0..self.document.rows.len())
+            .filter(|&row| !self.row_in_collapsed_fold(row))
+            .filter(|&row| search::matches(&self.document.text[row], pattern))
+            .collect()
+    }
+
+    /// The `X/Y matches` tally for `pattern`, where `X` is the match the cursor
+    /// is on, or a plain note when nothing matches.
+    fn match_tally(&self, pattern: &str) -> String {
+        let rows = self.match_rows(pattern);
+        if rows.is_empty() {
+            return "no matches".to_string();
+        }
+        let current = self.cursor_doc_row();
+        let index = rows
+            .iter()
+            .position(|&row| row == current)
+            .map_or(0, |i| i + 1);
+        format!("{index}/{} matches", rows.len())
+    }
+
+    /// Repeat the last accepted search from the cursor, in its own direction or
+    /// reversed. Reports a wrap around the ends of the document, or that nothing
+    /// matched, in the status line.
+    fn repeat_search(&mut self, reverse: bool) {
+        let Some((pattern, direction)) = self.last_search.clone() else {
+            self.message = Some("no previous search".to_string());
+            return;
+        };
+        let scan = if reverse {
+            direction.reversed()
+        } else {
+            direction
+        };
+        let from = self.cursor_doc_row();
+        match self.find_match(&pattern, scan, from, false) {
+            Some(row) => {
+                let wrapped = match scan {
+                    Direction::Forward => row <= from,
+                    Direction::Backward => row >= from,
+                };
+                self.reveal_and_focus(row);
+                if wrapped {
+                    self.search_note = Some(
+                        match scan {
+                            Direction::Forward => "wrapped to top",
+                            Direction::Backward => "wrapped to bottom",
+                        }
+                        .to_string(),
+                    );
+                }
+                self.active_search = Some((pattern, direction));
+            }
+            None => self.message = Some(format!("pattern not found: {pattern}")),
+        }
+    }
+
+    /// The document row the cursor sits on, resolving a fold marker to the first
+    /// row it hides.
+    fn cursor_doc_row(&self) -> usize {
+        match self.view.get(self.cursor) {
+            Some(ViewRow::Row(row)) => *row,
+            Some(ViewRow::Fold(fold)) => self.document.folds[*fold].start,
+            None => 0,
+        }
+    }
+
+    /// Whether document `row` is hidden inside a currently collapsed fold, so a
+    /// search passes over it.
+    fn row_in_collapsed_fold(&self, row: usize) -> bool {
+        self.fold_containing(row)
+            .is_some_and(|fold| self.collapsed[fold])
+    }
+
+    /// The first document row matching `pattern` scanning `direction` from row
+    /// `from`, wrapping around the ends. `include_from` searches `from` itself
+    /// first, for an incremental search that may already sit on a match; a
+    /// repeat leaves it out so it moves off the current match. Rows hidden in a
+    /// collapsed fold never match; a collapsed comment's body still does.
+    fn find_match(
+        &self,
+        pattern: &str,
+        direction: Direction,
+        from: usize,
+        include_from: bool,
+    ) -> Option<usize> {
+        let n = self.document.rows.len();
+        if n == 0 {
+            return None;
+        }
+        for step in 0..n {
+            let offset = if include_from { step } else { step + 1 };
+            let row = match direction {
+                Direction::Forward => (from + offset) % n,
+                Direction::Backward => (from + 2 * n - offset) % n,
+            };
+            if self.row_in_collapsed_fold(row) {
+                continue;
+            }
+            if search::matches(&self.document.text[row], pattern) {
+                return Some(row);
+            }
+        }
+        None
+    }
+
+    /// Move the cursor onto document `row`, expanding its comment first when the
+    /// match sits in a collapsed comment body so the matched line is shown.
+    fn reveal_and_focus(&mut self, row: usize) {
+        if let RowKind::CommentBody { id } = self.document.rows[row].kind
+            && self.is_comment_collapsed(id)
+        {
+            self.comment_collapsed.insert(id, false);
+            self.rebuild_view();
+        }
+        self.focus_doc_row(row);
+    }
+
+    /// Move the cursor onto document `row`, or onto the marker of the collapsed
+    /// fold that hides it, keeping it within the viewport.
+    fn focus_doc_row(&mut self, row: usize) {
+        let index = self.view_index_of_row(row).or_else(|| {
+            self.fold_containing(row)
+                .and_then(|fold| self.view_index_of_fold(fold))
+        });
+        if let Some(index) = index {
+            self.cursor = index;
+            self.scroll_into_view();
+        }
+    }
+
     /// The file and line the cursor is on, to return to after a refresh rebuilds
     /// the document. Absent when the cursor is on no file.
     fn cursor_spot(&self) -> Option<CursorSpot> {
@@ -1061,17 +1298,22 @@ impl App {
     /// on the left and how far through the view it sits right-aligned, filled to
     /// `width`.
     pub fn status(&self, width: usize) -> Line<'static> {
-        let text: String = match &self.message {
-            Some(message) => message.chars().take(width).collect(),
-            None => {
-                let path = self
-                    .cursor_file()
-                    .and_then(|file| self.document.files.get(file))
-                    .map(String::as_str)
-                    .unwrap_or("");
-                let percent = format!("{}%", self.progress_percent());
-                status_row(path, &percent, width)
-            }
+        let percent = format!("{}%", self.progress_percent());
+        let text: String = if let Some(search) = &self.search {
+            let left = self.search_bar(search.pattern(), search.direction(), false);
+            status_row(&left, &percent, width)
+        } else if let Some((pattern, direction)) = &self.active_search {
+            let left = self.search_bar(pattern, *direction, true);
+            status_row(&left, &percent, width)
+        } else if let Some(message) = &self.message {
+            message.chars().take(width).collect()
+        } else {
+            let path = self
+                .cursor_file()
+                .and_then(|file| self.document.files.get(file))
+                .map(String::as_str)
+                .unwrap_or("");
+            status_row(path, &percent, width)
         };
         Line::from(Span::styled(
             format!("{text:<width$}"),
@@ -2137,13 +2379,18 @@ second
         k9::assert_equal!(dump_compose(&view), expected.to_string());
     }
 
-    /// The status-line text an app currently shows at the test width.
-    fn status_text(app: &App) -> String {
-        app.status(TEST_WIDTH)
+    /// The status-line text an app currently shows at `width`.
+    fn status_text_at(app: &App, width: usize) -> String {
+        app.status(width)
             .spans
             .iter()
             .map(|span| span.content.as_ref())
             .collect::<String>()
+    }
+
+    /// The status-line text an app currently shows at the test width.
+    fn status_text(app: &App) -> String {
+        status_text_at(app, TEST_WIDTH)
     }
 
     #[test]
@@ -2278,6 +2525,197 @@ second
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,1 +1,1 @@
 <#65737e|#4f5b66|->   1    1   <#b48ead|#4f5b66|->let<#c0c5ce|#4f5b66|-> x <#c0c5ce|#4f5b66|->=<#c0c5ce|#4f5b66|-> <#d08770|#4f5b66|->1<#c0c5ce|#4f5b66|->;<-|#4f5b66|->                  
+";
+        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+    }
+
+    /// Open a search in `direction` and type `pattern` into the prompt.
+    fn search_for(app: &mut App, direction: Action, pattern: &str) {
+        app.update(direction);
+        for c in pattern.chars() {
+            app.search_key(ch(c));
+        }
+    }
+
+    #[test]
+    fn an_incremental_search_jumps_the_cursor_to_the_first_match() {
+        // Typing a pattern moves the cursor onto the first matching line across
+        // files while the prompt shows the term, the live match tally, and the
+        // progress percent; accepting it keeps the cursor and adds the repeat
+        // keys.
+        let mut app = App::new(document(), 9, &Theme::dark());
+        search_for(&mut app, Action::SearchForward, "hello");
+        k9::assert_equal!(
+            status_text(&app),
+            "/hello  1/1 matches                 100%".to_string()
+        );
+        let expected = "\
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,2 +1,2 @@
+<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
+<#c0c5ce|-|b>added  notes.txt
+<#96b5b4|-|->@@ -1,1 +1,1 @@
+<#65737e|#4f5b66|->        1 + <#c0c5ce|#4f5b66|->hello<-|#4f5b66|->                       
+";
+        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        app.search_key(KeyPress::new(Key::Enter));
+        k9::assert_equal!(app.searching(), false);
+        k9::assert_equal!(
+            status_text(&app),
+            "/hello  n next  N prev  1/1 matches 100%".to_string()
+        );
+    }
+
+    #[test]
+    fn a_search_with_no_match_shows_a_no_matches_tally() {
+        // A term absent from the document reports no matches in the prompt while
+        // the cursor stays where the search opened.
+        let mut app = App::new(document(), 9, &Theme::dark());
+        search_for(&mut app, Action::SearchForward, "absent");
+        k9::assert_equal!(
+            status_text(&app),
+            "/absent  no matches                   0%".to_string()
+        );
+    }
+
+    #[test]
+    fn a_search_passes_over_content_hidden_in_a_collapsed_fold() {
+        // A term that lives only inside a collapsed fold finds nothing, so the
+        // cursor stays where the search opened.
+        let mut app = App::new(folded_document(), 20, &Theme::dark());
+        search_for(&mut app, Action::SearchForward, "ctx03");
+        let expected = "\
+<#c0c5ce|#4f5b66|b>modified  notes.txt<-|#4f5b66|->                     
+<#96b5b4|-|->@@ -1,17 +1,17 @@
+<#8a8a8a|#343d46|->            [5 unchanged lines]  ctx05<-|#343d46|->  
+<#65737e|-|->   6    6   <#c0c5ce|-|->ctx06
+<#65737e|-|->   7    7   <#c0c5ce|-|->ctx07
+<#65737e|-|->   8    8   <#c0c5ce|-|->ctx08
+<#65737e|#2d3b30|->        9 + <#c0c5ce|#2d3b30|->change!<-|#2d3b30|->                     
+<#65737e|-|->  10   10   <#c0c5ce|-|->ctx09
+<#65737e|-|->  11   11   <#c0c5ce|-|->ctx10
+<#65737e|-|->  12   12   <#c0c5ce|-|->ctx11
+<#8a8a8a|#343d46|->            [5 unchanged lines]  ctx16<-|#343d46|->  
+";
+        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+    }
+
+    #[test]
+    fn a_search_matches_visible_context_around_a_change() {
+        // A context line kept visible beside the change is matched and focused.
+        let mut app = App::new(folded_document(), 20, &Theme::dark());
+        search_for(&mut app, Action::SearchForward, "ctx07");
+        let expected = "\
+<#c0c5ce|-|b>modified  notes.txt
+<#96b5b4|-|->@@ -1,17 +1,17 @@
+<#8a8a8a|#343d46|->            [5 unchanged lines]  ctx05<-|#343d46|->  
+<#65737e|-|->   6    6   <#c0c5ce|-|->ctx06
+<#65737e|#4f5b66|->   7    7   <#c0c5ce|#4f5b66|->ctx07<-|#4f5b66|->                       
+<#65737e|-|->   8    8   <#c0c5ce|-|->ctx08
+<#65737e|#2d3b30|->        9 + <#c0c5ce|#2d3b30|->change!<-|#2d3b30|->                     
+<#65737e|-|->  10   10   <#c0c5ce|-|->ctx09
+<#65737e|-|->  11   11   <#c0c5ce|-|->ctx10
+<#65737e|-|->  12   12   <#c0c5ce|-|->ctx11
+<#8a8a8a|#343d46|->            [5 unchanged lines]  ctx16<-|#343d46|->  
+";
+        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+    }
+
+    #[test]
+    fn a_search_expands_a_collapsed_comment_to_reveal_a_match() {
+        // The resolved comment opens collapsed, hiding its body. Searching a
+        // word from that body expands the comment and lands the cursor on the
+        // matched line.
+        let mut app = App::reviewing(commented_review(), 14, &Theme::dark());
+        search_for(&mut app, Action::SearchForward, "ok");
+        let expected = "\
+<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,2 +1,2 @@
+<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit  r to unresolve  d to delete<#65737e|-|-> <#65737e|-|->┐
+<#65737e|#4f5b66|->│<#c0c5ce|#4f5b66|->ok<-|#4f5b66|->                                    <#65737e|#4f5b66|->│
+<#65737e|-|->└──────────────────────────────────────┘
+<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#65737e|-|->┌ <#8fa1b3|-|->wez (human)<#8a8a8a|-|->  press e to edit  r to resolve  d to delete<#65737e|-|-> <#65737e|-|->┐
+<#65737e|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#65737e|-|->│
+<#65737e|-|->│<#c0c5ce|-|->say more<-|-|->                              <#65737e|-|->│
+<#65737e|-|->└──────────────────────────────────────┘
+<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
+";
+        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+    }
+
+    #[test]
+    fn cancelling_a_search_returns_the_cursor_to_where_it_opened() {
+        // Escaping the prompt returns to the origin line the search opened on.
+        let mut app = App::new(document(), 9, &Theme::dark());
+        for _ in 0..2 {
+            app.update(Action::LineDown);
+        }
+        search_for(&mut app, Action::SearchForward, "hello");
+        app.search_key(KeyPress::new(Key::Escape));
+        k9::assert_equal!(app.searching(), false);
+        let expected = "\
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,2 +1,2 @@
+<#65737e|#4f5b66|->   1    1   <#b48ead|#4f5b66|->let<#c0c5ce|#4f5b66|-> x <#c0c5ce|#4f5b66|->=<#c0c5ce|#4f5b66|-> <#d08770|#4f5b66|->1<#c0c5ce|#4f5b66|->;<-|#4f5b66|->                  
+<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
+<#c0c5ce|-|b>added  notes.txt
+<#96b5b4|-|->@@ -1,1 +1,1 @@
+<#65737e|#2d3b30|->        1 + <#c0c5ce|#2d3b30|->hello<-|#2d3b30|->                       
+";
+        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+    }
+
+    #[test]
+    fn repeating_a_search_wraps_and_reports_hitting_the_end() {
+        // With a single match, accepting the search and repeating it forward
+        // wraps back to the same line. The status keeps the term, tally, and
+        // percent and adds a wrap note alongside them, rather than replacing the
+        // position with a full-width message. (Shown here at a wider width so the
+        // note is not truncated away.)
+        let mut app = App::new(document(), 9, &Theme::dark());
+        search_for(&mut app, Action::SearchForward, "hello");
+        app.search_key(KeyPress::new(Key::Enter));
+        app.update(Action::SearchNext);
+        k9::assert_equal!(
+            status_text_at(&app, 60),
+            "/hello  n next  N prev  1/1 matches  wrapped to top     100%".to_string()
+        );
+        let expected = "\
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,2 +1,2 @@
+<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
+<#c0c5ce|-|b>added  notes.txt
+<#96b5b4|-|->@@ -1,1 +1,1 @@
+<#65737e|#4f5b66|->        1 + <#c0c5ce|#4f5b66|->hello<-|#4f5b66|->                       
+";
+        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+    }
+
+    #[test]
+    fn repeating_a_search_to_a_further_match_keeps_the_term_and_repeat_keys() {
+        // With the term on two lines, accepting on the first and repeating
+        // forward lands on the second without a wrap, so the status keeps
+        // showing the accepted term and the repeat keys rather than a wrap note.
+        let mut app = App::new(document(), 9, &Theme::dark());
+        search_for(&mut app, Action::SearchForward, "let");
+        app.search_key(KeyPress::new(Key::Enter));
+        app.update(Action::SearchNext);
+        k9::assert_equal!(
+            status_text(&app),
+            "/let  n next  N prev  2/2 matches    50%".to_string()
+        );
+        let expected = "\
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,2 +1,2 @@
+<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#65737e|#4f5b66|->        2 + <#b48ead|#4f5b66|->let<#c0c5ce|#4f5b66|-> y <#c0c5ce|#4f5b66|->=<#c0c5ce|#4f5b66|-> <#d08770|#4f5b66|->2<#c0c5ce|#4f5b66|->;<-|#4f5b66|->                  
+<#c0c5ce|-|b>added  notes.txt
+<#96b5b4|-|->@@ -1,1 +1,1 @@
+<#65737e|#2d3b30|->        1 + <#c0c5ce|#2d3b30|->hello<-|#2d3b30|->                       
 ";
         k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }

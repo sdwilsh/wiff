@@ -16,6 +16,7 @@ pub mod keymap;
 pub mod render;
 pub mod review;
 pub mod run;
+pub mod search;
 pub mod theme;
 
 pub use action::Action;

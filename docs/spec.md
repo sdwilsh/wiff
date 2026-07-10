@@ -284,8 +284,8 @@ no thousand-line nested match driving the UI.
 Input is decoded into an **action** (an enum of intents: page up/down, next/prev
 file, next/prev hunk, next/prev comment, toggle fold, toggle comment, add
 comment, edit comment, resolve comment, delete comment, submit comment, cancel
-comment, save, refresh, `open_in_editor`, `quit`, `quit_keep`, `quit_remove`,
-etc.). Nothing in the UI
+comment, save, search forward/backward, search next/prev, refresh,
+`open_in_editor`, `quit`, `quit_keep`, `quit_remove`, etc.). Nothing in the UI
 logic branches on raw keys; it branches on actions. This keeps bindings
 reassignable and keeps the update logic small.
 
@@ -299,7 +299,8 @@ reassignable and keeps the update logic small.
 - Defaults resemble `less` for navigation (space, b, g, G, q, ...) plus
   review actions layered on top. Sequence navigation follows a paired scheme:
   `,`/`.` prev/next file, `[`/`]` prev/next hunk, `{`/`}` prev/next comment.
-  (`n`/`p` are left free to become search `n`/`N` later.) The review summary sits
+  Search follows `less`: `/` and `?` open the prompt forward and backward, and
+  `n`/`N` repeat in the same or the opposite direction. The review summary sits
   at the top of the document, so the existing top jump (`g`, and `<` as a
   `less`-style alias) reaches it; there is no separate jump-to-review action.
 
@@ -311,6 +312,29 @@ reassignable and keeps the update logic small.
 - The view type (unified now; side-by-side later) and options like
   ignore-whitespace are designed to be user-selectable, though only unified
   ships in v0.
+
+### Search
+
+Search is incremental and modeled on `less`. `/` and `?` open a prompt in the
+status line and scan forward or backward; the cursor jumps to the first match as
+the pattern is typed, and the pattern is a plain substring, matched with smart
+case (case-insensitive unless it contains an uppercase letter). Accepting the
+prompt keeps the cursor on the match and arms `n`/`N` to repeat in the same or
+opposite direction; abandoning it returns the cursor to where the search opened.
+While a search is live the status line shows the term, an `X/Y matches` tally
+naming which match the cursor is on out of the total, and, once accepted, the
+`n`/`N` keys that step through the matches. The progress percent stays
+right-aligned in the status line throughout, so the reviewer keeps that bearing
+while searching. When a repeat wraps past an end of the document it adds a wrap
+note next to the tally rather than replacing the position, so the wrap is
+reported without wiping the term, tally, or percent.
+
+Matching runs over the semantic text of each row, not the rendered line, so the
+gutter line numbers and change markers never produce spurious hits. File paths,
+content lines, and comment authors and bodies are searchable; hunk headers and
+box edges are not. A line hidden inside a collapsed fold is skipped, matching the
+rule that folded context is out of view. A collapsed comment is still searched,
+and a match inside one expands the comment so the matched line becomes visible.
 
 ### Comments
 

@@ -167,6 +167,10 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
         (Action::SubmitComment, vec![chord("ctrl-d")]),
         (Action::CancelComment, vec![chord("esc")]),
         (Action::Save, vec![chord("s")]),
+        (Action::SearchForward, vec![chord("/")]),
+        (Action::SearchBackward, vec![chord("?")]),
+        (Action::SearchNext, vec![chord("n")]),
+        (Action::SearchPrev, vec![chord("N")]),
         (Action::Refresh, vec![chord("R")]),
         (Action::OpenInEditor, vec![chord("o")]),
         (Action::Quit, vec![chord("q")]),
@@ -232,6 +236,22 @@ mod tests {
             Resolution::Action(Action::Refresh)
         );
         k9::assert_equal!(map.resolve(&presses("q")), Resolution::Action(Action::Quit));
+        k9::assert_equal!(
+            map.resolve(&presses("/")),
+            Resolution::Action(Action::SearchForward)
+        );
+        k9::assert_equal!(
+            map.resolve(&presses("?")),
+            Resolution::Action(Action::SearchBackward)
+        );
+        k9::assert_equal!(
+            map.resolve(&presses("n")),
+            Resolution::Action(Action::SearchNext)
+        );
+        k9::assert_equal!(
+            map.resolve(&presses("N")),
+            Resolution::Action(Action::SearchPrev)
+        );
         k9::assert_equal!(
             map.resolve(&presses("ctrl-d")),
             Resolution::Action(Action::SubmitComment)

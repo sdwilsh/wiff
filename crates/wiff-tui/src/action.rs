@@ -56,6 +56,14 @@ pub enum Action {
     /// Commit the pending draft edits to the session log, keeping the review
     /// open.
     Save,
+    /// Open the incremental search prompt, scanning forward.
+    SearchForward,
+    /// Open the incremental search prompt, scanning backward.
+    SearchBackward,
+    /// Move to the next match of the last search.
+    SearchNext,
+    /// Move to the previous match of the last search.
+    SearchPrev,
     /// Capture a new diff version and rebase comments.
     Refresh,
     /// Open the focused file in the user's editor.
@@ -93,6 +101,10 @@ impl Action {
             Action::SubmitComment => "submit_comment",
             Action::CancelComment => "cancel_comment",
             Action::Save => "save",
+            Action::SearchForward => "search_forward",
+            Action::SearchBackward => "search_backward",
+            Action::SearchNext => "search_next",
+            Action::SearchPrev => "search_prev",
             Action::Refresh => "refresh",
             Action::OpenInEditor => "open_in_editor",
             Action::Quit => "quit",

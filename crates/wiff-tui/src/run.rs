@@ -140,9 +140,12 @@ fn event_loop<B: Backend>(
         let Some(press) = to_key_press(key) else {
             continue;
         };
-        // While the inline editor or the exit dialog is open, raw presses go to
-        // it rather than being resolved into review actions.
-        if app.composing() {
+        // While the search prompt, the inline editor, or the exit dialog is
+        // open, raw presses go to it rather than being resolved into review
+        // actions.
+        if app.searching() {
+            app.search_key(press);
+        } else if app.composing() {
             app.compose_key(press);
         } else if app.exiting() {
             app.exit_key(press);

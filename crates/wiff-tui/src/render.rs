@@ -59,6 +59,11 @@ pub struct Document {
     pub fills: Vec<Option<Rgb>>,
     /// The metadata for each line, parallel to `lines`.
     pub rows: Vec<Row>,
+    /// The plain searchable text for each line, parallel to `lines`: a file's
+    /// path, a content line's code, or a comment's author and body. Empty for
+    /// rows that carry nothing worth matching, such as hunk headers and box
+    /// edges.
+    pub text: Vec<String>,
     /// The foldable runs of unchanged rows, in row order, non-overlapping.
     pub folds: Vec<Fold>,
     /// The collapsible comment bodies, in row order.
@@ -142,10 +147,18 @@ pub enum RowKind {
 impl Document {
     /// Append a styled line, the background it fills its row with, and its
     /// parallel row metadata.
-    fn push(&mut self, file: usize, kind: RowKind, fill: Option<Rgb>, line: Line<'static>) {
+    fn push(
+        &mut self,
+        file: usize,
+        kind: RowKind,
+        fill: Option<Rgb>,
+        text: String,
+        line: Line<'static>,
+    ) {
         self.lines.push(line);
         self.fills.push(fill);
         self.rows.push(Row { file, kind });
+        self.text.push(text);
     }
 }
 
@@ -318,6 +331,7 @@ impl DiffView {
             lines: Vec::new(),
             fills: Vec::new(),
             rows: Vec::new(),
+            text: Vec::new(),
             folds: Vec::new(),
             comments: Vec::new(),
             files: diff
@@ -332,6 +346,7 @@ impl DiffView {
                 NO_FILE,
                 RowKind::ReviewSummary,
                 Some(self.theme.status_bg),
+                String::new(),
                 self.review_summary(),
             );
             for comment in &placement.review {
@@ -363,7 +378,13 @@ impl DiffView {
         highlight: Option<&FileHighlights>,
         doc: &mut Document,
     ) {
-        doc.push(index, RowKind::FileHeader, None, self.file_header(file));
+        doc.push(
+            index,
+            RowKind::FileHeader,
+            None,
+            file.display_path().to_string(),
+            self.file_header(file),
+        );
         for comment in &placement.header {
             self.push_comment(doc, index, comment, pending.contains(&comment.id));
         }
@@ -385,6 +406,7 @@ impl DiffView {
                 index,
                 RowKind::HunkHeader { hunk: hunk_index },
                 None,
+                String::new(),
                 self.hunk_header(hunk),
             );
             let emphasis = intraline::refine(&hunk.lines);
@@ -409,7 +431,13 @@ impl DiffView {
                 }
                 line_row.push(doc.rows.len());
                 let (rendered, fill) = self.content_line(line, highlighted, ranges);
-                doc.push(index, RowKind::Content { side, lineno }, fill, rendered);
+                doc.push(
+                    index,
+                    RowKind::Content { side, lineno },
+                    fill,
+                    line.text.clone(),
+                    rendered,
+                );
             }
             let kinds: Vec<LineKind> = hunk.lines.iter().map(|line| line.kind).collect();
             let anchored: Vec<bool> = hunk
@@ -465,6 +493,7 @@ impl DiffView {
             file,
             RowKind::CommentHeader { id: comment.id },
             Some(border),
+            comment.author.name.clone(),
             self.comment_title(comment, pending),
         );
         let body_start = doc.rows.len();
@@ -473,6 +502,7 @@ impl DiffView {
                 file,
                 RowKind::CommentBody { id: comment.id },
                 Some(border),
+                text.to_string(),
                 self.comment_body(text),
             );
         }
@@ -481,6 +511,7 @@ impl DiffView {
             file,
             RowKind::CommentBottom { id: comment.id },
             Some(border),
+            String::new(),
             Line::default(),
         );
         doc.comments.push(CommentRegion {
