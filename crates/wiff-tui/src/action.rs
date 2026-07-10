@@ -43,6 +43,8 @@ pub enum Action {
     ToggleWrap,
     /// Open the modal list of files to jump to one.
     PickFile,
+    /// Open the modal list of comments to jump to one.
+    PickComment,
     /// Add a comment at the cursor.
     AddComment,
     /// Edit the focused comment.
@@ -100,6 +102,7 @@ impl Action {
             Action::ToggleComment => "toggle_comment",
             Action::ToggleWrap => "toggle_wrap",
             Action::PickFile => "pick_file",
+            Action::PickComment => "pick_comment",
             Action::AddComment => "add_comment",
             Action::EditComment => "edit_comment",
             Action::ResolveComment => "resolve_comment",

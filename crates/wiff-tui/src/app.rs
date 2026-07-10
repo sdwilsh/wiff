@@ -116,6 +116,28 @@ impl PickerRow<App> for FileRow {
     }
 }
 
+/// A comment in the modal list: its one-line description and its stable
+/// identity, so choosing it jumps the cursor to that comment's header.
+struct CommentRow {
+    label: String,
+    id: Ulid,
+}
+
+impl PickerRow<App> for CommentRow {
+    fn label(&self) -> String {
+        self.label.clone()
+    }
+
+    fn activate(self: Box<Self>, app: &mut App) {
+        if let Some(index) = app
+            .comment_header_row(self.id)
+            .and_then(|row| app.locate_document_row(row))
+        {
+            app.move_to(index);
+        }
+    }
+}
+
 /// The review view over a rendered diff.
 pub struct App {
     document: Document,
@@ -392,6 +414,7 @@ impl App {
             Action::ToggleComment => self.toggle_comment(),
             Action::ToggleWrap => return self.toggle_wrap(),
             Action::PickFile => self.open_file_picker(),
+            Action::PickComment => self.open_comment_picker(),
             Action::ResolveComment => return self.resolve_comment(),
             Action::DeleteComment => return self.delete_comment(),
             Action::AddComment => return self.start_add_comment(),
@@ -744,6 +767,57 @@ impl App {
         }
         let hint = self.picker_hint();
         self.picker = Some(Picker::new("Jump to file", rows, &hint, self.picker_colors));
+    }
+
+    /// Open the modal list of the diff's comments, each jumping to that comment
+    /// when chosen. Does nothing when the diff carries no comments.
+    fn open_comment_picker(&mut self) {
+        let rows: Vec<Box<dyn PickerRow<App>>> = self
+            .document
+            .comments
+            .iter()
+            .map(|region| {
+                Box::new(CommentRow {
+                    label: self.comment_label(region),
+                    id: region.id,
+                }) as Box<dyn PickerRow<App>>
+            })
+            .collect();
+        if rows.is_empty() {
+            return;
+        }
+        let hint = self.picker_hint();
+        self.picker = Some(Picker::new(
+            "Jump to comment",
+            rows,
+            &hint,
+            self.picker_colors,
+        ));
+    }
+
+    /// A one-line description of `region` for the comment picker: where the
+    /// comment sits, then the start of its body, so the reviewer can tell the
+    /// comments apart without their full text.
+    fn comment_label(&self, region: &crate::render::CommentRegion) -> String {
+        let location = self
+            .document
+            .rows
+            .get(region.header)
+            .and_then(|meta| self.document.files.get(meta.file))
+            .map(String::as_str)
+            .unwrap_or("review");
+        let preview = self
+            .document
+            .text
+            .get(region.body.start)
+            .map(String::as_str)
+            .unwrap_or("")
+            .trim();
+        if preview.is_empty() {
+            location.to_string()
+        } else {
+            format!("{location}  {preview}")
+        }
     }
 
     /// The picker's key hint, naming the reviewer's own bindings for moving the
@@ -1804,7 +1878,7 @@ mod tests {
     use crate::key::{Chord, Key, KeyPress};
     use crate::keymap::{Keymap, KeymapOverrides};
     use crate::render::testutil::{dump, file, ln};
-    use crate::render::{DiffView, ViewLayout};
+    use crate::render::{DiffView, RowKind, ViewLayout};
     use crate::review::Review;
     use crate::theme::Theme;
 
@@ -2344,6 +2418,38 @@ why?
         app.picker_cancel();
         k9::assert_equal!(app.picking(), false);
         k9::assert_equal!(app.cursor(), 0);
+    }
+
+    #[test]
+    fn the_comment_picker_lists_every_comment_with_its_location_and_body_start() {
+        // Opening the picker over the commented diff lists both comments in
+        // document order, each labeled with its file and the start of its body,
+        // the first highlighted, then a spacer and the key hint.
+        let mut app = App::new(commented_document(), 8, &Theme::dark());
+        app.update(Action::PickComment);
+        k9::assert_equal!(app.picking(), true);
+        let expected = "\
+<#c0c5ce|#4f5b66|->> src/lib.rs  ok                        
+<#c0c5ce|-|->  src/lib.rs  why 2?                    
+
+<#8a8a8a|-|->  up/down move  enter select  esc cancel
+";
+        k9::assert_equal!(dump_picker(&mut app), expected.to_string());
+    }
+
+    #[test]
+    fn choosing_a_comment_from_the_picker_jumps_the_cursor_to_its_header() {
+        // Stepping down to the second comment and activating closes the picker
+        // and lands the cursor on that comment's header row.
+        let mut app = App::new(commented_document(), 8, &Theme::dark());
+        app.update(Action::PickComment);
+        app.picker_nav(Action::LineDown);
+        app.picker_activate();
+        k9::assert_equal!(app.picking(), false);
+        k9::assert_equal!(
+            app.kind_at(app.cursor()),
+            Some(&RowKind::CommentHeader { id: Ulid(2) })
+        );
     }
 
     #[test]

@@ -295,8 +295,8 @@ no thousand-line nested match driving the UI.
 
 Input is decoded into an **action** (an enum of intents: page up/down, next/prev
 file, next/prev hunk, next/prev comment, toggle fold, toggle comment, toggle
-wrap, pick file, add comment, edit comment, resolve comment, delete comment,
-submit comment, cancel
+wrap, pick file, pick comment, add comment, edit comment, resolve comment,
+delete comment, submit comment, cancel
 comment, save, search forward/backward, search next/prev, refresh,
 `open_in_editor`, `quit`, `quit_keep`, `quit_remove`, etc.). Nothing in the UI
 logic branches on raw keys; it branches on actions. This keeps bindings
@@ -316,7 +316,7 @@ reassignable and keeps the update logic small.
   `n`/`N` repeat in the same or the opposite direction. The review summary sits
   at the top of the document, so the existing top jump (`g`, and `<` as a
   `less`-style alias) reaches it; there is no separate jump-to-review action.
-  `t` opens the file picker (see below).
+  `t` opens the file picker and `C` the comment picker (see below).
 
 ### Modal pickers
 
@@ -325,9 +325,10 @@ many. It shows the items one per line with one highlighted, moved with the same
 navigation bindings as the main view, and enter activates the highlight while
 escape cancels. A list taller than the space it is given scrolls to keep the
 highlight in view. The widget is generic over what a row does when chosen, so
-the same modal serves several pickers; `pick_file` (`t`) is the first, listing
-the diff's files and jumping the cursor to the chosen file's header. Listing the
-comments and the available themes are planned to reuse it.
+the same modal serves several pickers. `pick_file` (`t`) lists the diff's files
+and jumps the cursor to the chosen file's header; `pick_comment` (`C`) lists the
+diff's comments, each labeled with its location and the start of its body, and
+jumps to the chosen comment. Listing the available themes is planned to reuse it.
 
 ### Rendering
 

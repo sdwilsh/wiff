@@ -160,6 +160,7 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
         (Action::ToggleComment, vec![chord("tab")]),
         (Action::ToggleWrap, vec![chord("w")]),
         (Action::PickFile, vec![chord("t")]),
+        (Action::PickComment, vec![chord("C")]),
         (Action::AddComment, vec![chord("c")]),
         (Action::EditComment, vec![chord("e")]),
         (Action::ResolveComment, vec![chord("r")]),
