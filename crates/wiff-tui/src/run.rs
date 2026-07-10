@@ -21,7 +21,8 @@ use ratatui::{Frame, Terminal};
 
 use wiff_core::record::RecordBody;
 
-use crate::app::{App, ComposeView};
+use crate::action::Action;
+use crate::app::{App, ComposeView, Update};
 use crate::event::to_key_press;
 use crate::exit::{Exit, ExitDialog};
 use crate::input::Input;
@@ -29,12 +30,18 @@ use crate::keymap::Keymap;
 use crate::render::color;
 
 /// Run the review loop over `app`, resolving key events through `keymap`, until
-/// a quit action ends it. The terminal is put into raw mode on an alternate
-/// screen for the duration and restored before returning. Returns how the
-/// reviewer chose to leave together with any buffered draft edits to commit.
-pub fn run(app: App, keymap: Keymap) -> io::Result<(Exit, Vec<RecordBody>)> {
+/// a quit action ends it. A [`Action::Refresh`] is handed to `refresh`, which
+/// recaptures the diff and reloads the app in place, reporting its own outcome
+/// through the app's status line. The terminal is put into raw mode on an
+/// alternate screen for the duration and restored before returning. Returns how
+/// the reviewer chose to leave together with any buffered draft edits to commit.
+pub fn run(
+    app: App,
+    keymap: Keymap,
+    refresh: impl FnMut(&mut App),
+) -> io::Result<(Exit, Vec<RecordBody>)> {
     let mut terminal = TerminalGuard::enter()?;
-    event_loop(&mut terminal.terminal, app, keymap)
+    event_loop(&mut terminal.terminal, app, keymap, refresh)
 }
 
 /// Draw the current view: the visible lines over all but the last screen row,
@@ -117,6 +124,7 @@ fn event_loop<B: Backend>(
     terminal: &mut Terminal<B>,
     mut app: App,
     keymap: Keymap,
+    mut refresh: impl FnMut(&mut App),
 ) -> io::Result<(Exit, Vec<RecordBody>)> {
     let mut input = Input::new(keymap);
     loop {
@@ -135,7 +143,11 @@ fn event_loop<B: Backend>(
         } else if app.exiting() {
             app.exit_key(press);
         } else if let Some(action) = input.press(press) {
-            app.update(action);
+            // Refresh is the one passed-back action the loop acts on itself,
+            // handing it to the host to recapture and reload the app in place.
+            if let Update::Passed(Action::Refresh) = app.update(action) {
+                refresh(&mut app);
+            }
         }
         // A quit action or a confirmed dialog choice settles how to leave.
         if let Some(exit) = app.pending_exit() {

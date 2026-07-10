@@ -20,7 +20,10 @@
 //! into a comment that ends deleted, are pruned so they never reach the log.
 
 use ulid::Ulid;
+use wiff_diff::Diff;
 
+use crate::error::Result;
+use crate::rebase::rebase_line_comment;
 use crate::record::{
     CommentDelete, CommentEdit, CommentRecord, CommentResolve, CommentTarget, RecordBody,
 };
@@ -132,6 +135,36 @@ impl DraftBuffer {
         self.ops
             .iter()
             .any(|op| matches!(op, DraftOp::Delete { id: other } if *other == id))
+    }
+
+    /// Rebase pending drafted line-range comments forward onto `new_diff`, the
+    /// freshly captured version numbered `new_version`. Each drafted line comment
+    /// moves through the same engine that relocates committed comments, reading
+    /// the diff it was authored against through `old_diff`. Whole-file and review
+    /// drafts are not tied to line content, so they keep their target and
+    /// version, matching how committed comments of those kinds are left where
+    /// they are by a refresh. Buffered edits, resolves, and deletes name comments
+    /// by identity and so need no move.
+    pub fn rebase(
+        &mut self,
+        new_version: u32,
+        new_diff: &Diff,
+        mut old_diff: impl FnMut(u32) -> Result<Diff>,
+    ) -> Result<()> {
+        for op in &mut self.ops {
+            if let DraftOp::Add(record) = op
+                && matches!(record.target, CommentTarget::Lines { .. })
+            {
+                let old = old_diff(record.version)?;
+                if let Some(rebased) =
+                    rebase_line_comment(&record.target, record.anchor.as_ref(), &old, new_diff)
+                {
+                    record.target = rebased.target;
+                    record.version = new_version;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// The effective comments after applying the pending drafts over
@@ -258,8 +291,11 @@ fn find_mut(states: &mut [(Ulid, CommentState)], id: Ulid) -> Option<&mut Commen
 mod tests {
     use ulid::Ulid;
 
+    use wiff_diff::parse::parse;
+    use wiff_diff::{Diff, LineNo, Side};
+
     use super::{DraftBuffer, EffectiveComment, draft_record};
-    use crate::record::{Author, AuthorKind, CommentTarget, RecordBody};
+    use crate::record::{Author, AuthorKind, CommentRecord, CommentTarget, RecordBody};
     use crate::review::CommentState;
 
     /// A committed review comment with the given identity, body, and resolved
@@ -465,6 +501,92 @@ mod tests {
                 id: Ulid(1),
                 body: "final".to_string(),
             })]
+        );
+    }
+
+    /// v0 of a four-line added file, whose whole after side reconstructs
+    /// cleanly, for rebasing a drafted line comment against.
+    const V0: &str = "\
+diff --git a/f.txt b/f.txt
+new file mode 100644
+--- /dev/null
++++ b/f.txt
+@@ -0,0 +1,4 @@
++alpha
++beta
++gamma
++delta
+";
+
+    /// A drafted comment on line `line` of `f.txt`'s after side, authored
+    /// against version 0 with the given identity.
+    fn drafted_line(id: u128, line: u32) -> CommentRecord {
+        let mut record = draft_record(
+            Author {
+                name: "wez".to_string(),
+                kind: AuthorKind::Human,
+            },
+            CommentTarget::Lines {
+                file: "f.txt".to_string(),
+                side: Side::After,
+                start_line: LineNo::new(line).unwrap(),
+                end_line: LineNo::new(line).unwrap(),
+            },
+            0,
+            None,
+            "why gamma?".to_string(),
+        );
+        record.id = Ulid(id);
+        record
+    }
+
+    #[test]
+    fn rebasing_shifts_a_drafted_line_comment_to_its_new_position() {
+        // A line inserted at the top slides gamma from line 3 to line 4, and the
+        // draft advances to the new version.
+        let mut buffer = DraftBuffer::new();
+        buffer.add(drafted_line(2, 3));
+        let old: Diff = parse(V0).unwrap();
+        let new = parse(
+            "\
+diff --git a/f.txt b/f.txt
+new file mode 100644
+--- /dev/null
++++ b/f.txt
+@@ -0,0 +1,5 @@
++zero
++alpha
++beta
++gamma
++delta
+",
+        )
+        .unwrap();
+        buffer
+            .rebase(1, &new, |version| {
+                k9::assert_equal!(version, 0);
+                Ok(old.clone())
+            })
+            .unwrap();
+
+        let mut rebased = drafted_line(2, 4);
+        rebased.version = 1;
+        k9::assert_equal!(buffer.into_records(), vec![RecordBody::Comment(rebased)]);
+    }
+
+    #[test]
+    fn rebasing_leaves_a_review_level_draft_untouched() {
+        // A review-level draft is not tied to line content, so rebasing keeps
+        // both its target and its authored-against version.
+        let mut buffer = DraftBuffer::new();
+        buffer.add(drafted(2, "one more thing"));
+        let new = parse(V0).unwrap();
+        buffer
+            .rebase(1, &new, |_| panic!("a review draft needs no old diff"))
+            .unwrap();
+        k9::assert_equal!(
+            buffer.into_records(),
+            vec![RecordBody::Comment(drafted(2, "one more thing"))]
         );
     }
 

@@ -128,6 +128,24 @@ impl Review {
         !self.drafts.is_empty()
     }
 
+    /// Recapture the review over `diff` as version `version`, replacing the diff
+    /// and its committed `comments` and rebasing pending drafts forward onto it.
+    /// A drafted line comment moves through `old_diff`, which yields the parsed
+    /// diff a draft was authored against so its anchored lines can be relocated.
+    pub fn refresh(
+        &mut self,
+        diff: Diff,
+        comments: Vec<CommentState>,
+        version: u32,
+        old_diff: impl FnMut(u32) -> wiff_core::Result<Diff>,
+    ) -> wiff_core::Result<()> {
+        self.drafts.rebase(version, &diff, old_diff)?;
+        self.diff = diff;
+        self.committed = comments;
+        self.version = version;
+        Ok(())
+    }
+
     /// Take the buffered drafts as the append events that persist them, emptying
     /// the buffer. Used at commit time when the reviewer keeps the session.
     pub fn take_drafts(&mut self) -> Vec<RecordBody> {

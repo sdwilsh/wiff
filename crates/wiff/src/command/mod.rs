@@ -77,7 +77,7 @@ fn resolve_session(session: Option<&str>, project: Option<&str>) -> anyhow::Resu
 /// the index against `HEAD` when `cached` is set, else the working tree. Errors
 /// when the repository is of a kind wiff cannot yet capture from, or when there
 /// is nothing to review, so callers need not repeat those checks.
-async fn capture_scm_diff(
+pub(crate) async fn capture_scm_diff(
     scm: Option<ScmType>,
     root: PathBuf,
     cached: bool,

@@ -22,7 +22,7 @@ use ratatui::text::{Line, Span};
 use tui_textarea::TextArea;
 use ulid::Ulid;
 use wiff_core::record::{CommentTarget, RecordBody};
-use wiff_diff::Rgb;
+use wiff_diff::{LineNo, Rgb, Side};
 
 use crate::action::Action;
 use crate::compose::{Compose, ComposeKind};
@@ -82,6 +82,17 @@ enum ViewRow {
     Fold(usize),
 }
 
+/// Where the cursor sat before a refresh, so it can return to the same code once
+/// the diff is recaptured: the file it was in and, on a content line, the side
+/// and number of that line.
+struct CursorSpot {
+    /// The path of the file the cursor was in.
+    file: String,
+    /// The side and number of the content line the cursor was on, absent when it
+    /// sat on a header, a fold marker, or a comment.
+    line: Option<(Side, LineNo)>,
+}
+
 /// The review view over a rendered diff.
 pub struct App {
     document: Document,
@@ -118,6 +129,9 @@ pub struct App {
     compose_border: Rgb,
     /// The colors the exit dialog paints with.
     exit_colors: ExitColors,
+    /// A transient note shown in the status line until the next key press, used
+    /// to report the tally of a refresh.
+    message: Option<String>,
 }
 
 impl App {
@@ -154,6 +168,7 @@ impl App {
                 text: theme.comment_fg,
                 hint: theme.fold_fg,
             },
+            message: None,
         };
         app.rebuild_view();
         app
@@ -207,6 +222,9 @@ impl App {
 
     /// Handle a navigation action, or pass any other action back to the host.
     pub fn update(&mut self, action: Action) -> Update {
+        // Any action clears a lingering refresh note so it does not outstay the
+        // reviewer's next move.
+        self.message = None;
         match action {
             Action::LineDown => self.move_to(self.cursor + 1),
             Action::LineUp => self.move_to(self.cursor.saturating_sub(1)),
@@ -532,6 +550,128 @@ impl App {
         self.scroll_into_view();
     }
 
+    /// Recapture the review over `diff` as version `version`, replacing the diff
+    /// and its committed `comments` and rebasing pending drafts forward. Folds
+    /// reset to collapsed since the diff's structure has moved, comment collapse
+    /// state survives by identity, and the cursor returns to the same file and
+    /// line it was on, or the nearest surviving line in that file. Passes through
+    /// silently when no review is attached. Drafted line comments move through
+    /// `old_diff`, which yields the diff a draft was authored against.
+    pub fn refresh(
+        &mut self,
+        diff: wiff_diff::Diff,
+        comments: Vec<wiff_core::review::CommentState>,
+        version: u32,
+        old_diff: impl FnMut(u32) -> wiff_core::Result<wiff_diff::Diff>,
+    ) -> wiff_core::Result<()> {
+        if self.review.is_none() {
+            return Ok(());
+        }
+        let spot = self.cursor_spot();
+        let document = {
+            let review = self.review.as_mut().expect("review present");
+            review.refresh(diff, comments, version, old_diff)?;
+            review.document()
+        };
+        self.collapsed = vec![true; document.folds.len()];
+        self.comment_collapsed = document
+            .comments
+            .iter()
+            .map(|region| {
+                let collapsed = self
+                    .comment_collapsed
+                    .get(&region.id)
+                    .copied()
+                    .unwrap_or(region.collapsed_default);
+                (region.id, collapsed)
+            })
+            .collect();
+        self.document = document;
+        self.rebuild_view();
+        self.restore_spot(spot);
+        Ok(())
+    }
+
+    /// Show `message` in the status line until the reviewer's next action, used
+    /// to report the outcome of a refresh.
+    pub fn set_message(&mut self, message: String) {
+        self.message = Some(message);
+    }
+
+    /// The file and line the cursor is on, to return to after a refresh rebuilds
+    /// the document. Absent when the cursor is on no file.
+    fn cursor_spot(&self) -> Option<CursorSpot> {
+        let file = self.document.files.get(self.cursor_file()?)?.clone();
+        let line = match self.kind_at(self.cursor) {
+            Some(RowKind::Content {
+                side,
+                lineno: Some(lineno),
+            }) => Some((*side, *lineno)),
+            _ => None,
+        };
+        Some(CursorSpot { file, line })
+    }
+
+    /// Return the cursor to `spot` after a rebuild: the same line when it
+    /// survived, else the nearest surviving line in that file, else the file's
+    /// header, else the top of the document.
+    fn restore_spot(&mut self, spot: Option<CursorSpot>) {
+        let target = spot
+            .and_then(|spot| {
+                let file = self.document.files.iter().position(|f| *f == spot.file)?;
+                self.best_row_in_file(file, spot.line)
+            })
+            .and_then(|row| self.locate_document_row(row));
+        self.move_to(target.unwrap_or(0));
+    }
+
+    /// The best document row to land on within file `file` for a cursor that was
+    /// on `line`: the exact line if present, else the nearest line on the same
+    /// side, else the file's header row.
+    fn best_row_in_file(&self, file: usize, line: Option<(Side, LineNo)>) -> Option<usize> {
+        if let Some((side, target)) = line {
+            let mut nearest: Option<(usize, u32)> = None;
+            for (row, meta) in self.document.rows.iter().enumerate() {
+                if meta.file != file {
+                    continue;
+                }
+                let RowKind::Content {
+                    side: row_side,
+                    lineno: Some(lineno),
+                } = meta.kind
+                else {
+                    continue;
+                };
+                if row_side != side {
+                    continue;
+                }
+                let distance = lineno.get().abs_diff(target.get());
+                if distance == 0 {
+                    return Some(row);
+                }
+                if nearest.is_none_or(|(_, best)| distance < best) {
+                    nearest = Some((row, distance));
+                }
+            }
+            if let Some((row, _)) = nearest {
+                return Some(row);
+            }
+        }
+        self.document
+            .rows
+            .iter()
+            .position(|meta| meta.file == file && matches!(meta.kind, RowKind::FileHeader))
+    }
+
+    /// The view index showing document `row`, or the marker of the fold that
+    /// hides it when it is folded away.
+    fn locate_document_row(&self, row: usize) -> Option<usize> {
+        self.view_index_of_row(row).or_else(|| {
+            self.fold_containing(row)
+                .and_then(|fold| self.view_index_of_fold(fold))
+        })
+    }
+
     /// Move the cursor to comment `id`'s header row, if it is in view.
     fn focus_comment(&mut self, id: Ulid) {
         if let Some(index) = self
@@ -786,13 +926,18 @@ impl App {
     /// The status line for the bottom of the screen: the file the cursor is in
     /// and how far through the view it sits, filled to `width`.
     pub fn status(&self, width: usize) -> Line<'static> {
-        let path = self
-            .cursor_file()
-            .and_then(|file| self.document.files.get(file))
-            .map(String::as_str)
-            .unwrap_or("");
-        let percent = self.progress_percent();
-        let text: String = format!("{path}  {percent}%").chars().take(width).collect();
+        let text: String = match &self.message {
+            Some(message) => message.chars().take(width).collect(),
+            None => {
+                let path = self
+                    .cursor_file()
+                    .and_then(|file| self.document.files.get(file))
+                    .map(String::as_str)
+                    .unwrap_or("");
+                let percent = self.progress_percent();
+                format!("{path}  {percent}%").chars().take(width).collect()
+            }
+        };
         Line::from(Span::styled(
             format!("{text:<width$}"),
             Style::default()
@@ -1648,6 +1793,150 @@ why 2?
 <#8a8a8a|#4f5b66|->            * <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<-|#4f5b66|->       
 <#c0c5ce|-|->              use a constant
 <#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
+";
+        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+    }
+
+    /// The status-line text an app currently shows at the test width.
+    fn status_text(app: &App) -> String {
+        app.status(TEST_WIDTH)
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn refreshing_keeps_the_cursor_on_the_same_line_and_reports_the_tally() {
+        // The reviewer sits on the added line, then a refresh appends a third
+        // line below it. The same numbered line survives, so the cursor stays on
+        // it, and the status line reports the captured version and comment tally.
+        let mut app = App::reviewing(plain_review(), 12, &Theme::dark());
+        app.update(Action::Top);
+        for _ in 0..4 {
+            app.update(Action::LineDown);
+        }
+        let new = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[
+                    (LineKind::Context, "let x = 1;", 1),
+                    (LineKind::Added, "let y = 2;", 2),
+                    (LineKind::Added, "let z = 3;", 3),
+                ],
+            )],
+        };
+        app.refresh(new, Vec::new(), 1, |_| unreachable!("no drafts to rebase"))
+            .unwrap();
+        app.set_message(
+            "captured v1; rebased 0 comments: 0 exact, 0 shifted, 0 outdated".to_string(),
+        );
+
+        k9::assert_equal!(app.cursor(), 4);
+        k9::assert_equal!(app.top(), 0);
+        let expected = "\
+<#ebcb8b|-|b>Review
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,3 +1,3 @@
+<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#65737e|#4f5b66|->        2 + <#b48ead|#4f5b66|->let<#c0c5ce|#4f5b66|-> y <#c0c5ce|#4f5b66|->=<#c0c5ce|#4f5b66|-> <#d08770|#4f5b66|->2<#c0c5ce|#4f5b66|->;<-|#4f5b66|->                  
+<#65737e|#2d3b30|->        3 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> z <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->3<#c0c5ce|#2d3b30|->;
+";
+        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        // The status line truncates the note to the screen width.
+        k9::assert_equal!(
+            status_text(&app),
+            "captured v1; rebased 0 comments: 0 exact".to_string()
+        );
+    }
+
+    #[test]
+    fn refreshing_rebases_a_pending_draft_onto_the_new_diff() {
+        // A draft is authored on the added line, then a refresh inserts a line
+        // above it. The drafted comment moves forward with its line, so it
+        // renders above the same code, now one line lower.
+        let mut app = App::reviewing(plain_review(), 14, &Theme::dark());
+        app.update(Action::Top);
+        for _ in 0..4 {
+            app.update(Action::LineDown);
+        }
+        app.update(Action::AddComment);
+        for c in "why?".chars() {
+            app.compose_key(KeyPress::new(Key::Char(c)));
+        }
+        app.compose_key(save());
+
+        let old = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[
+                    (LineKind::Context, "let x = 1;", 1),
+                    (LineKind::Added, "let y = 2;", 2),
+                ],
+            )],
+        };
+        let new = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[
+                    (LineKind::Added, "let a = 0;", 1),
+                    (LineKind::Context, "let x = 1;", 2),
+                    (LineKind::Added, "let y = 2;", 3),
+                ],
+            )],
+        };
+        app.refresh(new, Vec::new(), 1, |version| {
+            k9::assert_equal!(version, 0);
+            Ok(old.clone())
+        })
+        .unwrap();
+        app.update(Action::Top);
+
+        // The drafted comment sits above the added `let y = 2;`, which has moved
+        // to the third line, and still wears its uncommitted draft badge.
+        let expected = "\
+<#ebcb8b|#4f5b66|b>Review<-|#4f5b66|->                                  
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,3 +1,3 @@
+<#65737e|#2d3b30|->        1 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> a <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->0<#c0c5ce|#2d3b30|->;
+<#65737e|-|->   2    2   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#8a8a8a|-|->            * <#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]
+<#c0c5ce|-|->              why?
+<#65737e|#2d3b30|->        3 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
+";
+        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+    }
+
+    #[test]
+    fn refreshing_onto_a_missing_line_lands_on_the_nearest_survivor() {
+        // The reviewer sits on the added second line, then a refresh drops it,
+        // leaving only the first line. With the exact line gone, the cursor
+        // falls back to the nearest surviving line in the same file.
+        let mut app = App::reviewing(plain_review(), 12, &Theme::dark());
+        app.update(Action::Top);
+        for _ in 0..4 {
+            app.update(Action::LineDown);
+        }
+        let new = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[(LineKind::Context, "let x = 1;", 1)],
+            )],
+        };
+        app.refresh(new, Vec::new(), 1, |_| unreachable!("no drafts to rebase"))
+            .unwrap();
+
+        k9::assert_equal!(app.cursor(), 3);
+        k9::assert_equal!(app.top(), 0);
+        let expected = "\
+<#ebcb8b|-|b>Review
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,1 +1,1 @@
+<#65737e|#4f5b66|->   1    1   <#b48ead|#4f5b66|->let<#c0c5ce|#4f5b66|-> x <#c0c5ce|#4f5b66|->=<#c0c5ce|#4f5b66|-> <#d08770|#4f5b66|->1<#c0c5ce|#4f5b66|->;<-|#4f5b66|->                  
 ";
         k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
