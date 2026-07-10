@@ -36,12 +36,15 @@ pub(super) fn render(state: &ReviewState) -> String {
     out
 }
 
-/// One comment rendered as a bullet with its location, attribution, state
-/// flags, body, and, for an anchored line range, a fenced context block.
+/// One comment rendered as a bullet with its id, location, attribution, state
+/// flags, body, and, for an anchored line range, a fenced context block. The id
+/// leads the bullet so a reader can act on the comment (resolve or withdraw it)
+/// straight from this rendering.
 fn comment_block(comment: &CommentState) -> String {
     let mut out = String::new();
     out.push_str(&format!(
-        "- {} by {} ({}){}\n",
+        "- {} {} by {} ({}){}\n",
+        comment.id,
         location(&comment.target),
         comment.author.name,
         comment.author.kind.as_str(),
@@ -193,14 +196,14 @@ mod tests {
 
 ### Review
 
-- review by wez (human)
+- 00000000000000000000000003 review by wez (human)
   overall solid
 
 ### main.rs
 
-- whole file by assistant (agent)
+- 00000000000000000000000002 whole file by assistant (agent)
   needs tests
-- line 2 (after) by wez (human)
+- 00000000000000000000000001 line 2 (after) by wez (human)
   why 3?
 
   ```rust
@@ -211,7 +214,7 @@ mod tests {
 
 ### other.rs
 
-- lines 5-6 (after) by dev (human) [shifted]
+- 00000000000000000000000004 lines 5-6 (after) by dev (human) [shifted]
   moved code
 ";
         k9::assert_equal!(out, expected.to_string());

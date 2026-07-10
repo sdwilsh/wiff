@@ -8,6 +8,7 @@ mod refresh;
 mod render;
 mod resume;
 mod session;
+mod skill;
 
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -42,6 +43,8 @@ pub enum Command {
     Comment(CommentArgs),
     /// Render the review state for consumption.
     Render(RenderArgs),
+    /// Write the agent skill file and print its path.
+    SkillPath,
 }
 
 impl Command {
@@ -54,6 +57,7 @@ impl Command {
             Command::Session(args) => args.run(),
             Command::Refresh(args) => args.run().await,
             Command::Resume(args) => args.run(),
+            Command::SkillPath => skill::run(),
         }
     }
 }
