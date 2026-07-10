@@ -18,7 +18,7 @@ use std::ops::Range;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ulid::Ulid;
-use wiff_core::record::{CommentTarget, Confidence};
+use wiff_core::record::{Author, CommentTarget, Confidence};
 use wiff_core::review::CommentState;
 use wiff_diff::{
     Diff, DiffLine, FileDiff, FileStatus, HighlightError, HighlightedLine, Highlighter, LineKind,
@@ -917,26 +917,37 @@ enum BadgeStyle {
 }
 
 /// A comment's status badges, in display order. A pending comment leads with a
-/// `draft` badge so uncommitted work stands out. A deleted comment shows only
-/// that it is withdrawn, its other status being moot until it is restored.
-fn badges(comment: &CommentState, pending: bool) -> Vec<(&'static str, BadgeStyle)> {
+/// `draft` badge so uncommitted work stands out. A resolved or withdrawn comment
+/// names who acted, so the reviewer sees at a glance who cleared it. A deleted
+/// comment shows only that it is withdrawn, its other status being moot until it
+/// is restored.
+fn badges(comment: &CommentState, pending: bool) -> Vec<(String, BadgeStyle)> {
     let mut out = Vec::new();
     if pending {
-        out.push(("draft", BadgeStyle::Draft));
+        out.push(("draft".to_string(), BadgeStyle::Draft));
     }
     if comment.deleted {
-        out.push(("deleted", BadgeStyle::Muted));
+        out.push((by("deleted", &comment.deleted_by), BadgeStyle::Muted));
         return out;
     }
     if comment.resolved {
-        out.push(("resolved", BadgeStyle::Muted));
+        out.push((by("resolved", &comment.resolved_by), BadgeStyle::Muted));
     }
     match comment.confidence {
-        Some(Confidence::Approximate) => out.push(("shifted", BadgeStyle::Warn)),
-        Some(Confidence::Outdated) => out.push(("outdated", BadgeStyle::Warn)),
+        Some(Confidence::Approximate) => out.push(("shifted".to_string(), BadgeStyle::Warn)),
+        Some(Confidence::Outdated) => out.push(("outdated".to_string(), BadgeStyle::Warn)),
         Some(Confidence::Exact) | None => {}
     }
     out
+}
+
+/// A status badge naming who performed an action, as `"<verb> by <name>"`, or
+/// the bare verb when the actor is unknown.
+fn by(verb: &str, author: &Option<Author>) -> String {
+    match author {
+        Some(author) => format!("{verb} by {}", author.name),
+        None => verb.to_string(),
+    }
 }
 
 /// A live line comment with the range it anchors, so a fold splits around it.
@@ -1166,7 +1177,9 @@ mod tests {
             anchor: None,
             body: body.to_string(),
             resolved: false,
+            resolved_by: None,
             deleted: false,
+            deleted_by: None,
             confidence: None,
             created_seq: 0,
             updated_seq: 0,

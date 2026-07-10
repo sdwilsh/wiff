@@ -118,6 +118,7 @@ fn folds_versions_and_comment_chains() {
             RecordBody::CommentResolve(CommentResolve {
                 id: comment_a(),
                 resolved: true,
+                author: human("wez"),
             }),
         ),
         rec(
@@ -133,7 +134,10 @@ fn folds_versions_and_comment_chains() {
         ),
         rec(
             8,
-            RecordBody::CommentDelete(CommentDelete { id: comment_b() }),
+            RecordBody::CommentDelete(CommentDelete {
+                id: comment_b(),
+                author: human("dev"),
+            }),
         ),
         rec(
             9,
@@ -162,7 +166,9 @@ fn folds_versions_and_comment_chains() {
                 anchor: Some(anchor),
                 body: "why 3?".to_string(),
                 resolved: true,
+                resolved_by: Some(human("wez")),
                 deleted: false,
+                deleted_by: None,
                 confidence: None,
                 created_seq: 2,
                 updated_seq: 6,
@@ -177,7 +183,9 @@ fn folds_versions_and_comment_chains() {
                 anchor: None,
                 body: "typo".to_string(),
                 resolved: false,
+                resolved_by: None,
                 deleted: true,
+                deleted_by: Some(human("dev")),
                 confidence: Some(Confidence::Approximate),
                 created_seq: 3,
                 updated_seq: 8,
@@ -190,7 +198,9 @@ fn folds_versions_and_comment_chains() {
                 anchor: None,
                 body: "LGTM overall".to_string(),
                 resolved: false,
+                resolved_by: None,
                 deleted: false,
+                deleted_by: None,
                 confidence: None,
                 created_seq: 9,
                 updated_seq: 9,

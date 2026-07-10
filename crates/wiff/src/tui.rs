@@ -305,8 +305,18 @@ mod tests {
             RecordBody::CommentResolve(CommentResolve {
                 id: Ulid(1),
                 resolved: true,
+                author: Author {
+                    name: "wez".to_string(),
+                    kind: AuthorKind::Human,
+                },
             }),
-            RecordBody::CommentDelete(CommentDelete { id: Ulid(2) }),
+            RecordBody::CommentDelete(CommentDelete {
+                id: Ulid(2),
+                author: Author {
+                    name: "wez".to_string(),
+                    kind: AuthorKind::Human,
+                },
+            }),
         ];
         commit_drafts(&path, drafts).expect("commit");
 
@@ -326,9 +336,22 @@ mod tests {
                     RecordBody::CommentResolve(CommentResolve {
                         id: Ulid(1),
                         resolved: true,
+                        author: Author {
+                            name: "wez".to_string(),
+                            kind: AuthorKind::Human,
+                        },
                     })
                 ),
-                (2, RecordBody::CommentDelete(CommentDelete { id: Ulid(2) })),
+                (
+                    2,
+                    RecordBody::CommentDelete(CommentDelete {
+                        id: Ulid(2),
+                        author: Author {
+                            name: "wez".to_string(),
+                            kind: AuthorKind::Human,
+                        },
+                    })
+                ),
             ]
         );
     }

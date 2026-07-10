@@ -249,6 +249,8 @@ pub struct CommentResolve {
     pub id: Ulid,
     /// The new resolved state.
     pub resolved: bool,
+    /// Who changed the resolved state.
+    pub author: Author,
 }
 
 /// A withdrawal of a comment.
@@ -256,6 +258,8 @@ pub struct CommentResolve {
 pub struct CommentDelete {
     /// The comment being withdrawn.
     pub id: Ulid,
+    /// Who withdrew it.
+    pub author: Author,
 }
 
 /// A re-anchoring of a comment onto a newer diff version.

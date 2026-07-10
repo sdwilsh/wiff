@@ -113,8 +113,10 @@ bodies:
   (for rebasing), and the body text.
 - `CommentEdit`: revises a prior comment's body, referencing its annotation
   ULID.
-- `CommentResolve` / `CommentDelete`: marks a comment resolved or withdrawn.
-  Deletes are tombstones, not physical removal (append-only).
+- `CommentResolve` / `CommentDelete`: marks a comment resolved or withdrawn,
+  attributed to the author who made the change so a reviewer can see who
+  resolved or removed it. Deletes are tombstones, not physical removal
+  (append-only).
 
 Comment mutations are append-only events keyed by annotation ULID; the current
 state of a comment is the fold of its event chain, mirroring how wallah folds
@@ -242,7 +244,9 @@ an explicit subcommand, so behavior is unambiguous. Subcommands (v0):
 - `wiff comment add`: append a comment. Flags for target (`--file`, `--line`,
   line range, whole-file, review-level), `--body` (or stdin), author flags, and
   an optional `--session` that defaults to the active session.
-- `wiff comment list` / `wiff comment resolve` / `wiff comment rm`.
+- `wiff comment list` / `wiff comment resolve` / `wiff comment rm`. Resolve and
+  rm take the same author flags as `add`, so who resolved or withdrew a comment
+  is recorded alongside the change.
 - `wiff render`: emit the review state for consumption. `--format markdown`
   (default) or `--format json`. The format argument is designed to admit more
   formats later, so it is a value-taking option rather than a boolean flag.
@@ -267,8 +271,8 @@ through the append + lock path.
   agent prompt (markdown) or programmatic use (json). Markdown groups comments
   by file, leading each comment with its id (so it can be resolved or withdrawn
   straight from the render) and showing author and kind, the target location,
-  resolved/outdated state, the body, and a fenced code block of the surrounding
-  context. JSON is
+  resolved/outdated state (naming who resolved it), the body, and a fenced code
+  block of the surrounding context. JSON is
   the folded current state (not the raw event log) under a versioned schema
   (`{ schema_version, session, files, comments }`); the raw log
   remains available by reading the JSONL directly.
@@ -369,8 +373,8 @@ Anchoring by target:
 
 Several comments on one line stack in creation order. Each comment is
 independently collapsible. A collapsed comment occupies a single line showing a
-marker, the author (name and kind), and status badges; metadata only, no body
-preview. Expanding adds the body. Resolved comments default to collapsed.
+marker, the author (name and kind), and status badges naming who resolved or
+withdrew it; metadata only, no body preview. Expanding adds the body. Resolved comments default to collapsed.
 Collapse state is per-process view state keyed by annotation ULID, not persisted
 across runs.
 

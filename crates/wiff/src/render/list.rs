@@ -76,7 +76,7 @@ mod tests {
         let expected = "\
 00000000000000000000000001  open  main.rs line 2 (after)  wez (human)
   why 3?
-00000000000000000000000002  open  main.rs (whole file)  assistant (agent)
+00000000000000000000000002  resolved  main.rs (whole file)  assistant (agent)
   needs tests
 00000000000000000000000003  open  review  wez (human)
   overall solid

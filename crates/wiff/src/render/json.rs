@@ -93,7 +93,9 @@ mod tests {
                     },
                     "body": "why 3?",
                     "resolved": false,
+                    "resolved_by": null,
                     "deleted": false,
+                    "deleted_by": null,
                     "confidence": null,
                     "created_seq": 2,
                     "updated_seq": 2
@@ -105,11 +107,13 @@ mod tests {
                     "version": 0,
                     "anchor": null,
                     "body": "needs tests",
-                    "resolved": false,
+                    "resolved": true,
+                    "resolved_by": { "name": "wez", "kind": "human" },
                     "deleted": false,
+                    "deleted_by": null,
                     "confidence": null,
                     "created_seq": 3,
-                    "updated_seq": 3
+                    "updated_seq": 9
                 },
                 {
                     "id": "00000000000000000000000003",
@@ -119,7 +123,9 @@ mod tests {
                     "anchor": null,
                     "body": "overall solid",
                     "resolved": false,
+                    "resolved_by": null,
                     "deleted": false,
+                    "deleted_by": null,
                     "confidence": null,
                     "created_seq": 4,
                     "updated_seq": 4
@@ -138,7 +144,9 @@ mod tests {
                     "anchor": null,
                     "body": "moved code",
                     "resolved": false,
+                    "resolved_by": null,
                     "deleted": false,
+                    "deleted_by": null,
                     "confidence": "approximate",
                     "created_seq": 5,
                     "updated_seq": 6

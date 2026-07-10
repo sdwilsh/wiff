@@ -159,7 +159,9 @@ fn adding_comments_captures_anchors_and_folds_to_current_state() {
                 }),
                 body: "why 3?".to_string(),
                 resolved: false,
+                resolved_by: None,
                 deleted: false,
+                deleted_by: None,
                 confidence: None,
                 created_seq: 2,
                 updated_seq: 2,
@@ -177,7 +179,9 @@ fn adding_comments_captures_anchors_and_folds_to_current_state() {
                 anchor: None,
                 body: "needs a newline".to_string(),
                 resolved: false,
+                resolved_by: None,
                 deleted: false,
+                deleted_by: None,
                 confidence: None,
                 created_seq: 3,
                 updated_seq: 3,
@@ -190,7 +194,9 @@ fn adding_comments_captures_anchors_and_folds_to_current_state() {
                 anchor: None,
                 body: "looks good".to_string(),
                 resolved: false,
+                resolved_by: None,
                 deleted: false,
+                deleted_by: None,
                 confidence: None,
                 created_seq: 4,
                 updated_seq: 4,
@@ -242,7 +248,9 @@ fn a_line_beyond_the_captured_window_is_recorded_without_an_anchor() {
             anchor: None,
             body: "look here for context".to_string(),
             resolved: false,
+            resolved_by: None,
             deleted: false,
+            deleted_by: None,
             confidence: None,
             created_seq: 2,
             updated_seq: 2,
@@ -271,9 +279,9 @@ fn resolving_and_withdrawing_comments_folds_to_current_state() {
     .unwrap();
 
     // Resolve then reopen the kept comment; its state reflects the last write.
-    set_resolved(&mut log, keep.id, true).unwrap();
-    set_resolved(&mut log, keep.id, false).unwrap();
-    delete_comment(&mut log, gone.id).unwrap();
+    set_resolved(&mut log, keep.id, true, human("wez")).unwrap();
+    set_resolved(&mut log, keep.id, false, human("wez")).unwrap();
+    delete_comment(&mut log, gone.id, human("wez")).unwrap();
 
     let state = fold(&read_records(log.path()).unwrap()).unwrap();
     k9::assert_equal!(
@@ -289,7 +297,9 @@ fn resolving_and_withdrawing_comments_folds_to_current_state() {
                 anchor: None,
                 body: "needs a newline".to_string(),
                 resolved: false,
+                resolved_by: Some(human("wez")),
                 deleted: false,
+                deleted_by: None,
                 confidence: None,
                 created_seq: 2,
                 updated_seq: 5,
@@ -302,7 +312,9 @@ fn resolving_and_withdrawing_comments_folds_to_current_state() {
                 anchor: None,
                 body: "never mind".to_string(),
                 resolved: false,
+                resolved_by: None,
                 deleted: true,
+                deleted_by: Some(human("wez")),
                 confidence: None,
                 created_seq: 3,
                 updated_seq: 6,
@@ -315,8 +327,8 @@ fn resolving_and_withdrawing_comments_folds_to_current_state() {
 fn mutating_an_unknown_comment_is_an_error() {
     let (_base, mut log) = session();
     let missing = Ulid::new();
-    let resolve_err = set_resolved(&mut log, missing, true).unwrap_err();
-    let delete_err = delete_comment(&mut log, missing).unwrap_err();
+    let resolve_err = set_resolved(&mut log, missing, true, human("wez")).unwrap_err();
+    let delete_err = delete_comment(&mut log, missing, human("wez")).unwrap_err();
     k9::assert_equal!(
         resolve_err.to_string(),
         format!("no comment {missing} in this session")

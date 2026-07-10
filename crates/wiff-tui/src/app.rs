@@ -1693,7 +1693,9 @@ mod tests {
             anchor: None,
             body: body.to_string(),
             resolved,
+            resolved_by: None,
             deleted: false,
+            deleted_by: None,
             confidence: None,
             created_seq: 0,
             updated_seq: 0,
@@ -2260,7 +2262,7 @@ mod tests {
 <#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit  r to unresolve  d to delete<#65737e|-|-> <#65737e|-|->┐
 <#65737e|-|->└──────────────────────────────────────┘
 <#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#a3be8c|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<#8a8a8a|#4f5b66|-> [resolved]<#8a8a8a|#4f5b66|->  press e to edit  r to unresolve  d to delete<#a3be8c|#4f5b66|-> <#a3be8c|#4f5b66|->┐
+<#a3be8c|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<#8a8a8a|#4f5b66|-> [resolved by wez]<#8a8a8a|#4f5b66|->  press e to edit  r to unresolve  d to delete<#a3be8c|#4f5b66|-> <#a3be8c|#4f5b66|->┐
 <#a3be8c|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#a3be8c|-|->│
 <#a3be8c|-|->│<#c0c5ce|-|->say more<-|-|->                              <#a3be8c|-|->│
 <#a3be8c|-|->└──────────────────────────────────────┘
@@ -2292,7 +2294,7 @@ mod tests {
 <#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit  r to unresolve  d to delete<#65737e|-|-> <#65737e|-|->┐
 <#65737e|-|->└──────────────────────────────────────┘
 <#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#a3be8c|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<#8a8a8a|#4f5b66|-> [deleted]<#8a8a8a|#4f5b66|->  press e to edit  r to resolve  d to undelete<#a3be8c|#4f5b66|-> <#a3be8c|#4f5b66|->┐
+<#a3be8c|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<#8a8a8a|#4f5b66|-> [deleted by wez]<#8a8a8a|#4f5b66|->  press e to edit  r to resolve  d to undelete<#a3be8c|#4f5b66|-> <#a3be8c|#4f5b66|->┐
 <#a3be8c|-|->└──────────────────────────────────────┘
 <#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
 ";

@@ -4,7 +4,7 @@ use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
 use ulid::Ulid;
 use wiff_config::Config;
-use wiff_core::record::{AuthorKind, CommentTarget};
+use wiff_core::record::{Author, AuthorKind, CommentTarget};
 use wiff_core::review::ReviewState;
 use wiff_core::{DraftComment, SessionLog, delete_comment, set_resolved};
 use wiff_diff::{LineNo, Side};
@@ -82,18 +82,7 @@ impl CommentAddArgs {
         let path = resolve_session(self.session.as_deref(), self.project.as_deref())?;
         let target = self.target()?;
         let body = comment_body(self.body.clone()).await?;
-        let kind = if self.agent {
-            AuthorKind::Agent
-        } else {
-            AuthorKind::Human
-        };
-        // The default name follows the kind acted as -- an agent annotates as
-        // "assistant", a human as $USER -- honoring any configured name, which
-        // an explicit --author overrides in turn.
-        let mut author = Config::load()?.author.resolve(kind);
-        if let Some(name) = self.author.clone() {
-            author.name = name;
-        }
+        let author = resolve_author(self.agent, self.author.clone())?;
         let mut log = SessionLog::open(&path)?;
         let added = DraftComment {
             author,
@@ -157,6 +146,12 @@ struct CommentResolveArgs {
     /// Reopen the comment instead of resolving it.
     #[arg(long)]
     reopen: bool,
+    /// The author's display name.
+    #[arg(long)]
+    author: Option<String>,
+    /// Attribute the change to an agent rather than a human.
+    #[arg(long)]
+    agent: bool,
     /// Resolve a comment in a specific session by ULID instead of the active one.
     #[arg(long)]
     session: Option<String>,
@@ -170,8 +165,9 @@ impl CommentResolveArgs {
     fn run(self) -> anyhow::Result<()> {
         let path = resolve_session(self.session.as_deref(), self.project.as_deref())?;
         let id = parse_id(&self.id)?;
+        let author = resolve_author(self.agent, self.author.clone())?;
         let mut log = SessionLog::open(&path)?;
-        let comment = set_resolved(&mut log, id, !self.reopen)?;
+        let comment = set_resolved(&mut log, id, !self.reopen, author)?;
         let verb = if self.reopen { "reopened" } else { "resolved" };
         println!("{verb} comment {}", comment.id);
         Ok(())
@@ -183,6 +179,12 @@ impl CommentResolveArgs {
 struct CommentRmArgs {
     /// The id of the comment to withdraw.
     id: String,
+    /// The author's display name.
+    #[arg(long)]
+    author: Option<String>,
+    /// Attribute the withdrawal to an agent rather than a human.
+    #[arg(long)]
+    agent: bool,
     /// Withdraw a comment in a specific session by ULID instead of the active one.
     #[arg(long)]
     session: Option<String>,
@@ -196,8 +198,9 @@ impl CommentRmArgs {
     fn run(self) -> anyhow::Result<()> {
         let path = resolve_session(self.session.as_deref(), self.project.as_deref())?;
         let id = parse_id(&self.id)?;
+        let author = resolve_author(self.agent, self.author.clone())?;
         let mut log = SessionLog::open(&path)?;
-        let comment = delete_comment(&mut log, id)?;
+        let comment = delete_comment(&mut log, id, author)?;
         println!("withdrew comment {}", comment.id);
         Ok(())
     }
@@ -206,6 +209,22 @@ impl CommentRmArgs {
 /// Parse a comment id from its ULID text.
 fn parse_id(id: &str) -> anyhow::Result<Ulid> {
     Ulid::from_string(id).with_context(|| format!("{id} is not a valid comment id"))
+}
+
+/// The author an action is attributed to: the default name for the kind acted
+/// as -- an agent annotates as "assistant", a human as $USER -- honoring any
+/// configured name, which an explicit `--author` overrides in turn.
+fn resolve_author(agent: bool, name: Option<String>) -> anyhow::Result<Author> {
+    let kind = if agent {
+        AuthorKind::Agent
+    } else {
+        AuthorKind::Human
+    };
+    let mut author = Config::load()?.author.resolve(kind);
+    if let Some(name) = name {
+        author.name = name;
+    }
+    Ok(author)
 }
 
 /// Which side of the diff a line-range comment refers to.

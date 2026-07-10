@@ -25,7 +25,7 @@ use wiff_diff::Diff;
 use crate::error::Result;
 use crate::rebase::rebase_line_comment;
 use crate::record::{
-    CommentDelete, CommentEdit, CommentRecord, CommentResolve, CommentTarget, RecordBody,
+    Author, CommentDelete, CommentEdit, CommentRecord, CommentResolve, CommentTarget, RecordBody,
 };
 use crate::review::CommentState;
 
@@ -36,10 +36,14 @@ enum DraftOp {
     Add(CommentRecord),
     /// A revision to a comment's body.
     Edit { id: Ulid, body: String },
-    /// A change to a comment's resolved state.
-    Resolve { id: Ulid, resolved: bool },
-    /// A withdrawal of a comment.
-    Delete { id: Ulid },
+    /// A change to a comment's resolved state, and who made it.
+    Resolve {
+        id: Ulid,
+        resolved: bool,
+        author: Author,
+    },
+    /// A withdrawal of a comment, and who made it.
+    Delete { id: Ulid, author: Author },
 }
 
 impl DraftOp {
@@ -47,7 +51,9 @@ impl DraftOp {
     fn id(&self) -> Ulid {
         match self {
             DraftOp::Add(record) => record.id,
-            DraftOp::Edit { id, .. } | DraftOp::Resolve { id, .. } | DraftOp::Delete { id } => *id,
+            DraftOp::Edit { id, .. } | DraftOp::Resolve { id, .. } | DraftOp::Delete { id, .. } => {
+                *id
+            }
         }
     }
 }
@@ -104,22 +110,26 @@ impl DraftBuffer {
         self.ops.push(DraftOp::Edit { id, body });
     }
 
-    /// Buffer a resolved-state change for comment `id`, replacing any earlier
-    /// buffered resolve so only the latest state is committed.
-    pub fn resolve(&mut self, id: Ulid, resolved: bool) {
+    /// Buffer a resolved-state change for comment `id` by `author`, replacing any
+    /// earlier buffered resolve so only the latest state is committed.
+    pub fn resolve(&mut self, id: Ulid, resolved: bool, author: Author) {
         self.ops
             .retain(|op| !matches!(op, DraftOp::Resolve { id: other, .. } if *other == id));
-        self.ops.push(DraftOp::Resolve { id, resolved });
+        self.ops.push(DraftOp::Resolve {
+            id,
+            resolved,
+            author,
+        });
     }
 
     /// Buffer a withdrawal of comment `id`, marking it deleted until commit. The
     /// comment stays in the effective set so it can be shown as deleted and the
     /// withdrawal undone with [`restore`](Self::restore). Deleting is idempotent.
-    pub fn delete(&mut self, id: Ulid) {
+    pub fn delete(&mut self, id: Ulid, author: Author) {
         if self.is_deleting(id) {
             return;
         }
-        self.ops.push(DraftOp::Delete { id });
+        self.ops.push(DraftOp::Delete { id, author });
     }
 
     /// Undo a buffered withdrawal of comment `id`, bringing it back into the
@@ -127,14 +137,14 @@ impl DraftBuffer {
     /// kept alongside the deletion.
     pub fn restore(&mut self, id: Ulid) {
         self.ops
-            .retain(|op| !matches!(op, DraftOp::Delete { id: other } if *other == id));
+            .retain(|op| !matches!(op, DraftOp::Delete { id: other, .. } if *other == id));
     }
 
     /// Whether a withdrawal of comment `id` is currently buffered.
     fn is_deleting(&self, id: Ulid) -> bool {
         self.ops
             .iter()
-            .any(|op| matches!(op, DraftOp::Delete { id: other } if *other == id))
+            .any(|op| matches!(op, DraftOp::Delete { id: other, .. } if *other == id))
     }
 
     /// Rebase pending drafted line-range comments forward onto `new_diff`, the
@@ -188,14 +198,20 @@ impl DraftBuffer {
                         state.body = body.clone();
                     }
                 }
-                DraftOp::Resolve { id, resolved } => {
+                DraftOp::Resolve {
+                    id,
+                    resolved,
+                    author,
+                } => {
                     if let Some(state) = find_mut(&mut states, *id) {
                         state.resolved = *resolved;
+                        state.resolved_by = Some(author.clone());
                     }
                 }
-                DraftOp::Delete { id } => {
+                DraftOp::Delete { id, author } => {
                     if let Some(state) = find_mut(&mut states, *id) {
                         state.deleted = true;
+                        state.deleted_by = Some(author.clone());
                     }
                 }
             }
@@ -225,7 +241,7 @@ impl DraftBuffer {
             .ops
             .iter()
             .filter_map(|op| match op {
-                DraftOp::Delete { id } => Some(*id),
+                DraftOp::Delete { id, .. } => Some(*id),
                 _ => None,
             })
             .collect();
@@ -251,10 +267,18 @@ impl DraftBuffer {
             .map(|op| match op {
                 DraftOp::Add(record) => RecordBody::Comment(record),
                 DraftOp::Edit { id, body } => RecordBody::CommentEdit(CommentEdit { id, body }),
-                DraftOp::Resolve { id, resolved } => {
-                    RecordBody::CommentResolve(CommentResolve { id, resolved })
+                DraftOp::Resolve {
+                    id,
+                    resolved,
+                    author,
+                } => RecordBody::CommentResolve(CommentResolve {
+                    id,
+                    resolved,
+                    author,
+                }),
+                DraftOp::Delete { id, author } => {
+                    RecordBody::CommentDelete(CommentDelete { id, author })
                 }
-                DraftOp::Delete { id } => RecordBody::CommentDelete(CommentDelete { id }),
             })
             .collect()
     }
@@ -298,6 +322,14 @@ mod tests {
     use crate::record::{Author, AuthorKind, CommentRecord, CommentTarget, RecordBody};
     use crate::review::CommentState;
 
+    /// The human reviewer whose resolves and deletes the buffer attributes.
+    fn actor() -> Author {
+        Author {
+            name: "wez".to_string(),
+            kind: AuthorKind::Human,
+        }
+    }
+
     /// A committed review comment with the given identity, body, and resolved
     /// state, targeting the review overall.
     fn committed_comment(id: u128, body: &str, resolved: bool) -> CommentState {
@@ -312,7 +344,9 @@ mod tests {
             anchor: None,
             body: body.to_string(),
             resolved,
+            resolved_by: None,
             deleted: false,
+            deleted_by: None,
             confidence: None,
             created_seq: 3,
             updated_seq: 3,
@@ -384,8 +418,9 @@ mod tests {
         let committed = vec![committed_comment(1, "old body", false)];
         let mut buffer = DraftBuffer::new();
         buffer.edit(Ulid(1), "new body".to_string());
-        buffer.resolve(Ulid(1), true);
+        buffer.resolve(Ulid(1), true, actor());
         let mut expected = committed_comment(1, "new body", true);
+        expected.resolved_by = Some(actor());
         expected.created_seq = 3;
         expected.updated_seq = 3;
         k9::assert_equal!(
@@ -404,9 +439,10 @@ mod tests {
             committed_comment(2, "b", false),
         ];
         let mut buffer = DraftBuffer::new();
-        buffer.delete(Ulid(1));
+        buffer.delete(Ulid(1), actor());
         let mut deleted = committed_comment(1, "a", false);
         deleted.deleted = true;
+        deleted.deleted_by = Some(actor());
         k9::assert_equal!(
             buffer.apply(&committed),
             vec![
@@ -426,7 +462,7 @@ mod tests {
     fn restoring_a_deleted_committed_comment_brings_it_back_unchanged() {
         let committed = vec![committed_comment(1, "a", false)];
         let mut buffer = DraftBuffer::new();
-        buffer.delete(Ulid(1));
+        buffer.delete(Ulid(1), actor());
         buffer.restore(Ulid(1));
         k9::assert_equal!(buffer.is_empty(), true);
         k9::assert_equal!(
@@ -443,11 +479,12 @@ mod tests {
     fn deleting_a_committed_comment_commits_only_its_tombstone() {
         let mut buffer = DraftBuffer::new();
         buffer.edit(Ulid(1), "reworded".to_string());
-        buffer.delete(Ulid(1));
+        buffer.delete(Ulid(1), actor());
         k9::assert_equal!(
             buffer.into_records(),
             vec![RecordBody::CommentDelete(crate::record::CommentDelete {
                 id: Ulid(1),
+                author: actor(),
             })]
         );
     }
@@ -457,7 +494,7 @@ mod tests {
         let mut buffer = DraftBuffer::new();
         let id = buffer.add(drafted(2, "never mind"));
         buffer.edit(id, "second thoughts".to_string());
-        buffer.delete(id);
+        buffer.delete(id, actor());
         let mut deleted = CommentState {
             author: Author {
                 name: "opus".to_string(),
@@ -466,6 +503,7 @@ mod tests {
             ..committed_comment(2, "second thoughts", false)
         };
         deleted.deleted = true;
+        deleted.deleted_by = Some(actor());
         deleted.created_seq = 0;
         deleted.updated_seq = 0;
         k9::assert_equal!(
@@ -482,7 +520,7 @@ mod tests {
     fn restoring_a_deleted_drafted_comment_recovers_its_authoring() {
         let mut buffer = DraftBuffer::new();
         let id = buffer.add(drafted(2, "keep me"));
-        buffer.delete(id);
+        buffer.delete(id, actor());
         buffer.restore(id);
         k9::assert_equal!(
             buffer.into_records(),
@@ -594,7 +632,7 @@ new file mode 100644
     fn commit_emits_the_buffered_events_in_order() {
         let mut buffer = DraftBuffer::new();
         buffer.add(drafted(2, "new comment"));
-        buffer.resolve(Ulid(1), true);
+        buffer.resolve(Ulid(1), true, actor());
         k9::assert_equal!(
             buffer.into_records(),
             vec![
@@ -602,6 +640,7 @@ new file mode 100644
                 RecordBody::CommentResolve(crate::record::CommentResolve {
                     id: Ulid(1),
                     resolved: true,
+                    author: actor(),
                 }),
             ]
         );

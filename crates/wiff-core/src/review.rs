@@ -60,8 +60,12 @@ pub struct CommentState {
     pub body: String,
     /// Whether it is resolved.
     pub resolved: bool,
+    /// Who last changed its resolved state, once anyone has.
+    pub resolved_by: Option<Author>,
     /// Whether it has been withdrawn (a tombstone; retained, not removed).
     pub deleted: bool,
+    /// Who withdrew it, once withdrawn.
+    pub deleted_by: Option<Author>,
     /// How confidently it was last re-anchored, once it has been.
     pub confidence: Option<Confidence>,
     /// The sequence number of the creating record.
@@ -82,7 +86,9 @@ impl CommentState {
             anchor: record.anchor.clone(),
             body: record.body.clone(),
             resolved: false,
+            resolved_by: None,
             deleted: false,
+            deleted_by: None,
             confidence: None,
             created_seq: seq,
             updated_seq: seq,
@@ -136,11 +142,13 @@ pub fn fold(records: &[Record]) -> Result<ReviewState> {
             RecordBody::CommentResolve(resolve) => {
                 let comment = require_comment(&mut comments, resolve.id, seq)?;
                 comment.resolved = resolve.resolved;
+                comment.resolved_by = Some(resolve.author.clone());
                 comment.updated_seq = seq;
             }
             RecordBody::CommentDelete(delete) => {
                 let comment = require_comment(&mut comments, delete.id, seq)?;
                 comment.deleted = true;
+                comment.deleted_by = Some(delete.author.clone());
                 comment.updated_seq = seq;
             }
             RecordBody::CommentReanchor(reanchor) => {

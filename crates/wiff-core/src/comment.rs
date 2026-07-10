@@ -86,19 +86,28 @@ impl DraftComment {
     }
 }
 
-/// Set the resolved state of an existing comment, appending a resolve record.
-/// The comment must already exist in the session.
-pub fn set_resolved(log: &mut SessionLog, id: Ulid, resolved: bool) -> Result<CommentState> {
+/// Set the resolved state of an existing comment, appending a resolve record
+/// attributed to `author`. The comment must already exist in the session.
+pub fn set_resolved(
+    log: &mut SessionLog,
+    id: Ulid,
+    resolved: bool,
+    author: Author,
+) -> Result<CommentState> {
     let comment = require_comment_in_log(log, id)?;
-    log.append_locked(RecordBody::CommentResolve(CommentResolve { id, resolved }))?;
+    log.append_locked(RecordBody::CommentResolve(CommentResolve {
+        id,
+        resolved,
+        author,
+    }))?;
     Ok(comment)
 }
 
-/// Withdraw an existing comment, appending a delete tombstone. The comment must
-/// already exist in the session.
-pub fn delete_comment(log: &mut SessionLog, id: Ulid) -> Result<CommentState> {
+/// Withdraw an existing comment, appending a delete tombstone attributed to
+/// `author`. The comment must already exist in the session.
+pub fn delete_comment(log: &mut SessionLog, id: Ulid, author: Author) -> Result<CommentState> {
     let comment = require_comment_in_log(log, id)?;
-    log.append_locked(RecordBody::CommentDelete(CommentDelete { id }))?;
+    log.append_locked(RecordBody::CommentDelete(CommentDelete { id, author }))?;
     Ok(comment)
 }
 

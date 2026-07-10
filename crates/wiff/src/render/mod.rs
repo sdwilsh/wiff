@@ -86,7 +86,9 @@ mod fixture {
             anchor: None,
             body: body.to_string(),
             resolved: false,
+            resolved_by: None,
             deleted: false,
+            deleted_by: None,
             confidence: None,
             created_seq: seq,
             updated_seq: seq,
@@ -117,7 +119,7 @@ mod fixture {
             context_before: vec!["let a = 1;".to_string()],
             context_after: vec!["let c = 4;".to_string()],
         });
-        let whole = comment(
+        let mut whole = comment(
             "00000000000000000000000002",
             author("assistant", AuthorKind::Agent),
             CommentTarget::File {
@@ -126,6 +128,9 @@ mod fixture {
             "needs tests",
             3,
         );
+        whole.resolved = true;
+        whole.resolved_by = Some(author("wez", AuthorKind::Human));
+        whole.updated_seq = 9;
         let review = comment(
             "00000000000000000000000003",
             author("wez", AuthorKind::Human),

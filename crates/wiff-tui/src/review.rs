@@ -124,7 +124,7 @@ impl Review {
             .into_iter()
             .find(|entry| entry.comment.id == id)
             .is_some_and(|entry| entry.comment.resolved);
-        self.drafts.resolve(id, !resolved);
+        self.drafts.resolve(id, !resolved, self.author.clone());
     }
 
     /// Toggle the deleted state of comment `id`, buffering the change, and
@@ -140,7 +140,7 @@ impl Review {
         if deleted {
             self.drafts.restore(id);
         } else {
-            self.drafts.delete(id);
+            self.drafts.delete(id, self.author.clone());
         }
         !deleted
     }
@@ -241,7 +241,9 @@ mod tests {
             anchor: None,
             body: "note".to_string(),
             resolved: false,
+            resolved_by: None,
             deleted: false,
+            deleted_by: None,
             confidence: None,
             created_seq: updated_seq,
             updated_seq,

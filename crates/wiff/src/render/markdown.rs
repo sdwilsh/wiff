@@ -154,16 +154,19 @@ fn location(target: &CommentTarget) -> String {
     }
 }
 
-/// The trailing state flags for a comment: resolved, and re-anchor confidence
-/// when it is not exact.
+/// The trailing state flags for a comment: resolved with who resolved it, and
+/// re-anchor confidence when it is not exact.
 fn flags(comment: &CommentState) -> String {
     let mut flags = Vec::new();
     if comment.resolved {
-        flags.push("resolved");
+        flags.push(match &comment.resolved_by {
+            Some(author) => format!("resolved by {} ({})", author.name, author.kind.as_str()),
+            None => "resolved".to_string(),
+        });
     }
     match comment.confidence {
-        Some(Confidence::Approximate) => flags.push("shifted"),
-        Some(Confidence::Outdated) => flags.push("outdated"),
+        Some(Confidence::Approximate) => flags.push("shifted".to_string()),
+        Some(Confidence::Outdated) => flags.push("outdated".to_string()),
         Some(Confidence::Exact) | None => {}
     }
     if flags.is_empty() {
@@ -201,7 +204,7 @@ mod tests {
 
 ### main.rs
 
-- 00000000000000000000000002 whole file by assistant (agent)
+- 00000000000000000000000002 whole file by assistant (agent) [resolved by wez (human)]
   needs tests
 - 00000000000000000000000001 line 2 (after) by wez (human)
   why 3?
