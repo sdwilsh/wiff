@@ -19,11 +19,14 @@ use std::collections::HashMap;
 
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
+use tui_textarea::TextArea;
 use ulid::Ulid;
-use wiff_core::record::RecordBody;
+use wiff_core::record::{CommentTarget, RecordBody};
 use wiff_diff::Rgb;
 
 use crate::action::Action;
+use crate::compose::{Compose, ComposeKind};
+use crate::key::{Key, KeyPress};
 use crate::render::{Document, RowKind, color};
 use crate::review::Review;
 use crate::theme::Theme;
@@ -35,6 +38,18 @@ pub enum Update {
     Handled,
     /// The action is not one the app handles; the host should act on it.
     Passed(Action),
+}
+
+/// The viewport split around the inline comment editor while composing: the
+/// document lines above the editor, the editor widget itself, and the lines
+/// below it, in draw order down the screen.
+pub struct ComposeView<'a> {
+    /// The document lines shown above the editor.
+    pub above: Vec<Line<'static>>,
+    /// The live editor widget, rendered where its comment will appear.
+    pub editor: &'a TextArea<'static>,
+    /// The document lines shown below the editor.
+    pub below: Vec<Line<'static>>,
 }
 
 /// Which family of rows a jump seeks: file, hunk, or comment headers.
@@ -72,6 +87,8 @@ pub struct App {
     /// The review being edited, present when the app can author comments. When
     /// absent the app is a read-only viewport and editing actions pass through.
     review: Option<Review>,
+    /// The inline comment editor, present while authoring or revising a comment.
+    compose: Option<Compose>,
     /// Whether each of the document's folds is currently collapsed.
     collapsed: Vec<bool>,
     /// Whether each comment's body is currently collapsed, keyed by its stable
@@ -88,6 +105,8 @@ pub struct App {
     cursor_bg: Rgb,
     status_fg: Rgb,
     status_bg: Rgb,
+    /// The border color of the inline comment editor.
+    compose_border: Rgb,
 }
 
 impl App {
@@ -103,6 +122,7 @@ impl App {
         let mut app = Self {
             document,
             review: None,
+            compose: None,
             collapsed,
             comment_collapsed,
             view: Vec::new(),
@@ -113,6 +133,7 @@ impl App {
             cursor_bg: theme.cursor_bg,
             status_fg: theme.status_fg,
             status_bg: theme.status_bg,
+            compose_border: theme.comment_draft_fg,
         };
         app.rebuild_view();
         app
@@ -177,6 +198,8 @@ impl App {
             Action::ToggleComment => self.toggle_comment(),
             Action::ResolveComment => return self.resolve_comment(),
             Action::DeleteComment => return self.delete_comment(),
+            Action::AddComment => return self.start_add_comment(),
+            Action::EditComment => return self.start_edit_comment(),
             other => return Update::Passed(other),
         }
         Update::Handled
@@ -217,6 +240,172 @@ impl App {
             self.focus_comment(id);
         }
         Update::Handled
+    }
+
+    /// Open the inline editor to author a comment at the cursor, deriving its
+    /// target from the row the cursor is on. Passes through when no review is
+    /// being edited; does nothing on a row that anchors no comment.
+    fn start_add_comment(&mut self) -> Update {
+        if self.review.is_none() {
+            return Update::Passed(Action::AddComment);
+        }
+        if let Some((target, anchor, label)) = self.add_target_at_cursor() {
+            self.compose = Some(Compose::new(
+                ComposeKind::Add(target),
+                anchor,
+                "",
+                label,
+                self.compose_border,
+            ));
+        }
+        Update::Handled
+    }
+
+    /// Open the inline editor to revise the comment the cursor is on, seeded
+    /// with its current body. Passes through when no review is being edited;
+    /// does nothing when the cursor is not on a comment.
+    fn start_edit_comment(&mut self) -> Update {
+        if self.review.is_none() {
+            return Update::Passed(Action::EditComment);
+        }
+        if let Some(id) = self.comment_at_cursor()
+            && let Some(anchor) = self
+                .comment_header_row(id)
+                .and_then(|row| self.view_index_of_row(row))
+        {
+            let body = self
+                .review
+                .as_ref()
+                .and_then(|review| review.comment_body(id))
+                .unwrap_or_default();
+            self.compose = Some(Compose::new(
+                ComposeKind::Edit(id),
+                anchor,
+                &body,
+                "edit comment".to_string(),
+                self.compose_border,
+            ));
+        }
+        Update::Handled
+    }
+
+    /// The target, anchor view row, and border label for a comment authored at
+    /// the cursor: a line comment on a content row, a whole-file comment on a
+    /// file header, or a review comment on the summary row. `None` on a row that
+    /// anchors no comment.
+    fn add_target_at_cursor(&self) -> Option<(CommentTarget, usize, String)> {
+        match self.kind_at(self.cursor)? {
+            RowKind::ReviewSummary => Some((
+                CommentTarget::Review,
+                self.cursor + 1,
+                "new review comment".to_string(),
+            )),
+            RowKind::FileHeader => {
+                let path = self.document.files.get(self.cursor_file()?)?.clone();
+                let label = format!("new comment  {path}");
+                Some((CommentTarget::File { file: path }, self.cursor + 1, label))
+            }
+            RowKind::Content {
+                side,
+                lineno: Some(lineno),
+            } => {
+                let (side, lineno) = (*side, *lineno);
+                let path = self.document.files.get(self.cursor_file()?)?.clone();
+                let label = format!("new comment  {path}:{}", lineno.get());
+                let target = CommentTarget::Lines {
+                    file: path,
+                    side,
+                    start_line: lineno,
+                    end_line: lineno,
+                };
+                Some((target, self.cursor, label))
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether the inline comment editor is open, so the host routes raw key
+    /// presses to it rather than resolving them into actions.
+    pub fn composing(&self) -> bool {
+        self.compose.is_some()
+    }
+
+    /// Feed a key press to the open editor: save on ctrl-s, cancel on escape
+    /// (confirming first when the body has unsaved changes), and otherwise let
+    /// the editor handle the press. Does nothing when the editor is closed.
+    pub fn compose_key(&mut self, press: KeyPress) {
+        let Some(compose) = self.compose.as_mut() else {
+            return;
+        };
+        if compose.confirming() {
+            match press.key {
+                Key::Char('y') | Key::Char('Y') => self.compose = None,
+                _ => compose.resume(),
+            }
+            return;
+        }
+        if press.ctrl && press.key == Key::Char('s') {
+            self.submit_compose();
+        } else if press.key == Key::Escape {
+            if compose.is_dirty() {
+                compose.begin_confirm();
+            } else {
+                self.compose = None;
+            }
+        } else {
+            compose.input(press);
+        }
+    }
+
+    /// Commit the open editor's body to the review: a new comment or a revision.
+    /// An empty body is discarded like a cancel. Focuses the resulting comment.
+    fn submit_compose(&mut self) {
+        let Some(compose) = self.compose.take() else {
+            return;
+        };
+        let body = compose.body();
+        if body.is_empty() {
+            return;
+        }
+        let Some(review) = self.review.as_mut() else {
+            return;
+        };
+        let id = match compose.into_kind() {
+            ComposeKind::Add(target) => review.add_comment(target, body),
+            ComposeKind::Edit(id) => {
+                review.edit_comment(id, body);
+                id
+            }
+        };
+        self.rerender();
+        self.focus_comment(id);
+    }
+
+    /// The viewport split around the inline editor, when composing: the document
+    /// lines above the editor, the editor widget, and the lines below it,
+    /// together filling the viewport. The editor renders where its comment will,
+    /// keeping the anchored code just below it. `None` when not composing.
+    pub fn compose_view(&self) -> Option<ComposeView<'_>> {
+        let compose = self.compose.as_ref()?;
+        if self.height == 0 {
+            return None;
+        }
+        let editor_height = (compose.line_count() + 2).min(self.height.max(3));
+        let doc_shown = self.height.saturating_sub(editor_height);
+        let anchor = compose.anchor().min(self.view.len());
+        // Leave the rows already above the anchor where they sit and let the
+        // editor push the anchored code and everything below it down, so opening
+        // the editor does not scroll the view out from under the reviewer. Only
+        // when those rows would leave no room for the editor do we scroll up.
+        let above_start = self.top.max(anchor.saturating_sub(doc_shown)).min(anchor);
+        let below_end = (anchor + (doc_shown - (anchor - above_start))).min(self.view.len());
+        let above = (above_start..anchor).map(|i| self.line_at(i)).collect();
+        let below = (anchor..below_end).map(|i| self.line_at(i)).collect();
+        Some(ComposeView {
+            above,
+            editor: compose.editor(),
+            below,
+        })
     }
 
     /// Re-render the document from the review after a buffered edit, preserving
@@ -582,12 +771,66 @@ mod tests {
     use wiff_core::review::CommentState;
     use wiff_diff::{Diff, FileStatus, LineKind, Side};
 
-    use super::{App, Update};
+    use super::{App, ComposeView, Update};
     use crate::action::Action;
+    use crate::key::{Key, KeyPress};
     use crate::render::DiffView;
     use crate::render::testutil::{dump, file, ln};
     use crate::review::Review;
     use crate::theme::Theme;
+
+    /// A press of the printable character `c`.
+    fn ch(c: char) -> KeyPress {
+        KeyPress::new(Key::Char(c))
+    }
+
+    /// Feed each character of `text` to the open editor as a key press.
+    fn typed(app: &mut App, text: &str) {
+        for c in text.chars() {
+            app.compose_key(ch(c));
+        }
+    }
+
+    /// The save chord for the editor.
+    fn save() -> KeyPress {
+        KeyPress::with_modifiers(Key::Char('s'), true, false, false)
+    }
+
+    /// A review over a two-line Rust file with no comments yet, for authoring
+    /// tests.
+    fn plain_review() -> Review {
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[
+                    (LineKind::Context, "let x = 1;", 1),
+                    (LineKind::Added, "let y = 2;", 2),
+                ],
+            )],
+        };
+        Review::new(
+            DiffView::new(Theme::dark()).unwrap(),
+            diff,
+            Author {
+                name: "wez".to_string(),
+                kind: AuthorKind::Human,
+            },
+            0,
+            Vec::new(),
+        )
+    }
+
+    /// The editor body and the document lines above and below it, as a human
+    /// sees them stacked down the screen.
+    fn dump_compose(view: &ComposeView) -> String {
+        format!(
+            "{}--editor--\n{}\n--below--\n{}",
+            dump(&view.above),
+            view.editor.lines().join("\n"),
+            dump(&view.below),
+        )
+    }
 
     /// An after-side line comment on `line` of `path` by `author`, with `body`,
     /// resolved when `resolved`.
@@ -661,7 +904,16 @@ mod tests {
     /// The [`commented_diff`] as an editable review, for comment-authoring tests.
     fn commented_review() -> Review {
         let (diff, comments) = commented_diff();
-        Review::new(DiffView::new(Theme::dark()).unwrap(), diff, comments)
+        Review::new(
+            DiffView::new(Theme::dark()).unwrap(),
+            diff,
+            Author {
+                name: "wez".to_string(),
+                kind: AuthorKind::Human,
+            },
+            0,
+            comments,
+        )
     }
 
     /// A two-file document: a Rust modification and a short text edit.
@@ -1144,5 +1396,134 @@ mod tests {
             app.update(Action::DeleteComment),
             Update::Passed(Action::DeleteComment)
         );
+        k9::assert_equal!(
+            app.update(Action::AddComment),
+            Update::Passed(Action::AddComment)
+        );
+        k9::assert_equal!(
+            app.update(Action::EditComment),
+            Update::Passed(Action::EditComment)
+        );
+    }
+
+    #[test]
+    fn adding_a_comment_on_a_line_renders_it_as_a_draft() {
+        // Move onto the added line, author a comment there, and save it: it
+        // appears as a pending draft in a block above the line it anchors.
+        let mut app = App::reviewing(plain_review(), 12, &Theme::dark());
+        for _ in 0..4 {
+            app.update(Action::LineDown);
+        }
+        app.update(Action::AddComment);
+        k9::assert_equal!(app.composing(), true);
+        typed(&mut app, "why 2?");
+        app.compose_key(save());
+        k9::assert_equal!(app.composing(), false);
+        let expected = "\
+<#ebcb8b|-|b>Review
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,2 +1,2 @@
+<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#8a8a8a|#4f5b66|->            * <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<-|#4f5b66|->       
+<#c0c5ce|-|->              why 2?
+<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
+";
+        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+    }
+
+    #[test]
+    fn the_editor_renders_inline_above_the_anchored_line() {
+        // With the editor open on the added line, the split places the anchored
+        // line just below the editor and the seeded body sits in the editor.
+        let mut app = App::reviewing(plain_review(), 8, &Theme::dark());
+        for _ in 0..4 {
+            app.update(Action::LineDown);
+        }
+        app.update(Action::AddComment);
+        typed(&mut app, "why 2?");
+        let view = app.compose_view().expect("composing");
+        let expected = "\
+<#ebcb8b|-|b>Review
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,2 +1,2 @@
+<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+--editor--
+why 2?
+--below--
+<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
+";
+        k9::assert_equal!(dump_compose(&view), expected.to_string());
+    }
+
+    #[test]
+    fn cancelling_a_clean_editor_closes_it_at_once() {
+        // Escape with nothing typed leaves editing immediately with no draft.
+        let mut app = App::reviewing(plain_review(), 12, &Theme::dark());
+        app.update(Action::AddComment);
+        k9::assert_equal!(app.composing(), true);
+        app.compose_key(KeyPress::new(Key::Escape));
+        k9::assert_equal!(app.composing(), false);
+        k9::assert_equal!(app.take_drafts(), Vec::new());
+    }
+
+    #[test]
+    fn cancelling_a_changed_editor_asks_before_discarding() {
+        // Escape after typing does not close; it asks. Declining resumes
+        // editing; escaping again and confirming discards without a draft.
+        let mut app = App::reviewing(plain_review(), 12, &Theme::dark());
+        app.update(Action::AddComment);
+        typed(&mut app, "hmm");
+        app.compose_key(KeyPress::new(Key::Escape));
+        k9::assert_equal!(app.composing(), true);
+        app.compose_key(ch('n'));
+        k9::assert_equal!(app.composing(), true);
+        app.compose_key(KeyPress::new(Key::Escape));
+        app.compose_key(ch('y'));
+        k9::assert_equal!(app.composing(), false);
+        k9::assert_equal!(app.take_drafts(), Vec::new());
+    }
+
+    #[test]
+    fn an_empty_body_is_discarded_on_save() {
+        // Saving an untouched editor authors nothing.
+        let mut app = App::reviewing(plain_review(), 12, &Theme::dark());
+        app.update(Action::AddComment);
+        app.compose_key(save());
+        k9::assert_equal!(app.composing(), false);
+        k9::assert_equal!(app.take_drafts(), Vec::new());
+    }
+
+    #[test]
+    fn editing_a_comment_seeds_the_editor_and_rewrites_the_body() {
+        // Land on the unresolved comment and edit it: the editor opens with its
+        // current body, and saving a new body rewrites it, badged as a draft.
+        let mut app = App::reviewing(commented_review(), 12, &Theme::dark());
+        app.update(Action::NextComment);
+        app.update(Action::NextComment);
+        app.update(Action::EditComment);
+        let view = app.compose_view().expect("composing");
+        k9::assert_equal!(
+            view.editor.lines().join("\n"),
+            "why 2?\nsay more".to_string()
+        );
+        drop(view);
+        // Replace the body: clear the two seeded lines, then type a new one.
+        for _ in 0..20 {
+            app.compose_key(KeyPress::new(Key::Backspace));
+        }
+        typed(&mut app, "use a constant");
+        app.compose_key(save());
+        k9::assert_equal!(app.composing(), false);
+        let expected = "\
+<#ebcb8b|-|b>Review
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,2 +1,2 @@
+<#8a8a8a|-|->            * <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]
+<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#8a8a8a|#4f5b66|->            * <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<-|#4f5b66|->       
+<#c0c5ce|-|->              use a constant
+<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
+";
+        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
 }

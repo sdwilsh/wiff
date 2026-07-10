@@ -7,6 +7,7 @@
 
 pub mod action;
 pub mod app;
+pub mod compose;
 pub mod event;
 pub mod input;
 pub mod key;

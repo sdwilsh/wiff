@@ -8,8 +8,8 @@
 //! change, so pending work is visible until it is committed.
 
 use ulid::Ulid;
-use wiff_core::draft::DraftBuffer;
-use wiff_core::record::RecordBody;
+use wiff_core::draft::{DraftBuffer, draft_record};
+use wiff_core::record::{Author, CommentTarget, RecordBody};
 use wiff_core::review::CommentState;
 use wiff_diff::Diff;
 
@@ -20,6 +20,10 @@ use crate::render::{DiffView, Document};
 pub struct Review {
     view: DiffView,
     diff: Diff,
+    /// The author newly drafted comments are attributed to.
+    author: Author,
+    /// The diff version drafted comments are authored against.
+    version: u32,
     /// The live comments already persisted to the session log.
     committed: Vec<CommentState>,
     /// The buffered, uncommitted edits over the committed comments.
@@ -28,11 +32,21 @@ pub struct Review {
 
 impl Review {
     /// A review over `diff` with its already-committed `comments`, and no
-    /// pending drafts. The caller filters out withdrawn committed comments.
-    pub fn new(view: DiffView, diff: Diff, comments: Vec<CommentState>) -> Self {
+    /// pending drafts. Comments authored in the TUI are attributed to `author`
+    /// and anchored against diff `version`. The caller filters out withdrawn
+    /// committed comments.
+    pub fn new(
+        view: DiffView,
+        diff: Diff,
+        author: Author,
+        version: u32,
+        comments: Vec<CommentState>,
+    ) -> Self {
         Self {
             view,
             diff,
+            author,
+            version,
             committed: comments,
             drafts: DraftBuffer::new(),
         }
@@ -82,6 +96,30 @@ impl Review {
             self.drafts.delete(id);
         }
         !deleted
+    }
+
+    /// Draft a new comment on `target` with `body`, returning its identity so
+    /// the caller can focus it. The draft is anchored against the review's diff
+    /// version and attributed to its author; snippet capture is left for a
+    /// later refresh.
+    pub fn add_comment(&mut self, target: CommentTarget, body: String) -> Ulid {
+        let record = draft_record(self.author.clone(), target, self.version, None, body);
+        self.drafts.add(record)
+    }
+
+    /// Buffer a new `body` for comment `id`.
+    pub fn edit_comment(&mut self, id: Ulid, body: String) {
+        self.drafts.edit(id, body);
+    }
+
+    /// The current body of comment `id` with pending drafts applied, for seeding
+    /// an edit. Absent when no such comment is in the effective set.
+    pub fn comment_body(&self, id: Ulid) -> Option<String> {
+        self.drafts
+            .apply(&self.committed)
+            .into_iter()
+            .find(|entry| entry.comment.id == id)
+            .map(|entry| entry.comment.body)
     }
 
     /// Take the buffered drafts as the append events that persist them, emptying

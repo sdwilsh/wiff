@@ -8,7 +8,6 @@
 
 use std::io::{self, Stdout};
 
-use ratatui::Terminal;
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::crossterm::event::{self, Event};
 use ratatui::crossterm::execute;
@@ -17,11 +16,12 @@ use ratatui::crossterm::terminal::{
 };
 use ratatui::layout::Rect;
 use ratatui::widgets::Paragraph;
+use ratatui::{Frame, Terminal};
 
 use wiff_core::record::RecordBody;
 
 use crate::action::Action;
-use crate::app::{App, Update};
+use crate::app::{App, ComposeView, Update};
 use crate::event::to_key_press;
 use crate::input::Input;
 use crate::keymap::Keymap;
@@ -63,10 +63,39 @@ pub fn draw<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
             height: 1,
             ..area
         };
-        frame.render_widget(Paragraph::new(app.visible(area.width as usize)), doc_area);
+        if let Some(compose) = app.compose_view() {
+            render_compose(frame, doc_area, compose);
+        } else {
+            frame.render_widget(Paragraph::new(app.visible(area.width as usize)), doc_area);
+        }
         frame.render_widget(Paragraph::new(app.status(area.width as usize)), status_area);
     })?;
     Ok(())
+}
+
+/// Draw the inline comment editor into `area`: the document lines above it, the
+/// editor box, and the lines below, stacked to fill the document area.
+fn render_compose(frame: &mut Frame, area: Rect, view: ComposeView) {
+    let above_height = view.above.len() as u16;
+    let below_height = view.below.len() as u16;
+    let editor_height = area.height.saturating_sub(above_height + below_height);
+    let above_area = Rect {
+        height: above_height,
+        ..area
+    };
+    let editor_area = Rect {
+        y: area.y + above_height,
+        height: editor_height,
+        ..area
+    };
+    let below_area = Rect {
+        y: area.y + above_height + editor_height,
+        height: below_height,
+        ..area
+    };
+    frame.render_widget(Paragraph::new(view.above), above_area);
+    frame.render_widget(view.editor, editor_area);
+    frame.render_widget(Paragraph::new(view.below), below_area);
 }
 
 /// Draw and handle events until a quit action ends the loop.
@@ -79,9 +108,19 @@ fn event_loop<B: Backend>(
     loop {
         draw(terminal, &mut app)?;
         // A resize is handled by the next draw, which resizes the app to match.
-        if let Event::Key(key) = event::read()?
-            && let Some(press) = to_key_press(key)
-            && let Some(action) = input.press(press)
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
+        let Some(press) = to_key_press(key) else {
+            continue;
+        };
+        // While the inline editor is open, raw presses go to it rather than
+        // being resolved into review actions.
+        if app.composing() {
+            app.compose_key(press);
+            continue;
+        }
+        if let Some(action) = input.press(press)
             && let Update::Passed(passed) = app.update(action)
             && let Some(exit) = exit_for(passed)
         {
@@ -132,11 +171,15 @@ mod tests {
     use ratatui::backend::TestBackend;
     use wiff_diff::{Diff, FileStatus, LineKind};
 
+    use wiff_core::record::{Author, AuthorKind};
+
     use super::{Exit, draw, exit_for};
     use crate::action::Action;
     use crate::app::App;
+    use crate::key::{Key, KeyPress};
     use crate::render::DiffView;
     use crate::render::testutil::file;
+    use crate::review::Review;
     use crate::theme::Theme;
 
     /// The screen after drawing `app` into a `width` x `height` test terminal,
@@ -177,6 +220,53 @@ mod tests {
             "src/lib.rs  50%               \n",
         );
         k9::assert_equal!(screen(30, 4, app), expected.to_string());
+    }
+
+    #[test]
+    fn draws_the_inline_editor_box_above_the_anchored_line() {
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[
+                    (LineKind::Context, "let x = 1;", 1),
+                    (LineKind::Added, "let y = 2;", 2),
+                ],
+            )],
+        };
+        let view = DiffView::new(Theme::dark()).expect("view");
+        let author = Author {
+            name: "wez".to_string(),
+            kind: AuthorKind::Human,
+        };
+        let mut app = App::reviewing(
+            Review::new(view, diff, author, 0, Vec::new()),
+            0,
+            &Theme::dark(),
+        );
+        // Move onto the added line and open the editor there, then type a body.
+        for _ in 0..4 {
+            app.update(Action::LineDown);
+        }
+        app.update(Action::AddComment);
+        for c in "why 2?".chars() {
+            app.compose_key(KeyPress::new(Key::Char(c)));
+        }
+
+        // The editor renders as a bordered box titled with the target and the
+        // save/cancel hint, sitting just above the added line it anchors.
+        let expected = concat!(
+            "Review                        \n",
+            "modified  src/lib.rs          \n",
+            "@@ -1,2 +1,2 @@               \n",
+            "   1    1   let x = 1;        \n",
+            "┌ new comment  src/lib.rs:2  ┐\n",
+            "│why 2?                      │\n",
+            "└────────────────────────────┘\n",
+            "        2 + let y = 2;        \n",
+            "src/lib.rs  100%              \n",
+        );
+        k9::assert_equal!(screen(30, 9, app), expected.to_string());
     }
 
     #[test]

@@ -10,7 +10,7 @@ use std::path::Path;
 
 use anyhow::Context;
 use wiff_config::{Config, OnExit};
-use wiff_core::record::RecordBody;
+use wiff_core::record::{AuthorKind, RecordBody};
 use wiff_core::session::remove_session;
 use wiff_core::{ReviewState, SessionLog};
 use wiff_tui::{App, DiffView, Exit, Review, Theme, run};
@@ -40,7 +40,11 @@ pub fn open(session_path: &Path, config: &Config) -> anyhow::Result<()> {
     let view = DiffView::new(theme.clone())?
         .with_display_context(config.display_context)
         .with_section_matchers(sections);
-    let app = App::reviewing(Review::new(view, diff, comments), 0, &theme);
+    // Comments authored in the TUI are attributed to the human reviewer and
+    // anchored against the diff version being reviewed.
+    let author = config.author.resolve(AuthorKind::Human);
+    let review = Review::new(view, diff, author, version.number, comments);
+    let app = App::reviewing(review, 0, &theme);
     let keymap = config.keymap()?;
 
     let (exit, drafts) = run(app, keymap)?;
