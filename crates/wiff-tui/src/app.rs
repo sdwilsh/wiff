@@ -16,8 +16,9 @@
 //! actually shown rather than every underlying row.
 
 use std::collections::HashMap;
+use std::ops::Range;
 
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use tui_textarea::TextArea;
 use ulid::Ulid;
@@ -125,6 +126,7 @@ pub struct App {
     /// happens once the first real height is known.
     positioned: bool,
     cursor_bg: Rgb,
+    search_match_bg: Rgb,
     status_fg: Rgb,
     status_bg: Rgb,
     /// The border color of the inline comment editor.
@@ -178,6 +180,7 @@ impl App {
             height,
             positioned: false,
             cursor_bg: theme.cursor_bg,
+            search_match_bg: theme.search_match_bg,
             status_fg: theme.status_fg,
             status_bg: theme.status_bg,
             compose_border: theme.comment_draft_fg,
@@ -1004,16 +1007,60 @@ impl App {
     /// washed in the selection color on top of whichever of those it is.
     pub fn visible(&self, width: usize) -> Vec<Line<'static>> {
         let end = (self.top + self.height).min(self.view.len());
+        let pattern = self.highlight_pattern();
         (self.top..end)
             .map(|i| {
-                let line = self.decorate(i, width);
+                let mut line = self.decorate(i, width);
                 if i == self.cursor {
-                    wash(line, self.cursor_bg, width)
-                } else {
-                    line
+                    line = wash(line, self.cursor_bg, width);
                 }
+                if let (Some(pattern), ViewRow::Row(row)) = (pattern, &self.view[i]) {
+                    line = self.highlight_matches(line, *row, pattern);
+                }
+                line
             })
             .collect()
+    }
+
+    /// The pattern whose matches the view highlights: the one being typed while
+    /// the prompt is open, otherwise the accepted search still shown in the
+    /// status bar, or none once the search is left behind.
+    fn highlight_pattern(&self) -> Option<&str> {
+        if let Some(search) = &self.search {
+            let pattern = search.pattern();
+            (!pattern.is_empty()).then_some(pattern)
+        } else {
+            self.active_search
+                .as_ref()
+                .map(|(pattern, _)| pattern.as_str())
+        }
+    }
+
+    /// Wash the search-match background over each occurrence of `pattern` in the
+    /// already-decorated `line` for document `row`, so every visible match reads
+    /// as highlighted on top of whatever tint the row and cursor gave it.
+    fn highlight_matches(&self, line: Line<'static>, row: usize, pattern: &str) -> Line<'static> {
+        let text = &self.document.text[row];
+        let ranges = search::match_ranges(text, pattern);
+        if ranges.is_empty() {
+            return line;
+        }
+        // The searchable text is a contiguous run of the row's rendered content,
+        // sitting past any gutter, header prefix, or box edge, so locating it
+        // once maps each match's offset within the text to the line.
+        let content: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        let Some(base) = content.find(text.as_str()) else {
+            return line;
+        };
+        let ranges: Vec<Range<usize>> = ranges
+            .into_iter()
+            .map(|range| base + range.start..base + range.end)
+            .collect();
+        highlight_spans(line, &ranges, self.search_match_bg)
     }
 
     /// The fully drawn line for view row `index` at `width`, before any cursor
@@ -1445,6 +1492,47 @@ fn fill_line(mut line: Line<'static>, fill: Option<Rgb>, width: usize) -> Line<'
         ));
     }
     line
+}
+
+/// Return `line` with `bg` washed over the byte `ranges` of its concatenated
+/// content, splitting the spans they cut across so only the matched glyphs take
+/// the background while every span keeps its foreground and modifiers. Walking
+/// character by character keeps the split safe whatever the ranges hold: a byte
+/// offset never has to fall on a boundary for the code to be correct.
+fn highlight_spans(line: Line<'static>, ranges: &[Range<usize>], bg: Rgb) -> Line<'static> {
+    let color = color(bg);
+    let mut out = Vec::with_capacity(line.spans.len());
+    let mut offset = 0;
+    for span in line.spans {
+        let base = offset;
+        let content = span.content.into_owned();
+        offset += content.len();
+        // Gather runs of characters that share a covered state, so a match
+        // landing inside the span takes the highlight while the rest keeps the
+        // span's own style.
+        let mut piece = String::new();
+        let mut covered = false;
+        for (index, ch) in content.char_indices() {
+            let here = ranges.iter().any(|range| range.contains(&(base + index)));
+            if !piece.is_empty() && here != covered {
+                out.push(highlighted_piece(&piece, span.style, covered, color));
+                piece.clear();
+            }
+            covered = here;
+            piece.push(ch);
+        }
+        if !piece.is_empty() {
+            out.push(highlighted_piece(&piece, span.style, covered, color));
+        }
+    }
+    Line::from(out)
+}
+
+/// One highlighted or plain piece of a split span: `style` with the match
+/// background laid over it when `covered`, otherwise `style` untouched.
+fn highlighted_piece(text: &str, style: Style, covered: bool, bg: Color) -> Span<'static> {
+    let style = if covered { style.bg(bg) } else { style };
+    Span::styled(text.to_string(), style)
 }
 
 /// Return `line` with every span's background replaced by `bg`, keeping each
@@ -2556,7 +2644,7 @@ second
 <#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
 <#c0c5ce|-|b>added  notes.txt
 <#96b5b4|-|->@@ -1,1 +1,1 @@
-<#65737e|#4f5b66|->        1 + <#c0c5ce|#4f5b66|->hello<-|#4f5b66|->                       
+<#65737e|#4f5b66|->        1 + <#c0c5ce|#6a5d1a|->hello<-|#4f5b66|->                       
 ";
         k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
         app.search_key(KeyPress::new(Key::Enter));
@@ -2565,6 +2653,25 @@ second
             status_text(&app),
             "/hello  n next  N prev  1/1 matches 100%".to_string()
         );
+    }
+
+    #[test]
+    fn a_search_highlights_every_visible_occurrence_of_the_term() {
+        // Typing a term that appears on two lines highlights both, the one the
+        // cursor jumps to and the other still in view, each occurrence washed in
+        // the match color while the rest of its row keeps its own tint.
+        let mut app = App::new(document(), 9, &Theme::dark());
+        search_for(&mut app, Action::SearchForward, "let");
+        let expected = "\
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,2 +1,2 @@
+<#65737e|#4f5b66|->   1    1   <#b48ead|#6a5d1a|->let<#c0c5ce|#4f5b66|-> x <#c0c5ce|#4f5b66|->=<#c0c5ce|#4f5b66|-> <#d08770|#4f5b66|->1<#c0c5ce|#4f5b66|->;<-|#4f5b66|->                  
+<#65737e|#2d3b30|->        2 + <#b48ead|#6a5d1a|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
+<#c0c5ce|-|b>added  notes.txt
+<#96b5b4|-|->@@ -1,1 +1,1 @@
+<#65737e|#2d3b30|->        1 + <#c0c5ce|#2d3b30|->hello<-|#2d3b30|->                       
+";
+        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
 
     #[test]
@@ -2611,7 +2718,7 @@ second
 <#96b5b4|-|->@@ -1,17 +1,17 @@
 <#8a8a8a|#343d46|->            [5 unchanged lines]  ctx05<-|#343d46|->  
 <#65737e|-|->   6    6   <#c0c5ce|-|->ctx06
-<#65737e|#4f5b66|->   7    7   <#c0c5ce|#4f5b66|->ctx07<-|#4f5b66|->                       
+<#65737e|#4f5b66|->   7    7   <#c0c5ce|#6a5d1a|->ctx07<-|#4f5b66|->                       
 <#65737e|-|->   8    8   <#c0c5ce|-|->ctx08
 <#65737e|#2d3b30|->        9 + <#c0c5ce|#2d3b30|->change!<-|#2d3b30|->                     
 <#65737e|-|->  10   10   <#c0c5ce|-|->ctx09
@@ -2634,7 +2741,7 @@ second
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
 <#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit  r to unresolve  d to delete<#65737e|-|-> <#65737e|-|->┐
-<#65737e|#4f5b66|->│<#c0c5ce|#4f5b66|->ok<-|#4f5b66|->                                    <#65737e|#4f5b66|->│
+<#65737e|#4f5b66|->│<#c0c5ce|#6a5d1a|->ok<-|#4f5b66|->                                    <#65737e|#4f5b66|->│
 <#65737e|-|->└──────────────────────────────────────┘
 <#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
 <#65737e|-|->┌ <#8fa1b3|-|->wez (human)<#8a8a8a|-|->  press e to edit  r to resolve  d to delete<#65737e|-|-> <#65737e|-|->┐
@@ -2690,7 +2797,7 @@ second
 <#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
 <#c0c5ce|-|b>added  notes.txt
 <#96b5b4|-|->@@ -1,1 +1,1 @@
-<#65737e|#4f5b66|->        1 + <#c0c5ce|#4f5b66|->hello<-|#4f5b66|->                       
+<#65737e|#4f5b66|->        1 + <#c0c5ce|#6a5d1a|->hello<-|#4f5b66|->                       
 ";
         k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
@@ -2711,8 +2818,8 @@ second
         let expected = "\
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#65737e|#4f5b66|->        2 + <#b48ead|#4f5b66|->let<#c0c5ce|#4f5b66|-> y <#c0c5ce|#4f5b66|->=<#c0c5ce|#4f5b66|-> <#d08770|#4f5b66|->2<#c0c5ce|#4f5b66|->;<-|#4f5b66|->                  
+<#65737e|-|->   1    1   <#b48ead|#6a5d1a|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#65737e|#4f5b66|->        2 + <#b48ead|#6a5d1a|->let<#c0c5ce|#4f5b66|-> y <#c0c5ce|#4f5b66|->=<#c0c5ce|#4f5b66|-> <#d08770|#4f5b66|->2<#c0c5ce|#4f5b66|->;<-|#4f5b66|->                  
 <#c0c5ce|-|b>added  notes.txt
 <#96b5b4|-|->@@ -1,1 +1,1 @@
 <#65737e|#2d3b30|->        1 + <#c0c5ce|#2d3b30|->hello<-|#2d3b30|->                       

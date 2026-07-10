@@ -6,6 +6,8 @@
 //! and moving the cursor onto it needs the document and the fold and comment
 //! collapse state the app owns.
 
+use std::ops::Range;
+
 use crate::key::{Key, KeyPress};
 
 /// The direction a search scans and repeats in.
@@ -39,13 +41,47 @@ impl Direction {
 /// an uppercase letter matches case-sensitively, otherwise case-insensitively.
 /// An empty pattern matches nothing.
 pub fn matches(haystack: &str, pattern: &str) -> bool {
+    !match_ranges(haystack, pattern).is_empty()
+}
+
+/// The byte ranges of every non-overlapping occurrence of `pattern` in
+/// `haystack`, in order, honoring the same smart case as [`matches`]. Empty when
+/// the pattern is empty or absent, so a caller can highlight each occurrence.
+pub fn match_ranges(haystack: &str, pattern: &str) -> Vec<Range<usize>> {
     if pattern.is_empty() {
-        return false;
+        return Vec::new();
     }
-    if pattern.chars().any(char::is_uppercase) {
-        haystack.contains(pattern)
+    let sensitive = pattern.chars().any(char::is_uppercase);
+    let pat: Vec<char> = pattern.chars().collect();
+    let hay: Vec<(usize, char)> = haystack.char_indices().collect();
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    while start + pat.len() <= hay.len() {
+        let hit = pat
+            .iter()
+            .enumerate()
+            .all(|(offset, &want)| char_eq(hay[start + offset].1, want, sensitive));
+        if hit {
+            let from = hay[start].0;
+            let to = hay
+                .get(start + pat.len())
+                .map_or(haystack.len(), |&(byte, _)| byte);
+            ranges.push(from..to);
+            start += pat.len();
+        } else {
+            start += 1;
+        }
+    }
+    ranges
+}
+
+/// Compare one haystack character to one pattern character, case-sensitively or
+/// folding case per the smart-case rule.
+fn char_eq(a: char, b: char, sensitive: bool) -> bool {
+    if sensitive {
+        a == b
     } else {
-        haystack.to_lowercase().contains(&pattern.to_lowercase())
+        a.to_lowercase().eq(b.to_lowercase())
     }
 }
 
@@ -127,7 +163,7 @@ impl Search {
 
 #[cfg(test)]
 mod tests {
-    use super::{Direction, matches};
+    use super::{Direction, match_ranges, matches};
 
     #[test]
     fn smart_case_matches_insensitively_until_the_pattern_has_an_uppercase() {
@@ -137,6 +173,24 @@ mod tests {
         k9::assert_equal!(matches("let Foo = 1;", "Foo"), true);
         k9::assert_equal!(matches("let foo = 1;", "Foo"), false);
         k9::assert_equal!(matches("anything", ""), false);
+    }
+
+    #[test]
+    fn match_ranges_locates_each_occurrence_honoring_smart_case() {
+        // Every non-overlapping hit is reported in order; smart case folds a
+        // lowercase pattern and pins an uppercase one, and a byte range spans
+        // the matched characters even past a multibyte character.
+        k9::assert_equal!(match_ranges("let l = let;", "let"), vec![0..3, 8..11]);
+        k9::assert_equal!(match_ranges("Foo foo FOO", "foo"), vec![0..3, 4..7, 8..11]);
+        k9::assert_equal!(match_ranges("Foo foo FOO", "Foo"), vec![0..3]);
+        k9::assert_equal!(
+            match_ranges("a\u{00e9}b a\u{00e9}b", "\u{00e9}b"),
+            vec![1..4, 6..9]
+        );
+        k9::assert_equal!(
+            match_ranges("anything", ""),
+            Vec::<super::Range<usize>>::new()
+        );
     }
 
     #[test]

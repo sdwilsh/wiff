@@ -327,7 +327,9 @@ naming which match the cursor is on out of the total, and, once accepted, the
 right-aligned in the status line throughout, so the reviewer keeps that bearing
 while searching. When a repeat wraps past an end of the document it adds a wrap
 note next to the tally rather than replacing the position, so the wrap is
-reported without wiping the term, tally, or percent.
+reported without wiping the term, tally, or percent. Every occurrence of the
+term in view is washed in a match color, not just the one the cursor is on, so
+the reviewer can see at a glance where else it appears on screen.
 
 Matching runs over the semantic text of each row, not the rendered line, so the
 gutter line numbers and change markers never produce spurious hits. File paths,
