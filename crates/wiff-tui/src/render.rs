@@ -22,7 +22,7 @@ use wiff_core::record::{Author, CommentTarget, Confidence};
 use wiff_core::review::CommentState;
 use wiff_diff::{
     Diff, DiffLine, FileDiff, FileStatus, HighlightError, HighlightedLine, Highlighter, LineKind,
-    LineNo, Rgb, Section, SectionMatchers, Side, StyledSpan, intraline,
+    LineNo, ParsedSide, Rgb, Section, SectionMatchers, Side, StyledSpan, intraline,
 };
 
 use crate::action::Action;
@@ -190,11 +190,19 @@ impl Document {
 
 /// A file's highlighted content on both sides, indexed by line number, so a
 /// render can look up each row's colored spans without re-running the syntax
-/// highlighter. Produced by [`DiffView::highlight`] and reused across renders of
+/// highlighter. Produced by [`DiffView::recolor`] and reused across renders of
 /// the same diff.
 pub struct FileHighlights {
     before: BTreeMap<LineNo, HighlightedLine>,
     after: BTreeMap<LineNo, HighlightedLine>,
+}
+
+/// A file's content parsed on both sides, the costly, theme-independent part of
+/// highlighting kept so a theme change recolors without parsing again. Produced
+/// by [`DiffView::parse`] and colored into a [`FileHighlights`] per theme.
+pub struct ParsedFile {
+    before: ParsedSide,
+    after: ParsedSide,
 }
 
 /// A renderer pairing a syntax highlighter with a color theme.
@@ -275,13 +283,13 @@ impl DiffView {
         })
     }
 
-    /// Recolor the renderer to `theme`, rebuilding the syntax highlighter for
-    /// its syntax theme while keeping the display context, section matchers, and
-    /// key hints already configured. On an unknown syntax theme the renderer is
-    /// left unchanged.
+    /// Recolor the renderer to `theme`, swapping only the syntax highlighter's
+    /// color mapping and keeping the loaded syntaxes, display context, section
+    /// matchers, and key hints already configured. Reusing a [`parse`](Self::parse)
+    /// of the diff, this keeps a theme change off the costly syntax parse. On an
+    /// unknown syntax theme the renderer is left unchanged.
     pub fn set_theme(&mut self, theme: Theme) -> Result<(), HighlightError> {
-        let highlighter = Highlighter::with_theme(&theme.syntax_theme)?;
-        self.highlighter = highlighter;
+        self.highlighter.set_theme(&theme.syntax_theme)?;
         self.theme = theme;
         Ok(())
     }
@@ -314,16 +322,30 @@ impl DiffView {
         self.build(diff, &[], &[], false, None, ViewLayout::default())
     }
 
-    /// Highlight every file in `diff`, once, so the result can be reused across
-    /// re-renders that only change comments. The syntect pass is the costly part
-    /// of a render; the diff content is fixed between comment edits, so a review
-    /// highlights on capture and reuses it until the next refresh.
-    pub fn highlight(&self, diff: &Diff) -> Vec<FileHighlights> {
+    /// Parse every file in `diff` into its scope operations, once, so a theme
+    /// change recolors without parsing again. The parse is the costly part of
+    /// highlighting and the diff content is fixed for the life of a capture, so
+    /// a review parses on capture and reuses it until the next refresh.
+    pub fn parse(&self, diff: &Diff) -> Vec<ParsedFile> {
         diff.files
             .iter()
+            .map(|file| ParsedFile {
+                before: self.highlighter.parse_side(file, Side::Before),
+                after: self.highlighter.parse_side(file, Side::After),
+            })
+            .collect()
+    }
+
+    /// Color a `parsed` diff with the current theme, keyed by line, so the
+    /// result can be reused across re-renders that only change comments. This is
+    /// the cheap part of highlighting: a theme change replays the cached parse
+    /// through the new theme rather than parsing the diff again.
+    pub fn recolor(&self, parsed: &[ParsedFile]) -> Vec<FileHighlights> {
+        parsed
+            .iter()
             .map(|file| FileHighlights {
-                before: self.highlighter.highlight_side(file, Side::Before),
-                after: self.highlighter.highlight_side(file, Side::After),
+                before: self.highlighter.color_side(&file.before),
+                after: self.highlighter.color_side(&file.after),
             })
             .collect()
     }
@@ -1444,7 +1466,7 @@ mod tests {
         // The cached render, reusing a prior highlight of the same diff, must
         // produce the identical lines; caching is a speed-up, not a change.
         let view = DiffView::new(Theme::dark()).unwrap();
-        let highlights = view.highlight(&diff);
+        let highlights = view.recolor(&view.parse(&diff));
         let cached =
             view.render_review_cached(&diff, &comments, &[], &highlights, ViewLayout::default());
         k9::assert_equal!(dump(&cached.lines), lines.to_string());

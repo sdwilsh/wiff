@@ -9,9 +9,10 @@
 
 use std::collections::BTreeMap;
 
-use syntect::easy::HighlightLines;
-use syntect::highlighting::{FontStyle, Theme, ThemeSet};
-use syntect::parsing::{SyntaxReference, SyntaxSet};
+use syntect::highlighting::{
+    FontStyle, HighlightIterator, HighlightState, Highlighter as ThemeHighlighter, Theme, ThemeSet,
+};
+use syntect::parsing::{ParseState, ScopeStack, ScopeStackOp, SyntaxReference, SyntaxSet};
 
 use crate::line::LineNo;
 use crate::model::{FileDiff, Side};
@@ -140,6 +141,25 @@ pub struct StyledSpan {
 /// A single line's colored spans, in order.
 pub type HighlightedLine = Vec<StyledSpan>;
 
+/// One line's parsed scope operations, ready to be colored by any theme without
+/// parsing it again. The text keeps the trailing newline the parser saw so
+/// coloring closes line-scoped constructs exactly as parsing opened them.
+#[derive(Debug, Clone)]
+struct ParsedLine {
+    lineno: LineNo,
+    text: String,
+    ops: Vec<(usize, ScopeStackOp)>,
+}
+
+/// One side of a file parsed into scope operations, the costly part of
+/// highlighting done once so a later theme change only recolors. The known
+/// lines are grouped into the contiguous runs between reconstruction gaps, since
+/// coloring restarts its scope state at each gap just as parsing did.
+#[derive(Debug, Clone, Default)]
+pub struct ParsedSide {
+    runs: Vec<Vec<ParsedLine>>,
+}
+
 /// An error building a highlighter.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum HighlightError {
@@ -173,46 +193,87 @@ impl Highlighter {
         })
     }
 
+    /// Recolor to the named built-in theme, keeping the loaded syntaxes so a
+    /// caller can recolor a cached parse instead of highlighting the diff
+    /// afresh. Looking the theme up still builds the default theme set, so this
+    /// is not free end to end; what it saves is the syntax parse, not the theme
+    /// load. On an unknown theme the highlighter is left unchanged.
+    pub fn set_theme(&mut self, name: &str) -> Result<(), HighlightError> {
+        let mut themes = ThemeSet::load_defaults();
+        self.theme = themes
+            .themes
+            .remove(name)
+            .ok_or_else(|| HighlightError::UnknownTheme {
+                name: name.to_string(),
+            })?;
+        Ok(())
+    }
+
     /// Highlight the known lines of `side` of `file`, keyed by line number.
     ///
     /// The file's path selects the syntax; gaps in the reconstruction break the
     /// highlighter's state, since the omitted lines could carry multi-line
     /// constructs whose effect cannot be known.
     pub fn highlight_side(&self, file: &FileDiff, side: Side) -> BTreeMap<LineNo, HighlightedLine> {
+        self.color_side(&self.parse_side(file, side))
+    }
+
+    /// Parse the known lines of `side` of `file` into their scope operations,
+    /// the theme-independent, costly part of highlighting, so a later theme
+    /// change recolors without parsing again. The file's path selects the
+    /// syntax; a reconstruction gap ends the current run and restarts parsing,
+    /// since the omitted lines could carry multi-line constructs whose effect
+    /// cannot be known.
+    pub fn parse_side(&self, file: &FileDiff, side: Side) -> ParsedSide {
         let syntax = self.syntax_for(file.display_path());
-        let mut highlighter = HighlightLines::new(syntax, &self.theme);
-        let mut out = BTreeMap::new();
+        let mut state = ParseState::new(syntax);
+        let mut runs = Vec::new();
+        let mut run = Vec::new();
         for line in reconstitute(file, side) {
             match line {
                 ReconLine::Known { lineno, text } => {
-                    out.insert(lineno, self.highlight_line(&mut highlighter, &text));
+                    // syntect's newline-aware syntaxes expect a trailing newline
+                    // to close line-scoped constructs; coloring later trims it
+                    // back off, so it never appears in the returned spans.
+                    let text = format!("{text}\n");
+                    let ops = state.parse_line(&text, &self.syntaxes).unwrap_or_default();
+                    run.push(ParsedLine { lineno, text, ops });
                 }
-                // Restart highlighting past a gap: the highlighter's state
-                // reflects only the lines it has seen, so a gap resets it.
                 ReconLine::Gap { .. } => {
-                    highlighter = HighlightLines::new(syntax, &self.theme);
+                    if !run.is_empty() {
+                        runs.push(std::mem::take(&mut run));
+                    }
+                    state = ParseState::new(syntax);
                 }
             }
         }
-        out
+        if !run.is_empty() {
+            runs.push(run);
+        }
+        ParsedSide { runs }
     }
 
-    /// Highlight one line of text into colored spans.
-    fn highlight_line(&self, highlighter: &mut HighlightLines, text: &str) -> HighlightedLine {
-        // syntect's newline-aware syntaxes expect a trailing newline to close
-        // line-scoped constructs; it never appears in the returned spans.
-        let with_newline = format!("{text}\n");
-        let ranges = highlighter
-            .highlight_line(&with_newline, &self.syntaxes)
-            .unwrap_or_default();
-        ranges
-            .into_iter()
-            .map(|(style, piece)| StyledSpan {
-                text: piece.trim_end_matches('\n').to_string(),
-                style: convert_style(style),
-            })
-            .filter(|span| !span.text.is_empty())
-            .collect()
+    /// Color a `parsed` side with the current theme, keyed by line number. This
+    /// is the cheap part of highlighting: a theme change only replays the cached
+    /// scope operations through the new theme. Each run restarts the scope state
+    /// its parse began with.
+    pub fn color_side(&self, parsed: &ParsedSide) -> BTreeMap<LineNo, HighlightedLine> {
+        let highlighter = ThemeHighlighter::new(&self.theme);
+        let mut out = BTreeMap::new();
+        for run in &parsed.runs {
+            let mut state = HighlightState::new(&highlighter, ScopeStack::new());
+            for line in run {
+                let spans = HighlightIterator::new(&mut state, &line.ops, &line.text, &highlighter)
+                    .map(|(style, piece)| StyledSpan {
+                        text: piece.trim_end_matches('\n').to_string(),
+                        style: convert_style(style),
+                    })
+                    .filter(|span| !span.text.is_empty())
+                    .collect();
+                out.insert(line.lineno, spans);
+            }
+        }
+        out
     }
 
     /// The syntax for a file path, falling back to plain text when none matches.
@@ -409,6 +470,53 @@ mod tests {
             Some(HighlightError::UnknownTheme {
                 name: "no-such-theme".to_string(),
             })
+        );
+    }
+
+    #[test]
+    fn a_theme_switch_recolors_a_cached_parse_to_match_a_fresh_highlight() {
+        // The whole point of splitting parse from color: a parse taken under one
+        // theme, recolored after switching to another, must match highlighting
+        // the file fresh under that other theme. This guards the cheap
+        // theme-switch path against drifting from the full highlight it stands
+        // in for.
+        let file = file(
+            "src/lib.rs",
+            &[
+                (LineKind::Context, "let x = 1;", 1),
+                (LineKind::Added, "// note", 2),
+            ],
+        );
+
+        let mut highlighter = Highlighter::with_theme(TEST_THEME).unwrap();
+        let parsed = highlighter.parse_side(&file, Side::After);
+
+        // Under the parse theme, coloring the cache matches a direct highlight.
+        k9::assert_equal!(
+            highlighter.color_side(&parsed),
+            highlighter.highlight_side(&file, Side::After)
+        );
+
+        // After switching, the same cached parse recolors to the new theme
+        // without re-parsing, matching a highlighter built fresh on that theme.
+        const OTHER_THEME: &str = "InspiredGitHub";
+        highlighter.set_theme(OTHER_THEME).unwrap();
+        let fresh = Highlighter::with_theme(OTHER_THEME).unwrap();
+        k9::assert_equal!(
+            highlighter.color_side(&parsed),
+            fresh.highlight_side(&file, Side::After)
+        );
+
+        // An unknown theme is rejected and leaves the coloring untouched.
+        k9::assert_equal!(
+            highlighter.set_theme("no-such-theme").err(),
+            Some(HighlightError::UnknownTheme {
+                name: "no-such-theme".to_string(),
+            })
+        );
+        k9::assert_equal!(
+            highlighter.color_side(&parsed),
+            fresh.highlight_side(&file, Side::After)
         );
     }
 }

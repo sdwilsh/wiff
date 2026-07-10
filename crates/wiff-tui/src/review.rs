@@ -15,7 +15,7 @@ use wiff_core::record::{Author, CommentTarget, RecordBody};
 use wiff_core::review::CommentState;
 use wiff_diff::Diff;
 
-use crate::render::{DiffView, Document, FileHighlights, ViewLayout};
+use crate::render::{DiffView, Document, FileHighlights, ParsedFile, ViewLayout};
 
 /// How a reload of committed comments differed from the set already shown, so a
 /// reviewer can be told what another actor changed while they were reading.
@@ -58,9 +58,13 @@ impl CommentSync {
 pub struct Review {
     view: DiffView,
     diff: Diff,
-    /// The diff's syntax highlighting, computed once per diff so a comment edit
-    /// re-renders without re-running the highlighter. Refreshed alongside the
-    /// diff.
+    /// The diff's parsed scope operations, the costly part of highlighting done
+    /// once per diff so a theme change recolors without parsing again. Refreshed
+    /// alongside the diff.
+    parsed: Vec<ParsedFile>,
+    /// The diff's syntax highlighting, colored from `parsed` so a comment edit
+    /// re-renders without recoloring and a theme change recolors without
+    /// parsing. Refreshed alongside the diff and recolored on a theme change.
     highlights: Vec<FileHighlights>,
     /// The author newly drafted comments are attributed to.
     author: Author,
@@ -84,10 +88,12 @@ impl Review {
         version: u32,
         comments: Vec<CommentState>,
     ) -> Self {
-        let highlights = view.highlight(&diff);
+        let parsed = view.parse(&diff);
+        let highlights = view.recolor(&parsed);
         Self {
             view,
             diff,
+            parsed,
             highlights,
             author,
             version,
@@ -116,15 +122,15 @@ impl Review {
             .render_review_cached(&self.diff, &comments, &pending, &self.highlights, layout)
     }
 
-    /// Recolor the review to `theme`, rebuilding the renderer and re-running the
-    /// syntax highlighting so the next [`document`](Review::document) reflects
-    /// the new palette. Leaves the review unchanged on an unknown syntax theme.
+    /// Recolor the review to `theme`, replaying the parsed diff through the new
+    /// palette so the next [`document`](Review::document) reflects it without
+    /// re-parsing. Leaves the review unchanged on an unknown syntax theme.
     pub fn set_theme(
         &mut self,
         theme: crate::theme::Theme,
     ) -> Result<(), wiff_diff::HighlightError> {
         self.view.set_theme(theme)?;
-        self.highlights = self.view.highlight(&self.diff);
+        self.highlights = self.view.recolor(&self.parsed);
         Ok(())
     }
 
@@ -210,7 +216,8 @@ impl Review {
         old_diff: impl FnMut(u32) -> wiff_core::Result<Diff>,
     ) -> wiff_core::Result<()> {
         self.drafts.rebase(version, &diff, old_diff)?;
-        self.highlights = self.view.highlight(&diff);
+        self.parsed = self.view.parse(&diff);
+        self.highlights = self.view.recolor(&self.parsed);
         self.diff = diff;
         self.committed = comments;
         self.version = version;
