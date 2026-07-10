@@ -25,7 +25,7 @@ pub use exit::{Exit, ExitDefault};
 pub use input::Input;
 pub use key::{Chord, Key, KeyPress};
 pub use keymap::{Keymap, KeymapError, KeymapOverrides, Resolution};
-pub use render::{DiffView, Document, Fold, Row, RowKind};
+pub use render::{DiffView, Document, Fold, KeyHints, Row, RowKind};
 pub use review::Review;
 pub use run::run;
 pub use theme::Theme;

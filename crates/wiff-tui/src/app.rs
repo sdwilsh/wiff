@@ -1643,10 +1643,10 @@ mod tests {
 <#ebcb8b|#4f5b66|b>Review<#8a8a8a|#4f5b66|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit<#65737e|-|-> <#65737e|-|->┐
+<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit  r to unresolve  d to delete<#65737e|-|-> <#65737e|-|->┐
 <#65737e|-|->└──────────────────────────────────────┘
 <#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#65737e|-|->┌ <#8fa1b3|-|->wez (human)<#8a8a8a|-|->  press e to edit<#65737e|-|-> <#65737e|-|->────────<#65737e|-|->┐
+<#65737e|-|->┌ <#8fa1b3|-|->wez (human)<#8a8a8a|-|->  press e to edit  r to resolve  d to delete<#65737e|-|-> <#65737e|-|->┐
 <#65737e|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#65737e|-|->│
 <#65737e|-|->│<#c0c5ce|-|->say more<-|-|->                              <#65737e|-|->│
 <#65737e|-|->└──────────────────────────────────────┘
@@ -1699,10 +1699,10 @@ mod tests {
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit<#65737e|-|-> <#65737e|-|->┐
+<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit  r to unresolve  d to delete<#65737e|-|-> <#65737e|-|->┐
 <#65737e|-|->└──────────────────────────────────────┘
 <#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#65737e|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#8a8a8a|#4f5b66|->  press e to edit<#65737e|#4f5b66|-> <#65737e|#4f5b66|->────────<#65737e|#4f5b66|->┐
+<#65737e|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#8a8a8a|#4f5b66|->  press e to edit  r to resolve  d to delete<#65737e|#4f5b66|-> <#65737e|#4f5b66|->┐
 <#65737e|-|->└──────────────────────────────────────┘
 <#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
 ";
@@ -1723,10 +1723,10 @@ mod tests {
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit<#65737e|-|-> <#65737e|-|->┐
+<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit  r to unresolve  d to delete<#65737e|-|-> <#65737e|-|->┐
 <#65737e|-|->└──────────────────────────────────────┘
 <#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#65737e|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#8a8a8a|#4f5b66|->  press e to edit<#65737e|#4f5b66|-> <#65737e|#4f5b66|->────────<#65737e|#4f5b66|->┐
+<#65737e|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#8a8a8a|#4f5b66|->  press e to edit  r to resolve  d to delete<#65737e|#4f5b66|-> <#65737e|#4f5b66|->┐
 <#65737e|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#65737e|-|->│
 <#65737e|-|->│<#c0c5ce|-|->say more<-|-|->                              <#65737e|-|->│
 <#65737e|-|->└──────────────────────────────────────┘
@@ -1754,10 +1754,10 @@ mod tests {
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit<#65737e|-|-> <#65737e|-|->┐
+<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit  r to unresolve  d to delete<#65737e|-|-> <#65737e|-|->┐
 <#65737e|-|->└──────────────────────────────────────┘
 <#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#a3be8c|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<#8a8a8a|#4f5b66|-> [resolved]<#8a8a8a|#4f5b66|->  press e to edit<#a3be8c|#4f5b66|-> <#a3be8c|#4f5b66|->┐
+<#a3be8c|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<#8a8a8a|#4f5b66|-> [resolved]<#8a8a8a|#4f5b66|->  press e to edit  r to unresolve  d to delete<#a3be8c|#4f5b66|-> <#a3be8c|#4f5b66|->┐
 <#a3be8c|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#a3be8c|-|->│
 <#a3be8c|-|->│<#c0c5ce|-|->say more<-|-|->                              <#a3be8c|-|->│
 <#a3be8c|-|->└──────────────────────────────────────┘
@@ -1786,10 +1786,10 @@ mod tests {
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit<#65737e|-|-> <#65737e|-|->┐
+<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit  r to unresolve  d to delete<#65737e|-|-> <#65737e|-|->┐
 <#65737e|-|->└──────────────────────────────────────┘
 <#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#a3be8c|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<#8a8a8a|#4f5b66|-> [deleted]<#8a8a8a|#4f5b66|->  press e to edit<#a3be8c|#4f5b66|-> <#a3be8c|#4f5b66|->┐
+<#a3be8c|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<#8a8a8a|#4f5b66|-> [deleted]<#8a8a8a|#4f5b66|->  press e to edit  r to resolve  d to undelete<#a3be8c|#4f5b66|-> <#a3be8c|#4f5b66|->┐
 <#a3be8c|-|->└──────────────────────────────────────┘
 <#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
 ";
@@ -1817,10 +1817,10 @@ mod tests {
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit<#65737e|-|-> <#65737e|-|->┐
+<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit  r to unresolve  d to delete<#65737e|-|-> <#65737e|-|->┐
 <#65737e|-|->└──────────────────────────────────────┘
 <#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#65737e|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#8a8a8a|#4f5b66|->  press e to edit<#65737e|#4f5b66|-> <#65737e|#4f5b66|->────────<#65737e|#4f5b66|->┐
+<#65737e|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#8a8a8a|#4f5b66|->  press e to edit  r to resolve  d to delete<#65737e|#4f5b66|-> <#65737e|#4f5b66|->┐
 <#65737e|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#65737e|-|->│
 <#65737e|-|->│<#c0c5ce|-|->say more<-|-|->                              <#65737e|-|->│
 <#65737e|-|->└──────────────────────────────────────┘
@@ -1870,7 +1870,7 @@ mod tests {
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
 <#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#a3be8c|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<#8a8a8a|#4f5b66|->  press e to edit<#a3be8c|#4f5b66|-> <#a3be8c|#4f5b66|->┐
+<#a3be8c|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<#8a8a8a|#4f5b66|->  press e to edit  r to resolve  d to delete<#a3be8c|#4f5b66|-> <#a3be8c|#4f5b66|->┐
 <#a3be8c|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#a3be8c|-|->│
 <#a3be8c|-|->└──────────────────────────────────────┘
 <#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
@@ -1965,10 +1965,10 @@ why 2?
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit<#65737e|-|-> <#65737e|-|->┐
+<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit  r to unresolve  d to delete<#65737e|-|-> <#65737e|-|->┐
 <#65737e|-|->└──────────────────────────────────────┘
 <#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#a3be8c|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<#8a8a8a|#4f5b66|->  press e to edit<#a3be8c|#4f5b66|-> <#a3be8c|#4f5b66|->┐
+<#a3be8c|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<#8a8a8a|#4f5b66|->  press e to edit  r to resolve  d to delete<#a3be8c|#4f5b66|-> <#a3be8c|#4f5b66|->┐
 <#a3be8c|-|->│<#c0c5ce|-|->use a constant<-|-|->                        <#a3be8c|-|->│
 <#a3be8c|-|->└──────────────────────────────────────┘
 <#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
@@ -1990,7 +1990,7 @@ why 2?
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit<#65737e|-|-> <#65737e|-|->┐
+<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit  r to unresolve  d to delete<#65737e|-|-> <#65737e|-|->┐
 <#65737e|-|->└──────────────────────────────────────┘
 <#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
 --editor--
@@ -2017,7 +2017,7 @@ say more
         let view = app.compose_view(TEST_WIDTH).expect("composing");
         let expected = "\
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
-<#a3be8c|-|->┌ <#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#8a8a8a|-|->  press e to edit<#a3be8c|-|-> <#a3be8c|-|->┐
+<#a3be8c|-|->┌ <#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#8a8a8a|-|->  press e to edit  r to resolve  d to delete<#a3be8c|-|-> <#a3be8c|-|->┐
 <#a3be8c|-|->│<#c0c5ce|-|->first<-|-|->                                 <#a3be8c|-|->│
 <#a3be8c|-|->└──────────────────────────────────────┘
 --editor--
@@ -2025,7 +2025,7 @@ second
 --below--
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit<#65737e|-|-> <#65737e|-|->┐
+<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit  r to unresolve  d to delete<#65737e|-|-> <#65737e|-|->┐
 <#65737e|-|->└──────────────────────────────────────┘
 <#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
 ";
@@ -2138,7 +2138,7 @@ second
 <#96b5b4|-|->@@ -1,3 +1,3 @@
 <#65737e|#2d3b30|->        1 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> a <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->0<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
 <#65737e|-|->   2    2   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#a3be8c|-|->┌ <#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#8a8a8a|-|->  press e to edit<#a3be8c|-|-> <#a3be8c|-|->┐
+<#a3be8c|-|->┌ <#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#8a8a8a|-|->  press e to edit  r to resolve  d to delete<#a3be8c|-|-> <#a3be8c|-|->┐
 <#a3be8c|-|->│<#c0c5ce|-|->why?<-|-|->                                  <#a3be8c|-|->│
 <#a3be8c|-|->└──────────────────────────────────────┘
 <#65737e|#2d3b30|->        3 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  

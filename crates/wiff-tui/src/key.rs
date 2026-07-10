@@ -208,6 +208,57 @@ impl FromStr for Chord {
     }
 }
 
+impl fmt::Display for Key {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Key::Char(' ') => f.write_str("space"),
+            Key::Char(c) => write!(f, "{c}"),
+            Key::Function(n) => write!(f, "f{n}"),
+            Key::Enter => f.write_str("enter"),
+            Key::Escape => f.write_str("esc"),
+            Key::Tab => f.write_str("tab"),
+            Key::Backspace => f.write_str("backspace"),
+            Key::Delete => f.write_str("delete"),
+            Key::Insert => f.write_str("insert"),
+            Key::Left => f.write_str("left"),
+            Key::Right => f.write_str("right"),
+            Key::Up => f.write_str("up"),
+            Key::Down => f.write_str("down"),
+            Key::Home => f.write_str("home"),
+            Key::End => f.write_str("end"),
+            Key::PageUp => f.write_str("pageup"),
+            Key::PageDown => f.write_str("pagedown"),
+        }
+    }
+}
+
+impl fmt::Display for KeyPress {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if self.ctrl {
+            f.write_str("ctrl-")?;
+        }
+        if self.alt {
+            f.write_str("alt-")?;
+        }
+        if self.shift {
+            f.write_str("shift-")?;
+        }
+        write!(f, "{}", self.key)
+    }
+}
+
+impl fmt::Display for Chord {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for (index, press) in self.0.iter().enumerate() {
+            if index > 0 {
+                f.write_str(" ")?;
+            }
+            write!(f, "{press}")?;
+        }
+        Ok(())
+    }
+}
+
 impl<'de> Deserialize<'de> for Chord {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where

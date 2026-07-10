@@ -327,7 +327,7 @@ mod tests {
         // the box does not cover it.
         let expected = concat!(
             "Review [press c here to draft the review comment] \n",
-            "┌ w┌You have uncommitted comments─────────────┐──┐\n",
+            "┌ w┌You have uncommitted comments─────────────┐sol\n",
             "│wh│> Commit review                           │  │\n",
             "└──│  Quit without saving                     │──┘\n",
             "mod│  Remove session                          │   \n",

@@ -11,7 +11,7 @@ use wiff_config::{Config, OnExit};
 use wiff_core::record::{AuthorKind, RecordBody, SessionHeader};
 use wiff_core::session::remove_session;
 use wiff_core::{RefreshOutcome, ReviewState, SessionLog, refresh_session};
-use wiff_tui::{App, DiffView, Exit, ExitDefault, Review, Theme, run};
+use wiff_tui::{App, DiffView, Exit, ExitDefault, KeyHints, Review, Theme, run};
 
 use crate::command::recapture_diff;
 
@@ -37,15 +37,16 @@ pub fn open(session_path: &Path, config: &Config) -> anyhow::Result<()> {
         .filter(|comment| !comment.deleted)
         .cloned()
         .collect();
+    let keymap = config.keymap()?;
     let view = DiffView::new(theme.clone())?
         .with_display_context(config.display_context)
-        .with_section_matchers(sections);
+        .with_section_matchers(sections)
+        .with_key_hints(KeyHints::from_keymap(&keymap));
     // Comments authored in the TUI are attributed to the human reviewer and
     // anchored against the diff version being reviewed.
     let author = config.author.resolve(AuthorKind::Human);
     let review = Review::new(view, diff, author, version.number, comments);
     let app = App::reviewing(review, 0, &theme).with_exit_default(exit_default(config.on_exit));
-    let keymap = config.keymap()?;
 
     // Refresh recaptures the diff and reloads the app in place; any failure is
     // reported in the status line rather than tearing down the review.
@@ -429,7 +430,7 @@ modified  f.txt
    1    2   alpha
    2    3   beta
    3    4   gamma
-┌ wez (human)  press e to edit ────────────────────────────────────────────────┐
+┌ wez (human)  press e to edit  r to resolve  d to delete ─────────────────────┐
 │why delta?                                                                    │
 └──────────────────────────────────────────────────────────────────────────────┘
         5 + delta

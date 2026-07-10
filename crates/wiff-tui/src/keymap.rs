@@ -103,13 +103,19 @@ impl Keymap {
         self.by_action.get(&action).map_or(&[], Vec::as_slice)
     }
 
+    /// The first chord bound to `action`, rendered as a hint label, or `None`
+    /// when the action has no binding.
+    pub fn primary_label(&self, action: Action) -> Option<String> {
+        self.chords(action).first().map(ToString::to_string)
+    }
+
     fn from_action_map(by_action: BTreeMap<Action, Vec<Chord>>) -> Result<Self, KeymapError> {
         let mut by_chord: HashMap<Chord, Action> = HashMap::new();
         for (action, chords) in &by_action {
             for chord in chords {
                 if let Some(first) = by_chord.insert(chord.clone(), *action) {
                     return Err(KeymapError::Conflict {
-                        chord: render_chord(chord),
+                        chord: chord.to_string(),
                         first: first.name(),
                         second: action.name(),
                     });
@@ -121,16 +127,6 @@ impl Keymap {
             by_chord,
         })
     }
-}
-
-/// Render a chord for an error message, as space-separated presses.
-fn render_chord(chord: &Chord) -> String {
-    chord
-        .0
-        .iter()
-        .map(|press| format!("{press:?}"))
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 /// Parse `text` into a chord, panicking on malformed input. Only used to build
@@ -275,8 +271,7 @@ mod tests {
         k9::assert_equal!(
             error,
             KeymapError::Conflict {
-                chord: "KeyPress { key: Char('j'), ctrl: false, alt: false, shift: false }"
-                    .to_string(),
+                chord: "j".to_string(),
                 first: "line_down",
                 second: "line_up",
             }

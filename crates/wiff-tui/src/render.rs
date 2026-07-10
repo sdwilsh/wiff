@@ -24,6 +24,8 @@ use wiff_diff::{
     LineNo, Rgb, Section, SectionMatchers, Side, StyledSpan, intraline,
 };
 
+use crate::action::Action;
+use crate::keymap::Keymap;
 use crate::theme::Theme;
 
 /// The gutter width for one side's line number.
@@ -152,7 +154,63 @@ pub struct DiffView {
     theme: Theme,
     display_context: usize,
     sections: SectionMatchers,
-    edit_key: String,
+    hints: KeyHints,
+}
+
+/// The key labels the review view names in its hints, resolved from the active
+/// keymap so each hint shows the reviewer's own binding.
+pub struct KeyHints {
+    /// The key that drafts a new comment.
+    pub add_comment: String,
+    /// The key that edits the focused comment.
+    pub edit_comment: String,
+    /// The key that resolves or reopens the focused comment.
+    pub resolve_comment: String,
+    /// The key that deletes or restores the focused comment.
+    pub delete_comment: String,
+}
+
+impl KeyHints {
+    /// Resolve the review hints from `keymap`, naming each comment action's
+    /// first bound chord. An action the keymap leaves unbound keeps its
+    /// built-in default label.
+    pub fn from_keymap(keymap: &Keymap) -> Self {
+        let default = Self::default();
+        Self {
+            add_comment: keymap
+                .primary_label(Action::AddComment)
+                .unwrap_or(default.add_comment),
+            edit_comment: keymap
+                .primary_label(Action::EditComment)
+                .unwrap_or(default.edit_comment),
+            resolve_comment: keymap
+                .primary_label(Action::ResolveComment)
+                .unwrap_or(default.resolve_comment),
+            delete_comment: keymap
+                .primary_label(Action::DeleteComment)
+                .unwrap_or(default.delete_comment),
+        }
+    }
+}
+
+impl Default for KeyHints {
+    /// The labels the built-in keymap resolves the comment actions to, so the
+    /// hints stay in step with the default bindings without repeating them.
+    fn default() -> Self {
+        let keymap = Keymap::defaults();
+        Self {
+            add_comment: keymap.primary_label(Action::AddComment).unwrap_or_default(),
+            edit_comment: keymap
+                .primary_label(Action::EditComment)
+                .unwrap_or_default(),
+            resolve_comment: keymap
+                .primary_label(Action::ResolveComment)
+                .unwrap_or_default(),
+            delete_comment: keymap
+                .primary_label(Action::DeleteComment)
+                .unwrap_or_default(),
+        }
+    }
 }
 
 impl DiffView {
@@ -164,14 +222,15 @@ impl DiffView {
             theme,
             display_context: DEFAULT_DISPLAY_CONTEXT,
             sections: SectionMatchers::builtins(),
-            edit_key: "e".to_string(),
+            hints: KeyHints::default(),
         })
     }
 
-    /// Show `key` in each comment box's edit hint, so the header names the actual
-    /// key the reviewer's bindings resolve the edit action to.
-    pub fn with_edit_key(mut self, key: String) -> Self {
-        self.edit_key = key;
+    /// Name the reviewer's own bindings in the review hints, so the review
+    /// summary and each comment box show the keys their keymap resolves the
+    /// comment actions to.
+    pub fn with_key_hints(mut self, hints: KeyHints) -> Self {
+        self.hints = hints;
         self
     }
 
@@ -327,7 +386,10 @@ impl DiffView {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                " [press c here to draft the review comment]",
+                format!(
+                    " [press {} here to draft the review comment]",
+                    self.hints.add_comment
+                ),
                 Style::default().fg(color(self.theme.fold_fg)).bg(bg),
             ),
         ])
@@ -383,7 +445,8 @@ impl DiffView {
     }
 
     /// The title shown along a comment box's top edge: the author and kind, the
-    /// status badges, and a dimmed hint at the key that edits the comment.
+    /// status badges, and a dimmed hint at the keys that edit and delete or
+    /// restore the comment.
     fn comment_title(&self, comment: &CommentState, pending: bool) -> Line<'static> {
         let mut spans = vec![Span::styled(
             format!("{} ({})", comment.author.name, comment.author.kind.as_str()),
@@ -400,8 +463,21 @@ impl DiffView {
                 Style::default().fg(color(fg)),
             ));
         }
+        let resolve_verb = if comment.resolved {
+            "unresolve"
+        } else {
+            "resolve"
+        };
+        let delete_verb = if comment.deleted {
+            "undelete"
+        } else {
+            "delete"
+        };
         spans.push(Span::styled(
-            format!("  press {} to edit", self.edit_key),
+            format!(
+                "  press {} to edit  {} to {resolve_verb}  {} to {delete_verb}",
+                self.hints.edit_comment, self.hints.resolve_comment, self.hints.delete_comment
+            ),
             Style::default().fg(color(self.theme.fold_fg)),
         ));
         Line::from(spans)
@@ -1128,7 +1204,7 @@ mod tests {
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
 <#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#8fa1b3|-|->wez (human)<#8a8a8a|-|->  press e to edit
+<#8fa1b3|-|->wez (human)<#8a8a8a|-|->  press e to edit  r to resolve  d to delete
 <#c0c5ce|-|->why 2?
 
 <#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
@@ -1162,7 +1238,7 @@ mod tests {
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,1 +1,1 @@
-<#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#8a8a8a|-|->  press e to edit
+<#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#8a8a8a|-|->  press e to edit  r to resolve  d to delete
 <#c0c5ce|-|->why 2?
 
 <#65737e|#2d3b30|->        1 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
@@ -1193,7 +1269,7 @@ mod tests {
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,1 +1,1 @@
-<#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit
+<#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit  r to unresolve  d to delete
 <#c0c5ce|-|->done
 
 <#65737e|#2d3b30|->        1 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
@@ -1223,7 +1299,7 @@ mod tests {
             .render_review(&diff, &comments, &[]);
         let lines = "\
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
-<#8fa1b3|-|->wez (human)<#8a8a8a|-|->  press e to edit
+<#8fa1b3|-|->wez (human)<#8a8a8a|-|->  press e to edit  r to resolve  d to delete
 <#c0c5ce|-|->looks good overall
 
 <#c0c5ce|-|b>modified  src/lib.rs
@@ -1287,7 +1363,7 @@ mod tests {
         let lines = "\
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
-<#8fa1b3|-|->dev (human)<#d08770|-|-> [outdated]<#8a8a8a|-|->  press e to edit
+<#8fa1b3|-|->dev (human)<#d08770|-|-> [outdated]<#8a8a8a|-|->  press e to edit  r to resolve  d to delete
 <#c0c5ce|-|->stale
 
 <#96b5b4|-|->@@ -1,1 +1,1 @@
