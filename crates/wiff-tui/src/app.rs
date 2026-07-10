@@ -30,6 +30,7 @@ use crate::compose::{Compose, ComposeKind};
 use crate::exit::{Exit, ExitColors, ExitDefault, ExitDialog, ExitPlan, plan_exit};
 use crate::key::{Key, KeyPress};
 use crate::keymap::{Keymap, Resolution};
+use crate::picker::{Picker, PickerColors, PickerRow};
 use crate::render::{Document, RowKind, ViewLayout, color};
 use crate::review::{CommentSync, Review};
 use crate::search::{Direction, Matcher, Search, SearchInput};
@@ -96,6 +97,25 @@ struct CursorSpot {
     line: Option<(Side, LineNo)>,
 }
 
+/// A file in the modal list: its display path and the document row of its
+/// header, so choosing it jumps the cursor to that file.
+struct FileRow {
+    path: String,
+    row: usize,
+}
+
+impl PickerRow<App> for FileRow {
+    fn label(&self) -> String {
+        self.path.clone()
+    }
+
+    fn activate(self: Box<Self>, app: &mut App) {
+        if let Some(index) = app.locate_document_row(self.row) {
+            app.move_to(index);
+        }
+    }
+}
+
 /// The review view over a rendered diff.
 pub struct App {
     document: Document,
@@ -110,6 +130,8 @@ pub struct App {
     /// The chosen way to leave, set once a quit resolves, which the host reads
     /// to end the loop.
     exit: Option<Exit>,
+    /// The open modal list, present while the reviewer is choosing from it.
+    picker: Option<Picker<App>>,
     /// The default a quit resolves to, from the host's configured on-exit policy.
     exit_default: ExitDefault,
     /// Whether each of the document's folds is currently collapsed.
@@ -143,6 +165,8 @@ pub struct App {
     keymap: Keymap,
     /// The colors the exit dialog paints with.
     exit_colors: ExitColors,
+    /// The colors the modal list paints with.
+    picker_colors: PickerColors,
     /// A transient note shown in the status line until the next key press, used
     /// to report the tally of a refresh.
     message: Option<String>,
@@ -177,6 +201,7 @@ impl App {
             compose: None,
             exit_dialog: None,
             exit: None,
+            picker: None,
             exit_default: ExitDefault::Prompt,
             collapsed,
             comment_collapsed,
@@ -194,6 +219,12 @@ impl App {
             compose_border: theme.comment_draft_fg,
             keymap: Keymap::defaults(),
             exit_colors: ExitColors {
+                border: theme.review_fg,
+                selected_bg: theme.cursor_bg,
+                text: theme.comment_fg,
+                hint: theme.fold_fg,
+            },
+            picker_colors: PickerColors {
                 border: theme.review_fg,
                 selected_bg: theme.cursor_bg,
                 text: theme.comment_fg,
@@ -360,6 +391,7 @@ impl App {
             Action::ToggleFold => self.toggle_fold(),
             Action::ToggleComment => self.toggle_comment(),
             Action::ToggleWrap => return self.toggle_wrap(),
+            Action::PickFile => self.open_file_picker(),
             Action::ResolveComment => return self.resolve_comment(),
             Action::DeleteComment => return self.delete_comment(),
             Action::AddComment => return self.start_add_comment(),
@@ -687,6 +719,96 @@ impl App {
             Key::Escape => self.exit_dialog = None,
             _ => {}
         }
+    }
+
+    /// Open the modal list of the diff's files, each jumping to that file's
+    /// header when chosen. Does nothing when the diff has no files.
+    fn open_file_picker(&mut self) {
+        let rows: Vec<Box<dyn PickerRow<App>>> = self
+            .document
+            .files
+            .iter()
+            .enumerate()
+            .filter_map(|(file, path)| {
+                let row = self.document.rows.iter().position(|meta| {
+                    meta.file == file && matches!(meta.kind, RowKind::FileHeader)
+                })?;
+                Some(Box::new(FileRow {
+                    path: path.clone(),
+                    row,
+                }) as Box<dyn PickerRow<App>>)
+            })
+            .collect();
+        if rows.is_empty() {
+            return;
+        }
+        let hint = self.picker_hint();
+        self.picker = Some(Picker::new("Jump to file", rows, &hint, self.picker_colors));
+    }
+
+    /// The picker's key hint, naming the reviewer's own bindings for moving the
+    /// highlight alongside the fixed enter and escape keys that select and
+    /// cancel, resolved from the active keymap like the inline editor's hint.
+    fn picker_hint(&self) -> String {
+        let up = self
+            .keymap
+            .primary_label(Action::LineUp)
+            .unwrap_or_default();
+        let down = self
+            .keymap
+            .primary_label(Action::LineDown)
+            .unwrap_or_default();
+        format!("{up}/{down} move  enter select  esc cancel")
+    }
+
+    /// Whether the modal list is open, so the host routes raw key presses to it
+    /// rather than resolving them into actions.
+    pub fn picking(&self) -> bool {
+        self.picker.is_some()
+    }
+
+    /// The open modal list, for the host to render centered over the view.
+    pub fn picker(&self) -> Option<&Picker<App>> {
+        self.picker.as_ref()
+    }
+
+    /// Set how many rows the open modal list shows, from the space the host
+    /// gives it. Does nothing when the list is closed.
+    pub fn picker_set_height(&mut self, height: usize) {
+        if let Some(picker) = self.picker.as_mut() {
+            picker.set_height(height);
+        }
+    }
+
+    /// Move the highlight in the open modal list with a resolved navigation
+    /// action, so it moves with the reviewer's own movement bindings. Ignores
+    /// any non-movement action, and does nothing when the list is closed.
+    pub fn picker_nav(&mut self, action: Action) {
+        let Some(picker) = self.picker.as_mut() else {
+            return;
+        };
+        match action {
+            Action::LineDown => picker.select_next(),
+            Action::LineUp => picker.select_prev(),
+            Action::PageDown => picker.page_down(),
+            Action::PageUp => picker.page_up(),
+            Action::Top => picker.to_top(),
+            Action::Bottom => picker.to_bottom(),
+            _ => {}
+        }
+    }
+
+    /// Close the modal list and act on its highlighted row. Does nothing when
+    /// the list is closed.
+    pub fn picker_activate(&mut self) {
+        if let Some(picker) = self.picker.take() {
+            picker.activate_selected(self);
+        }
+    }
+
+    /// Close the modal list without acting on any row.
+    pub fn picker_cancel(&mut self) {
+        self.picker = None;
     }
 
     /// Re-render the document from the review after a buffered edit, preserving
@@ -2171,6 +2293,57 @@ why?
         let (cursor, top, _) = after(10, &[Action::NextFile, Action::PrevFile, Action::PrevFile]);
         k9::assert_equal!(cursor, 0);
         k9::assert_equal!(top, 0);
+    }
+
+    /// Dump the open modal list rendered to its full height, as a human sees it.
+    fn dump_picker(app: &mut App) -> String {
+        let rows = app.picker().expect("picking").list_len();
+        app.picker_set_height(rows);
+        dump(
+            &app.picker()
+                .expect("picking")
+                .lines(app.picker().expect("picking").width()),
+        )
+    }
+
+    #[test]
+    fn the_file_picker_lists_every_file_with_the_first_highlighted() {
+        // Opening the picker over the two-file diff lists both paths, the first
+        // highlighted, then a spacer and the key hint.
+        let mut app = App::new(document(), 8, &Theme::dark());
+        app.update(Action::PickFile);
+        k9::assert_equal!(app.picking(), true);
+        let expected = "\
+<#c0c5ce|#4f5b66|->> src/lib.rs                            
+<#c0c5ce|-|->  notes.txt                             
+
+<#8a8a8a|-|->  up/down move  enter select  esc cancel
+";
+        k9::assert_equal!(dump_picker(&mut app), expected.to_string());
+    }
+
+    #[test]
+    fn choosing_a_file_from_the_picker_jumps_the_cursor_to_its_header() {
+        // Stepping down to the second file and activating closes the picker and
+        // lands the cursor on that file's header row.
+        let mut app = App::new(document(), 8, &Theme::dark());
+        app.update(Action::PickFile);
+        app.picker_nav(Action::LineDown);
+        app.picker_activate();
+        k9::assert_equal!(app.picking(), false);
+        k9::assert_equal!(app.cursor(), 4);
+    }
+
+    #[test]
+    fn cancelling_the_picker_leaves_the_cursor_where_it_was() {
+        // Escaping the picker closes it without moving the cursor, even after
+        // moving the highlight within it.
+        let mut app = App::new(document(), 8, &Theme::dark());
+        app.update(Action::PickFile);
+        app.picker_nav(Action::LineDown);
+        app.picker_cancel();
+        k9::assert_equal!(app.picking(), false);
+        k9::assert_equal!(app.cursor(), 0);
     }
 
     #[test]

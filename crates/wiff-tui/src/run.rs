@@ -27,7 +27,9 @@ use crate::app::{App, ComposeView, Update};
 use crate::event::to_key_press;
 use crate::exit::{Exit, ExitDialog};
 use crate::input::Input;
+use crate::key::Key;
 use crate::keymap::Keymap;
+use crate::picker::Picker;
 use crate::render::color;
 
 /// How long the loop waits for a key before waking to pick up another actor's
@@ -81,9 +83,13 @@ pub fn draw<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
             frame.render_widget(Paragraph::new(app.visible(area.width as usize)), doc_area);
         }
         frame.render_widget(Paragraph::new(app.status(area.width as usize)), status_area);
-        // The exit dialog floats centered over whatever it interrupts.
+        // The exit dialog and the modal list each float centered over whatever
+        // they interrupt.
         if let Some(dialog) = app.exit_dialog() {
             render_exit_dialog(frame, doc_area, dialog);
+        }
+        if app.picking() {
+            render_picker(frame, doc_area, app);
         }
     })?;
     Ok(())
@@ -106,6 +112,39 @@ fn render_exit_dialog(frame: &mut Frame, area: Rect, dialog: &ExitDialog) {
         .title(dialog.title().to_string());
     frame.render_widget(Clear, rect);
     frame.render_widget(Paragraph::new(dialog.lines()).block(block), rect);
+}
+
+/// Draw the modal list centered over `area`, clearing the cells behind it. The
+/// list's window is first sized to the space left inside the border, spacer, and
+/// hint, so a list taller than the screen scrolls rather than overflowing.
+fn render_picker(frame: &mut Frame, area: Rect, app: &mut App) {
+    // The border takes two rows and the spacer and hint one each; the rest is
+    // the room the list has to show its rows.
+    let chrome = 4u16;
+    let visible = app
+        .picker()
+        .map(Picker::list_len)
+        .unwrap_or(0)
+        .min(area.height.saturating_sub(chrome) as usize);
+    app.picker_set_height(visible);
+    let Some(picker) = app.picker() else {
+        return;
+    };
+    let inner = picker.width().min(area.width.saturating_sub(2) as usize);
+    let width = (inner as u16 + 2).min(area.width);
+    let height = (visible as u16 + chrome).min(area.height);
+    let rect = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color(picker.border())))
+        .title(picker.title().to_string());
+    frame.render_widget(Clear, rect);
+    frame.render_widget(Paragraph::new(picker.lines(inner)).block(block), rect);
 }
 
 /// Draw the inline comment editor into `area`: the document lines above it, the
@@ -159,7 +198,12 @@ fn event_loop<B: Backend>(
             // Only pick up updates in the plain review view: a comment edit,
             // search prompt, or exit dialog owns a spot or buffer that a reload
             // would disturb, so the change waits until the reviewer returns.
-            if !app.composing() && !app.searching() && !app.exiting() && sync(&mut app) {
+            if !app.composing()
+                && !app.searching()
+                && !app.exiting()
+                && !app.picking()
+                && sync(&mut app)
+            {
                 dirty = true;
             }
             continue;
@@ -182,6 +226,19 @@ fn event_loop<B: Backend>(
             app.compose_key(press);
         } else if app.exiting() {
             app.exit_key(press);
+        } else if app.picking() {
+            // Enter activates the highlight and escape closes the list; every
+            // other press resolves through the keymap so the list moves with the
+            // reviewer's own navigation bindings.
+            match press.key {
+                Key::Enter => app.picker_activate(),
+                Key::Escape => app.picker_cancel(),
+                _ => {
+                    if let Some(action) = input.press(press) {
+                        app.picker_nav(action);
+                    }
+                }
+            }
         } else if let Some(action) = input.press(press) {
             // Refresh and save are the passed-back actions the loop acts on
             // itself, handing each to the host: refresh recaptures and reloads

@@ -13,6 +13,7 @@ pub mod exit;
 pub mod input;
 pub mod key;
 pub mod keymap;
+pub mod picker;
 pub mod render;
 pub mod review;
 pub mod run;

@@ -41,6 +41,8 @@ pub enum Action {
     ToggleComment,
     /// Toggle whether diff content wraps to the viewport width or is clipped.
     ToggleWrap,
+    /// Open the modal list of files to jump to one.
+    PickFile,
     /// Add a comment at the cursor.
     AddComment,
     /// Edit the focused comment.
@@ -97,6 +99,7 @@ impl Action {
             Action::ToggleFold => "toggle_fold",
             Action::ToggleComment => "toggle_comment",
             Action::ToggleWrap => "toggle_wrap",
+            Action::PickFile => "pick_file",
             Action::AddComment => "add_comment",
             Action::EditComment => "edit_comment",
             Action::ResolveComment => "resolve_comment",

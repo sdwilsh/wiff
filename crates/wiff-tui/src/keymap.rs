@@ -138,8 +138,8 @@ fn chord(text: &str) -> Chord {
 /// The built-in bindings as an action-keyed map.
 fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
     [
-        (Action::LineDown, vec![chord("j"), chord("down")]),
-        (Action::LineUp, vec![chord("k"), chord("up")]),
+        (Action::LineDown, vec![chord("down"), chord("j")]),
+        (Action::LineUp, vec![chord("up"), chord("k")]),
         (
             Action::PageDown,
             vec![chord("space"), chord("ctrl-f"), chord("pagedown")],
@@ -159,6 +159,7 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
         (Action::ToggleFold, vec![chord("enter")]),
         (Action::ToggleComment, vec![chord("tab")]),
         (Action::ToggleWrap, vec![chord("w")]),
+        (Action::PickFile, vec![chord("t")]),
         (Action::AddComment, vec![chord("c")]),
         (Action::EditComment, vec![chord("e")]),
         (Action::ResolveComment, vec![chord("r")]),
