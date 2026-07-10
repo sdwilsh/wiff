@@ -15,7 +15,7 @@ use wiff_core::record::{Author, CommentTarget, RecordBody};
 use wiff_core::review::CommentState;
 use wiff_diff::Diff;
 
-use crate::render::{DiffView, Document, FileHighlights};
+use crate::render::{DiffView, Document, FileHighlights, ViewLayout};
 
 /// How a reload of committed comments differed from the set already shown, so a
 /// reviewer can be told what another actor changed while they were reading.
@@ -98,10 +98,10 @@ impl Review {
 
     /// Render the effective review -- the committed comments with the pending
     /// drafts applied -- into a fresh document, badging the comments that carry
-    /// an uncommitted change. Comment bodies wrap to a `width`-column view; a
-    /// `width` of zero leaves them unwrapped, for use before a real width is
-    /// known.
-    pub fn document(&self, width: usize) -> Document {
+    /// an uncommitted change. Comment bodies wrap to `layout`, and the diff
+    /// content wraps too when the layout asks for it; a zero-width layout leaves
+    /// everything unwrapped, for use before a real width is known.
+    pub fn document(&self, layout: ViewLayout) -> Document {
         let effective = self.drafts.apply(&self.committed);
         let comments: Vec<CommentState> = effective
             .iter()
@@ -113,7 +113,7 @@ impl Review {
             .map(|entry| entry.comment.id)
             .collect();
         self.view
-            .render_review_cached(&self.diff, &comments, &pending, &self.highlights, width)
+            .render_review_cached(&self.diff, &comments, &pending, &self.highlights, layout)
     }
 
     /// Flip the resolved state of comment `id`, buffering the change.

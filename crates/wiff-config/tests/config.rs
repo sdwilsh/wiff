@@ -21,6 +21,7 @@ fn a_full_config_parses_into_typed_settings() {
 on_exit = \"keep\"
 display_context = 5
 editor = \"vim +{line} {file}\"
+wrap_lines = true
 disable_default_keymap = false
 
 [author]
@@ -48,6 +49,7 @@ quit = [\"q\", \"ctrl-c\"]
             on_exit: OnExit::Keep,
             display_context: 5,
             editor: Some("vim +{line} {file}".to_string()),
+            wrap_lines: true,
             author: AuthorDefaults {
                 names: [
                     (AuthorKind::Human, "wez".to_string()),
@@ -109,7 +111,7 @@ fn an_unknown_field_is_rejected() {
     let message = error.to_string();
     k9::assert_equal!(
         message,
-        "could not parse config: TOML parse error at line 1, column 1\n  |\n1 | wibble = true\n  | ^^^^^^\nunknown field `wibble`, expected one of `on_exit`, `display_context`, `editor`, `author`, `section`, `disable_default_keymap`, `keymap`\n"
+        "could not parse config: TOML parse error at line 1, column 1\n  |\n1 | wibble = true\n  | ^^^^^^\nunknown field `wibble`, expected one of `on_exit`, `display_context`, `editor`, `wrap_lines`, `author`, `section`, `disable_default_keymap`, `keymap`\n"
             .to_string()
     );
 }

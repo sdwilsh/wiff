@@ -48,7 +48,8 @@ pub fn open(session_path: &Path, config: &Config) -> anyhow::Result<()> {
     let review = Review::new(view, diff, author, version.number, comments);
     let app = App::reviewing(review, 0, &theme)
         .with_exit_default(exit_default(config.on_exit))
-        .with_keymap(keymap.clone());
+        .with_keymap(keymap.clone())
+        .with_wrap_content(config.wrap_lines);
 
     // Refresh recaptures the diff and reloads the app in place; save commits the
     // pending drafts and keeps the review open. Any failure is reported in the

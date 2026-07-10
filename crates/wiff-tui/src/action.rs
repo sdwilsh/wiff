@@ -39,6 +39,8 @@ pub enum Action {
     ToggleFold,
     /// Expand or collapse the comment at the cursor.
     ToggleComment,
+    /// Toggle whether diff content wraps to the viewport width or is clipped.
+    ToggleWrap,
     /// Add a comment at the cursor.
     AddComment,
     /// Edit the focused comment.
@@ -94,6 +96,7 @@ impl Action {
             Action::PrevComment => "prev_comment",
             Action::ToggleFold => "toggle_fold",
             Action::ToggleComment => "toggle_comment",
+            Action::ToggleWrap => "toggle_wrap",
             Action::AddComment => "add_comment",
             Action::EditComment => "edit_comment",
             Action::ResolveComment => "resolve_comment",

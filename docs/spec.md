@@ -294,8 +294,9 @@ no thousand-line nested match driving the UI.
 ### Action model
 
 Input is decoded into an **action** (an enum of intents: page up/down, next/prev
-file, next/prev hunk, next/prev comment, toggle fold, toggle comment, add
-comment, edit comment, resolve comment, delete comment, submit comment, cancel
+file, next/prev hunk, next/prev comment, toggle fold, toggle comment, toggle
+wrap, add comment, edit comment, resolve comment, delete comment, submit
+comment, cancel
 comment, save, search forward/backward, search next/prev, refresh,
 `open_in_editor`, `quit`, `quit_keep`, `quit_remove`, etc.). Nothing in the UI
 logic branches on raw keys; it branches on actions. This keeps bindings
@@ -324,9 +325,12 @@ reassignable and keeps the update logic small.
 - The view type (unified now; side-by-side later) and options like
   ignore-whitespace are designed to be user-selectable, though only unified
   ships in v0.
-- Diff content lines are clipped to the viewport width in v0. A toggle to soft-
-  wrap them instead is planned, reusing the same column-wrapper that wraps
-  comment bodies.
+- Diff content lines soft-wrap to the viewport width by default. The
+  `toggle_wrap` action, and the `wrap_lines` config default it starts from,
+  switch to clipping them at the edge instead. Wrapping reuses the same
+  column-wrapper that wraps comment bodies: a wrapped line keeps its gutter on
+  the first row and indents each continuation under the code, reflowing when the
+  terminal is resized.
 
 ### Search
 
@@ -393,8 +397,8 @@ box soft-wraps to fit inside it, so a long line an agent writes on one physical
 row spreads across several rows rather than being clipped; the wrap follows the
 viewport, reflowing when the terminal is resized. The wrapping is a shared
 column-wrapper that breaks at spaces and hard-splits an overlong word while
-preserving span styling, so it can wrap syntax-highlighted diff lines too once
-wrapping is offered there. The body-to-lines step is isolated so a markdown block
+preserving span styling, and the same wrapper wraps syntax-highlighted diff
+lines when `toggle_wrap` is on. The body-to-lines step is isolated so a markdown block
 renderer can replace it later; the collapse model (a header line plus body lines)
 already accommodates a body that renders as several lines.
 
@@ -485,6 +489,9 @@ after the rest of v0.
   sequence of key presses; each press is a key with optional `ctrl-`/`alt-`/
   `shift-` modifier prefixes, lowercased (e.g. `"ctrl-f"`, `"g g"`).
 - `on_exit` selects keep/remove/prompt behavior on quit.
+- `wrap_lines` (default on) soft-wraps diff content to the viewport width rather
+  than clipping it at the edge; the `toggle_wrap` action flips it within a
+  session.
 - `editor` is a command template (`{file}`, `{line}` placeholders) for
   `open_in_editor`; when unset, `$VISUAL` then `$EDITOR` then a default is used.
 - Where user choices are persisted back (e.g. remembered view options), use

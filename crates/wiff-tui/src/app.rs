@@ -30,7 +30,7 @@ use crate::compose::{Compose, ComposeKind};
 use crate::exit::{Exit, ExitColors, ExitDefault, ExitDialog, ExitPlan, plan_exit};
 use crate::key::{Key, KeyPress};
 use crate::keymap::{Keymap, Resolution};
-use crate::render::{Document, RowKind, color};
+use crate::render::{Document, RowKind, ViewLayout, color};
 use crate::review::{CommentSync, Review};
 use crate::search::{Direction, Matcher, Search, SearchInput};
 use crate::theme::Theme;
@@ -125,6 +125,9 @@ pub struct App {
     /// The viewport width the document was last rendered for, so comment bodies
     /// wrap to it. Zero until the first draw supplies a real width.
     width: usize,
+    /// Whether diff content lines wrap to the viewport width rather than being
+    /// clipped at the edge, toggled by [`Action::ToggleWrap`].
+    wrap: bool,
     /// Whether the initial cursor has been centered in the viewport, which
     /// happens once the first real height is known.
     positioned: bool,
@@ -182,6 +185,7 @@ impl App {
             top: 0,
             height,
             width: 0,
+            wrap: false,
             positioned: false,
             cursor_bg: theme.cursor_bg,
             search_match_bg: theme.search_match_bg,
@@ -210,7 +214,7 @@ impl App {
     pub fn reviewing(review: Review, height: usize, theme: &Theme) -> Self {
         // No width is known yet, so the document renders unwrapped; the first
         // draw's `set_width` reflows it to fit the terminal.
-        let mut app = Self::new(review.document(0), height, theme);
+        let mut app = Self::new(review.document(ViewLayout::default()), height, theme);
         app.review = Some(review);
         app
     }
@@ -218,6 +222,14 @@ impl App {
     /// Set the default a quit resolves to, from the host's on-exit policy.
     pub fn with_exit_default(mut self, default: ExitDefault) -> Self {
         self.exit_default = default;
+        self
+    }
+
+    /// Start with diff content wrapped to the viewport width rather than clipped,
+    /// from the reviewer's configured default. A width is not known yet, so this
+    /// only records the choice; the first draw reflows to it.
+    pub fn with_wrap_content(mut self, wrap: bool) -> Self {
+        self.wrap = wrap;
         self
     }
 
@@ -275,14 +287,29 @@ impl App {
     }
 
     /// Set the viewport `width` and, when it changes, reflow the review's
-    /// document so comment bodies wrap to the new width, keeping the cursor's
-    /// spot and each comment's collapse state. A read-only view has no review to
-    /// re-render, so it only records the width.
+    /// document so comment bodies and any wrapped content fit the new width. A
+    /// read-only view has no review to re-render, so it only records the width.
     pub fn set_width(&mut self, width: usize) {
         if width == self.width {
             return;
         }
         self.width = width;
+        self.reflow();
+    }
+
+    /// The layout the document renders to: the current width and whether diff
+    /// content wraps to it.
+    fn layout(&self) -> ViewLayout {
+        ViewLayout {
+            width: self.width,
+            wrap_content: self.wrap,
+        }
+    }
+
+    /// Re-render the review's document for the current width and wrap setting,
+    /// keeping the cursor's spot and each comment's collapse state. A read-only
+    /// view has no review to re-render, so it does nothing.
+    fn reflow(&mut self) {
         if self.review.is_none() {
             return;
         }
@@ -291,11 +318,23 @@ impl App {
             .review
             .as_ref()
             .expect("review present")
-            .document(width);
+            .document(self.layout());
         self.reconcile_comment_collapse(&document);
         self.document = document;
         self.rebuild_view();
         self.restore_spot(spot);
+    }
+
+    /// Toggle whether diff content wraps to the viewport width or is clipped at
+    /// the edge, reflowing the document to the new choice. Passes through when no
+    /// review is being edited.
+    fn toggle_wrap(&mut self) -> Update {
+        if self.review.is_none() {
+            return Update::Passed(Action::ToggleWrap);
+        }
+        self.wrap = !self.wrap;
+        self.reflow();
+        Update::Handled
     }
 
     /// Handle a navigation action, or pass any other action back to the host.
@@ -320,6 +359,7 @@ impl App {
             Action::PrevComment => self.jump_backward(Landmark::Comment),
             Action::ToggleFold => self.toggle_fold(),
             Action::ToggleComment => self.toggle_comment(),
+            Action::ToggleWrap => return self.toggle_wrap(),
             Action::ResolveComment => return self.resolve_comment(),
             Action::DeleteComment => return self.delete_comment(),
             Action::AddComment => return self.start_add_comment(),
@@ -454,10 +494,40 @@ impl App {
                     start_line: lineno,
                     end_line: lineno,
                 };
-                Some((target, self.cursor, label))
+                // A soft-wrapped line spans several rows sharing one anchor, so
+                // the editor opens above the line's first row to match where the
+                // submitted comment lands rather than the continuation the cursor
+                // sits on.
+                Some((target, self.content_line_top(self.cursor), label))
             }
             _ => None,
         }
+    }
+
+    /// The first view row of the content line shown at view row `index`: walking
+    /// back over the continuation rows a soft-wrapped line breaks into, all of
+    /// which share its side and line number. Returns `index` unchanged for a row
+    /// that is not a content line.
+    fn content_line_top(&self, index: usize) -> usize {
+        let Some(RowKind::Content {
+            side,
+            lineno: Some(lineno),
+        }) = self.kind_at(index)
+        else {
+            return index;
+        };
+        let (side, lineno) = (*side, *lineno);
+        let mut top = index;
+        while top > 0 {
+            match self.kind_at(top - 1) {
+                Some(RowKind::Content {
+                    side: prev_side,
+                    lineno: Some(prev_lineno),
+                }) if *prev_side == side && *prev_lineno == lineno => top -= 1,
+                _ => break,
+            }
+        }
+        top
     }
 
     /// Whether the inline comment editor is open, so the host routes raw key
@@ -625,7 +695,7 @@ impl App {
         let Some(review) = self.review.as_ref() else {
             return;
         };
-        let document = review.document(self.width);
+        let document = review.document(self.layout());
         self.reload_document(document);
     }
 
@@ -662,10 +732,11 @@ impl App {
             return Ok(());
         }
         let spot = self.cursor_spot();
+        let layout = self.layout();
         let document = {
             let review = self.review.as_mut().expect("review present");
             review.refresh(diff, comments, version, old_diff)?;
-            review.document(self.width)
+            review.document(layout)
         };
         self.collapsed = vec![true; document.folds.len()];
         self.reconcile_comment_collapse(&document);
@@ -708,10 +779,11 @@ impl App {
             return CommentSync::default();
         }
         let spot = self.cursor_spot();
+        let layout = self.layout();
         let (sync, document) = {
             let review = self.review.as_mut().expect("review present");
             let sync = review.set_committed(comments);
-            (sync, review.document(self.width))
+            (sync, review.document(layout))
         };
         self.reconcile_comment_collapse(&document);
         self.document = document;
@@ -1609,8 +1681,8 @@ mod tests {
     use crate::exit::{Exit, ExitDefault};
     use crate::key::{Chord, Key, KeyPress};
     use crate::keymap::{Keymap, KeymapOverrides};
-    use crate::render::DiffView;
     use crate::render::testutil::{dump, file, ln};
+    use crate::render::{DiffView, ViewLayout};
     use crate::review::Review;
     use crate::theme::Theme;
 
@@ -1733,9 +1805,12 @@ mod tests {
     /// attached, for navigation and collapse tests.
     fn commented_document() -> crate::render::Document {
         let (diff, comments) = commented_diff();
-        DiffView::new(Theme::dark())
-            .unwrap()
-            .render_review(&diff, &comments, &[], 0)
+        DiffView::new(Theme::dark()).unwrap().render_review(
+            &diff,
+            &comments,
+            &[],
+            ViewLayout::default(),
+        )
     }
 
     /// The [`commented_diff`] as an editable review, for comment-authoring tests.
@@ -1981,6 +2056,108 @@ mod tests {
 <#65737e|#2d3b30|->        1 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
 ";
         k9::assert_equal!(visible, expected.to_string());
+    }
+
+    #[test]
+    fn toggle_wrap_reflows_diff_content_to_the_viewport_and_back() {
+        // A single added line wider than the content column. Clipped by default,
+        // it stays one row that the draw truncates; toggling wrap reflows it
+        // across rows broken at spaces, the gutter shown only on the first;
+        // toggling again clips it back to one row.
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[(
+                    LineKind::Added,
+                    "let total = alpha plus beta plus gamma;",
+                    1,
+                )],
+            )],
+        };
+        let review = Review::new(
+            DiffView::new(Theme::dark()).unwrap(),
+            diff,
+            Author {
+                name: "wez".to_string(),
+                kind: AuthorKind::Human,
+            },
+            0,
+            Vec::new(),
+        );
+        let mut app = App::reviewing(review, 12, &Theme::dark());
+        app.set_width(TEST_WIDTH);
+        let clipped = "\
+<#ebcb8b|#4f5b66|b>Review<#8a8a8a|#4f5b66|-> [press c here to draft the review comment]
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,1 +1,1 @@
+<#65737e|#2d3b30|->        1 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> total <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> alpha plus beta plus gamma<#c0c5ce|#2d3b30|->;
+";
+        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), clipped.to_string());
+
+        app.update(Action::ToggleWrap);
+        let wrapped = "\
+<#ebcb8b|#4f5b66|b>Review<#8a8a8a|#4f5b66|-> [press c here to draft the review comment]
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,1 +1,1 @@
+<#65737e|#2d3b30|->        1 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> total = alpha plus beta<-|#2d3b30|-> 
+<#65737e|#2d3b30|->            <#c0c5ce|#2d3b30|->plus gamma;<-|#2d3b30|->                 
+";
+        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), wrapped.to_string());
+
+        app.update(Action::ToggleWrap);
+        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), clipped.to_string());
+    }
+
+    #[test]
+    fn a_comment_on_a_wrapped_continuation_row_anchors_above_the_lines_first_row() {
+        // With wrap on, a long added line spans two rows. Adding a comment from
+        // the second (continuation) row opens the editor above the line's first
+        // row, where the submitted comment lands, not the continuation the
+        // cursor sits on.
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[(
+                    LineKind::Added,
+                    "let total = alpha plus beta plus gamma;",
+                    1,
+                )],
+            )],
+        };
+        let review = Review::new(
+            DiffView::new(Theme::dark()).unwrap(),
+            diff,
+            Author {
+                name: "wez".to_string(),
+                kind: AuthorKind::Human,
+            },
+            0,
+            Vec::new(),
+        );
+        let mut app = App::reviewing(review, 8, &Theme::dark());
+        app.set_width(TEST_WIDTH);
+        app.update(Action::ToggleWrap);
+        // Land on the continuation row, the second of the wrapped line's rows.
+        app.update(Action::Top);
+        for _ in 0..4 {
+            app.update(Action::LineDown);
+        }
+        app.update(Action::AddComment);
+        typed(&mut app, "why?");
+        let view = app.compose_view(TEST_WIDTH).expect("composing");
+        let expected = "\
+<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,1 +1,1 @@
+--editor--
+why?
+--below--
+<#65737e|#2d3b30|->        1 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> total = alpha plus beta<-|#2d3b30|-> 
+<#65737e|#2d3b30|->            <#c0c5ce|#2d3b30|->plus gamma;<-|#2d3b30|->                 
+";
+        k9::assert_equal!(dump_compose(&view), expected.to_string());
     }
 
     #[test]

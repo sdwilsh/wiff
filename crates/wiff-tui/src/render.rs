@@ -87,9 +87,21 @@ pub struct CommentRegion {
     pub collapsed_default: bool,
 }
 
+/// The view width a render targets and whether the diff content wraps to it.
+/// Comment bodies always wrap to the width; `wrap_content` additionally wraps
+/// the diff lines instead of clipping them at the edge. A width of zero leaves
+/// everything on one row, for use before a real width is known.
+#[derive(Clone, Copy, Default)]
+pub struct ViewLayout {
+    /// The view width in columns.
+    pub width: usize,
+    /// Whether diff content lines wrap to the width rather than clip.
+    pub wrap_content: bool,
+}
+
 /// The inputs to rendering one file: the file and its index, where its comments
 /// are placed, its cached highlighting, which comments show as uncommitted
-/// drafts, and the view width comment bodies wrap to.
+/// drafts, and the layout its content and comment bodies fit.
 #[derive(Clone, Copy)]
 struct FileRender<'a> {
     index: usize,
@@ -97,7 +109,7 @@ struct FileRender<'a> {
     placement: &'a FilePlacement<'a>,
     highlight: Option<&'a FileHighlights>,
     pending: &'a [Ulid],
-    width: usize,
+    layout: ViewLayout,
 }
 
 /// A run of unchanged rows that can be collapsed behind a single marker line.
@@ -288,7 +300,7 @@ impl DiffView {
     /// Render every file of `diff` into one scrollable [`Document`], with no
     /// review overlay.
     pub fn render(&self, diff: &Diff) -> Document {
-        self.build(diff, &[], &[], false, None, 0)
+        self.build(diff, &[], &[], false, None, ViewLayout::default())
     }
 
     /// Highlight every file in `diff`, once, so the result can be reused across
@@ -309,16 +321,16 @@ impl DiffView {
     /// whole-file comments under their file header, and line comments in a block
     /// above the line they anchor. Deleted comments are the caller's to filter.
     /// Comments whose id is in `pending` are badged as uncommitted drafts. Long
-    /// comment bodies wrap to fit a `width`-column view; a `width` of zero leaves
-    /// them on one row, to be clipped at draw as the diff content is.
+    /// comment bodies wrap to fit `layout`; the diff content wraps too when
+    /// `layout.wrap_content` is set, otherwise it is clipped at draw.
     pub fn render_review(
         &self,
         diff: &Diff,
         comments: &[CommentState],
         pending: &[Ulid],
-        width: usize,
+        layout: ViewLayout,
     ) -> Document {
-        self.build(diff, comments, pending, true, None, width)
+        self.build(diff, comments, pending, true, None, layout)
     }
 
     /// Like [`render_review`](Self::render_review) but reusing `highlights` from
@@ -330,9 +342,9 @@ impl DiffView {
         comments: &[CommentState],
         pending: &[Ulid],
         highlights: &[FileHighlights],
-        width: usize,
+        layout: ViewLayout,
     ) -> Document {
-        self.build(diff, comments, pending, true, Some(highlights), width)
+        self.build(diff, comments, pending, true, Some(highlights), layout)
     }
 
     /// The shared render path: build the document, optionally leading with the
@@ -344,7 +356,7 @@ impl DiffView {
         pending: &[Ulid],
         review_row: bool,
         highlights: Option<&[FileHighlights]>,
-        width: usize,
+        layout: ViewLayout,
     ) -> Document {
         let mut doc = Document {
             lines: Vec::new(),
@@ -374,7 +386,7 @@ impl DiffView {
                     NO_FILE,
                     comment,
                     pending.contains(&comment.id),
-                    width,
+                    layout.width,
                 );
             }
         }
@@ -388,7 +400,7 @@ impl DiffView {
                     placement: &placement.files[index],
                     highlight,
                     pending,
-                    width,
+                    layout,
                 },
             );
         }
@@ -404,8 +416,9 @@ impl DiffView {
             placement,
             highlight,
             pending,
-            width,
+            layout,
         } = render;
+        let width = layout.width;
         doc.push(
             index,
             RowKind::FileHeader,
@@ -438,7 +451,15 @@ impl DiffView {
                 self.hunk_header(hunk),
             );
             let emphasis = intraline::refine(&hunk.lines);
+            // A wrapped content line spans several rows, so a fold needs the row
+            // one past a line's last row, not one past its first; track both.
             let mut line_row = Vec::with_capacity(hunk.lines.len());
+            let mut line_end = Vec::with_capacity(hunk.lines.len());
+            let content_wrap = if layout.wrap_content && width > GUTTER_WIDTH {
+                Some(width - GUTTER_WIDTH)
+            } else {
+                None
+            };
             for (line, ranges) in hunk.lines.iter().zip(&emphasis) {
                 let (side, lineno, highlighted) = match line.kind {
                     LineKind::Removed => (
@@ -464,14 +485,17 @@ impl DiffView {
                     }
                 }
                 line_row.push(doc.rows.len());
-                let (rendered, fill) = self.content_line(line, highlighted, ranges);
-                doc.push(
-                    index,
-                    RowKind::Content { side, lineno },
-                    fill,
-                    line.text.clone(),
-                    rendered,
-                );
+                let (fill, rows) = self.content_rows(line, highlighted, ranges, content_wrap);
+                for (rendered, text) in rows {
+                    doc.push(
+                        index,
+                        RowKind::Content { side, lineno },
+                        fill,
+                        text,
+                        rendered,
+                    );
+                }
+                line_end.push(doc.rows.len());
             }
             let kinds: Vec<LineKind> = hunk.lines.iter().map(|line| line.kind).collect();
             let anchored: Vec<bool> = hunk
@@ -484,7 +508,7 @@ impl DiffView {
                 let scope = enclosing_scope(&hunk.lines, run.end, &section);
                 doc.folds.push(Fold {
                     start: line_row[run.start],
-                    end: line_row[run.end - 1] + 1,
+                    end: line_end[run.end - 1],
                     marker: self.fold_marker(run.end - run.start, scope),
                     fill: Some(self.theme.status_bg),
                 });
@@ -680,16 +704,20 @@ impl DiffView {
         ))
     }
 
-    /// One diff row: the gutter, the change marker, and the colored content,
-    /// tinted by the line's role with changed characters emphasized. Also
-    /// returns the background the whole row fills its width with, so the tint
-    /// reaches the edge of the screen behind a shorter line.
-    fn content_line(
+    /// Render one diff line into its display rows and the background each row
+    /// fills to its width, so the role tint reaches the screen edge. Each row
+    /// pairs its styled line with its plain text for search. A row is the
+    /// line-number gutter, the change marker, and the syntax-colored content with
+    /// changed characters emphasized. With `wrap` the content is broken to that
+    /// many columns beside the gutter, each continuation indented under the code
+    /// of the first row; without it the line stays a single row.
+    fn content_rows(
         &self,
         line: &DiffLine,
         highlighted: Option<&HighlightedLine>,
         ranges: &[Range<usize>],
-    ) -> (Line<'static>, Option<Rgb>) {
+        wrap: Option<usize>,
+    ) -> (Option<Rgb>, Vec<(Line<'static>, String)>) {
         let (marker, row_bg, emphasis_bg) = match line.kind {
             LineKind::Context => (' ', None, None),
             LineKind::Added => (
@@ -734,9 +762,31 @@ impl DiffView {
         if line.kind == LineKind::Added {
             mark_trailing_whitespace(&mut content, &line.text, self.theme.whitespace_bg);
         }
-        let mut spans = vec![gutter];
-        spans.extend(content);
-        (Line::from(spans), row_bg)
+        let Some(content_width) = wrap else {
+            let mut spans = vec![gutter];
+            spans.extend(content);
+            return (row_bg, vec![(Line::from(spans), line.text.clone())]);
+        };
+        // Wrap the content into the columns beside the gutter, leading the first
+        // row with the gutter and each continuation with a blank gutter so the
+        // wrapped code aligns under the first row.
+        let blank_gutter = Span::styled(" ".repeat(GUTTER_WIDTH), gutter_style);
+        let rows = wrap_line(&Line::from(content), content_width)
+            .into_iter()
+            .enumerate()
+            .map(|(row, mut visual)| {
+                let text: String = visual.spans.iter().map(|s| s.content.as_ref()).collect();
+                let lead = if row == 0 {
+                    gutter.clone()
+                } else {
+                    blank_gutter.clone()
+                };
+                let mut spans = vec![lead];
+                spans.append(&mut visual.spans);
+                (Line::from(spans), text)
+            })
+            .collect();
+        (row_bg, rows)
     }
 }
 
@@ -1155,7 +1205,7 @@ mod tests {
     use wiff_diff::{Diff, FileStatus, LineKind, Side};
 
     use super::testutil::{dump, file, ln};
-    use super::{CommentRegion, DiffView};
+    use super::{CommentRegion, DiffView, ViewLayout};
     use crate::theme::Theme;
 
     /// A comment with the given identity, author, target, and body; not resolved
@@ -1347,9 +1397,12 @@ mod tests {
             on_lines("src/lib.rs", 2, 2),
             "why 2?",
         )];
-        let doc = DiffView::new(Theme::dark())
-            .unwrap()
-            .render_review(&diff, &comments, &[], 0);
+        let doc = DiffView::new(Theme::dark()).unwrap().render_review(
+            &diff,
+            &comments,
+            &[],
+            ViewLayout::default(),
+        );
         let lines = "\
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
@@ -1370,7 +1423,8 @@ mod tests {
         // produce the identical lines; caching is a speed-up, not a change.
         let view = DiffView::new(Theme::dark()).unwrap();
         let highlights = view.highlight(&diff);
-        let cached = view.render_review_cached(&diff, &comments, &[], &highlights, 0);
+        let cached =
+            view.render_review_cached(&diff, &comments, &[], &highlights, ViewLayout::default());
         k9::assert_equal!(dump(&cached.lines), lines.to_string());
     }
 
@@ -1389,10 +1443,12 @@ mod tests {
             on_lines("src/lib.rs", 1, 1),
             "why 2?",
         )];
-        let doc =
-            DiffView::new(Theme::dark())
-                .unwrap()
-                .render_review(&diff, &comments, &[Ulid(1)], 0);
+        let doc = DiffView::new(Theme::dark()).unwrap().render_review(
+            &diff,
+            &comments,
+            &[Ulid(1)],
+            ViewLayout::default(),
+        );
         let lines = "\
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
@@ -1421,9 +1477,12 @@ mod tests {
             "done",
         );
         resolved.resolved = true;
-        let doc = DiffView::new(Theme::dark())
-            .unwrap()
-            .render_review(&diff, &[resolved], &[], 0);
+        let doc = DiffView::new(Theme::dark()).unwrap().render_review(
+            &diff,
+            &[resolved],
+            &[],
+            ViewLayout::default(),
+        );
         let lines = "\
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
@@ -1453,9 +1512,12 @@ mod tests {
             CommentTarget::Review,
             "looks good overall",
         )];
-        let doc = DiffView::new(Theme::dark())
-            .unwrap()
-            .render_review(&diff, &comments, &[], 0);
+        let doc = DiffView::new(Theme::dark()).unwrap().render_review(
+            &diff,
+            &comments,
+            &[],
+            ViewLayout::default(),
+        );
         let lines = "\
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#8fa1b3|-|->wez (human)<#8a8a8a|-|->  press e to edit  r to resolve  d to delete
@@ -1488,9 +1550,12 @@ mod tests {
             on_lines("notes.txt", 6, 6),
             "here",
         )];
-        let doc = DiffView::new(Theme::dark())
-            .unwrap()
-            .render_review(&diff, &comments, &[], 0);
+        let doc = DiffView::new(Theme::dark()).unwrap().render_review(
+            &diff,
+            &comments,
+            &[],
+            ViewLayout::default(),
+        );
         let markers: Vec<Line<'static>> = doc.folds.iter().map(|f| f.marker.clone()).collect();
         let expected = "\
 <#8a8a8a|#343d46|->            [2 unchanged lines]  ctx02
@@ -1516,9 +1581,12 @@ mod tests {
             "stale",
         );
         outdated.confidence = Some(Confidence::Outdated);
-        let doc = DiffView::new(Theme::dark())
-            .unwrap()
-            .render_review(&diff, &[outdated], &[], 0);
+        let doc = DiffView::new(Theme::dark()).unwrap().render_review(
+            &diff,
+            &[outdated],
+            &[],
+            ViewLayout::default(),
+        );
         let lines = "\
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs

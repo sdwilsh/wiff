@@ -45,6 +45,9 @@ pub struct Config {
     /// The editor command template for `open_in_editor`, with `{file}` and
     /// `{line}` placeholders; falls back to `$VISUAL`/`$EDITOR` when unset.
     pub editor: Option<String>,
+    /// Whether diff content wraps to the viewport width instead of being clipped
+    /// at the edge. The `toggle_wrap` action flips it within a session.
+    pub wrap_lines: bool,
     /// The default author identity for annotations.
     pub author: AuthorDefaults,
     /// Per-language patterns recognising the enclosing-definition line shown on a
@@ -64,6 +67,7 @@ impl Default for Config {
             on_exit: OnExit::default(),
             display_context: DEFAULT_DISPLAY_CONTEXT,
             editor: None,
+            wrap_lines: true,
             author: AuthorDefaults::default(),
             section: BTreeMap::new(),
             disable_default_keymap: false,
