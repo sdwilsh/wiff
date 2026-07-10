@@ -317,8 +317,10 @@ reassignable and keeps the update logic small.
 
 Search is incremental and modeled on `less`. `/` and `?` open a prompt in the
 status line and scan forward or backward; the cursor jumps to the first match as
-the pattern is typed, and the pattern is a plain substring, matched with smart
-case (case-insensitive unless it contains an uppercase letter). Accepting the
+the pattern is typed, and the pattern is a regular expression, matched with smart
+case (case-insensitive unless it contains an uppercase letter). A pattern that is
+not yet valid regex syntax, as a half-typed one often is, matches nothing and is
+flagged as a bad pattern in the tally until it is well formed. Accepting the
 prompt keeps the cursor on the match and arms `n`/`N` to repeat in the same or
 opposite direction; abandoning it returns the cursor to where the search opened.
 While a search is live the status line shows the term, an `X/Y matches` tally

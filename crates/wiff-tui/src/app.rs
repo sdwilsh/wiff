@@ -32,7 +32,7 @@ use crate::key::{Key, KeyPress};
 use crate::keymap::{Keymap, Resolution};
 use crate::render::{Document, RowKind, color};
 use crate::review::Review;
-use crate::search::{self, Direction, Search, SearchInput};
+use crate::search::{Direction, Matcher, Search, SearchInput};
 use crate::theme::Theme;
 
 /// The result of feeding an [`Action`] to the [`App`].
@@ -786,17 +786,22 @@ impl App {
     /// The document rows matching `pattern` in document order, skipping rows
     /// hidden inside a collapsed fold, so the tally counts the same matches the
     /// search steps through.
-    fn match_rows(&self, pattern: &str) -> Vec<usize> {
+    fn match_rows(&self, matcher: &Matcher) -> Vec<usize> {
         (0..self.document.rows.len())
             .filter(|&row| !self.row_in_collapsed_fold(row))
-            .filter(|&row| search::matches(&self.document.text[row], pattern))
+            .filter(|&row| matcher.is_match(&self.document.text[row]))
             .collect()
     }
 
     /// The `X/Y matches` tally for `pattern`, where `X` is the match the cursor
-    /// is on, or a plain note when nothing matches.
+    /// is on, a plain note when nothing matches, or a note that the pattern is
+    /// not yet a valid regex. The pattern is never empty here, so a failure to
+    /// compile means the reviewer is mid-way through typing an expression.
     fn match_tally(&self, pattern: &str) -> String {
-        let rows = self.match_rows(pattern);
+        let Some(matcher) = Matcher::new(pattern) else {
+            return "bad pattern".to_string();
+        };
+        let rows = self.match_rows(&matcher);
         if rows.is_empty() {
             return "no matches".to_string();
         }
@@ -873,6 +878,7 @@ impl App {
         from: usize,
         include_from: bool,
     ) -> Option<usize> {
+        let matcher = Matcher::new(pattern)?;
         let n = self.document.rows.len();
         if n == 0 {
             return None;
@@ -886,7 +892,7 @@ impl App {
             if self.row_in_collapsed_fold(row) {
                 continue;
             }
-            if search::matches(&self.document.text[row], pattern) {
+            if matcher.is_match(&self.document.text[row]) {
                 return Some(row);
             }
         }
@@ -1007,15 +1013,15 @@ impl App {
     /// washed in the selection color on top of whichever of those it is.
     pub fn visible(&self, width: usize) -> Vec<Line<'static>> {
         let end = (self.top + self.height).min(self.view.len());
-        let pattern = self.highlight_pattern();
+        let matcher = self.highlight_pattern().and_then(Matcher::new);
         (self.top..end)
             .map(|i| {
                 let mut line = self.decorate(i, width);
                 if i == self.cursor {
                     line = wash(line, self.cursor_bg, width);
                 }
-                if let (Some(pattern), ViewRow::Row(row)) = (pattern, &self.view[i]) {
-                    line = self.highlight_matches(line, *row, pattern);
+                if let (Some(matcher), ViewRow::Row(row)) = (&matcher, &self.view[i]) {
+                    line = self.highlight_matches(line, *row, matcher);
                 }
                 line
             })
@@ -1036,12 +1042,17 @@ impl App {
         }
     }
 
-    /// Wash the search-match background over each occurrence of `pattern` in the
+    /// Wash the search-match background over each occurrence of `matcher` in the
     /// already-decorated `line` for document `row`, so every visible match reads
     /// as highlighted on top of whatever tint the row and cursor gave it.
-    fn highlight_matches(&self, line: Line<'static>, row: usize, pattern: &str) -> Line<'static> {
+    fn highlight_matches(
+        &self,
+        line: Line<'static>,
+        row: usize,
+        matcher: &Matcher,
+    ) -> Line<'static> {
         let text = &self.document.text[row];
-        let ranges = search::match_ranges(text, pattern);
+        let ranges = matcher.ranges(text);
         if ranges.is_empty() {
             return line;
         }
@@ -2683,6 +2694,41 @@ second
         k9::assert_equal!(
             status_text(&app),
             "/absent  no matches                   0%".to_string()
+        );
+    }
+
+    #[test]
+    fn a_regex_search_treats_the_pattern_as_an_expression() {
+        // The pattern is a regular expression: the dot matches any character, so
+        // `l.t` finds `let` on both changed lines, jumps the cursor to the first,
+        // and highlights every occurrence in view while the tally counts them.
+        let mut app = App::new(document(), 9, &Theme::dark());
+        search_for(&mut app, Action::SearchForward, "l.t");
+        k9::assert_equal!(
+            status_text(&app),
+            "/l.t  1/2 matches                    33%".to_string()
+        );
+        let expected = "\
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,2 +1,2 @@
+<#65737e|#4f5b66|->   1    1   <#b48ead|#6a5d1a|->let<#c0c5ce|#4f5b66|-> x <#c0c5ce|#4f5b66|->=<#c0c5ce|#4f5b66|-> <#d08770|#4f5b66|->1<#c0c5ce|#4f5b66|->;<-|#4f5b66|->                  
+<#65737e|#2d3b30|->        2 + <#b48ead|#6a5d1a|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
+<#c0c5ce|-|b>added  notes.txt
+<#96b5b4|-|->@@ -1,1 +1,1 @@
+<#65737e|#2d3b30|->        1 + <#c0c5ce|#2d3b30|->hello<-|#2d3b30|->                       
+";
+        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+    }
+
+    #[test]
+    fn a_half_typed_regex_reports_a_bad_pattern_rather_than_matching() {
+        // An unbalanced group is not yet a valid expression, so the status says
+        // so and the cursor stays where the search opened rather than jumping.
+        let mut app = App::new(document(), 9, &Theme::dark());
+        search_for(&mut app, Action::SearchForward, "(let");
+        k9::assert_equal!(
+            status_text(&app),
+            "/(let  bad pattern                    0%".to_string()
         );
     }
 

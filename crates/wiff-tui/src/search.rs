@@ -8,6 +8,8 @@
 
 use std::ops::Range;
 
+use fancy_regex::Regex;
+
 use crate::key::{Key, KeyPress};
 
 /// The direction a search scans and repeats in.
@@ -37,51 +39,45 @@ impl Direction {
     }
 }
 
-/// Whether `pattern` occurs in `haystack`, honoring smart case: a pattern with
-/// an uppercase letter matches case-sensitively, otherwise case-insensitively.
-/// An empty pattern matches nothing.
-pub fn matches(haystack: &str, pattern: &str) -> bool {
-    !match_ranges(haystack, pattern).is_empty()
+/// A compiled search pattern: a regular expression honoring smart case, so a
+/// caller can test many rows against one typed pattern without recompiling it.
+pub struct Matcher {
+    regex: Regex,
 }
 
-/// The byte ranges of every non-overlapping occurrence of `pattern` in
-/// `haystack`, in order, honoring the same smart case as [`matches`]. Empty when
-/// the pattern is empty or absent, so a caller can highlight each occurrence.
-pub fn match_ranges(haystack: &str, pattern: &str) -> Vec<Range<usize>> {
-    if pattern.is_empty() {
-        return Vec::new();
-    }
-    let sensitive = pattern.chars().any(char::is_uppercase);
-    let pat: Vec<char> = pattern.chars().collect();
-    let hay: Vec<(usize, char)> = haystack.char_indices().collect();
-    let mut ranges = Vec::new();
-    let mut start = 0;
-    while start + pat.len() <= hay.len() {
-        let hit = pat
-            .iter()
-            .enumerate()
-            .all(|(offset, &want)| char_eq(hay[start + offset].1, want, sensitive));
-        if hit {
-            let from = hay[start].0;
-            let to = hay
-                .get(start + pat.len())
-                .map_or(haystack.len(), |&(byte, _)| byte);
-            ranges.push(from..to);
-            start += pat.len();
-        } else {
-            start += 1;
+impl Matcher {
+    /// Compile `pattern` as a regular expression, applying smart case: a pattern
+    /// with an uppercase letter matches case-sensitively, otherwise it folds
+    /// case. An empty pattern, or one that is not yet valid regex syntax (as a
+    /// half-typed pattern often is), yields `None` so it simply matches nothing
+    /// until it is well formed.
+    pub fn new(pattern: &str) -> Option<Self> {
+        if pattern.is_empty() {
+            return None;
         }
+        let folded = if pattern.chars().any(char::is_uppercase) {
+            pattern.to_string()
+        } else {
+            format!("(?i){pattern}")
+        };
+        Regex::new(&folded).ok().map(|regex| Self { regex })
     }
-    ranges
-}
 
-/// Compare one haystack character to one pattern character, case-sensitively or
-/// folding case per the smart-case rule.
-fn char_eq(a: char, b: char, sensitive: bool) -> bool {
-    if sensitive {
-        a == b
-    } else {
-        a.to_lowercase().eq(b.to_lowercase())
+    /// Whether the pattern occurs anywhere in `haystack`.
+    pub fn is_match(&self, haystack: &str) -> bool {
+        self.regex.is_match(haystack).unwrap_or(false)
+    }
+
+    /// The byte ranges of every non-overlapping occurrence of the pattern in
+    /// `haystack`, in order, so a caller can highlight each one. Zero-width
+    /// matches are dropped, since there is nothing to highlight for them.
+    pub fn ranges(&self, haystack: &str) -> Vec<Range<usize>> {
+        self.regex
+            .find_iter(haystack)
+            .filter_map(Result::ok)
+            .map(|m| m.range())
+            .filter(|range| !range.is_empty())
+            .collect()
     }
 }
 
@@ -163,34 +159,55 @@ impl Search {
 
 #[cfg(test)]
 mod tests {
-    use super::{Direction, match_ranges, matches};
+    use super::{Direction, Matcher};
+
+    /// Match `pattern` against `haystack`, treating an empty or invalid pattern
+    /// as one that matches nothing.
+    fn is_match(haystack: &str, pattern: &str) -> bool {
+        Matcher::new(pattern).is_some_and(|m| m.is_match(haystack))
+    }
+
+    /// The match ranges of `pattern` in `haystack`, empty for an empty or
+    /// invalid pattern.
+    fn ranges(haystack: &str, pattern: &str) -> Vec<super::Range<usize>> {
+        Matcher::new(pattern)
+            .map(|m| m.ranges(haystack))
+            .unwrap_or_default()
+    }
 
     #[test]
     fn smart_case_matches_insensitively_until_the_pattern_has_an_uppercase() {
         // A lowercase pattern ignores case; adding an uppercase letter makes the
         // whole pattern case-sensitive, and an empty pattern never matches.
-        k9::assert_equal!(matches("let Foo = 1;", "foo"), true);
-        k9::assert_equal!(matches("let Foo = 1;", "Foo"), true);
-        k9::assert_equal!(matches("let foo = 1;", "Foo"), false);
-        k9::assert_equal!(matches("anything", ""), false);
+        k9::assert_equal!(is_match("let Foo = 1;", "foo"), true);
+        k9::assert_equal!(is_match("let Foo = 1;", "Foo"), true);
+        k9::assert_equal!(is_match("let foo = 1;", "Foo"), false);
+        k9::assert_equal!(is_match("anything", ""), false);
     }
 
     #[test]
-    fn match_ranges_locates_each_occurrence_honoring_smart_case() {
+    fn ranges_locate_each_occurrence_honoring_smart_case() {
         // Every non-overlapping hit is reported in order; smart case folds a
         // lowercase pattern and pins an uppercase one, and a byte range spans
         // the matched characters even past a multibyte character.
-        k9::assert_equal!(match_ranges("let l = let;", "let"), vec![0..3, 8..11]);
-        k9::assert_equal!(match_ranges("Foo foo FOO", "foo"), vec![0..3, 4..7, 8..11]);
-        k9::assert_equal!(match_ranges("Foo foo FOO", "Foo"), vec![0..3]);
+        k9::assert_equal!(ranges("let l = let;", "let"), vec![0..3, 8..11]);
+        k9::assert_equal!(ranges("Foo foo FOO", "foo"), vec![0..3, 4..7, 8..11]);
+        k9::assert_equal!(ranges("Foo foo FOO", "Foo"), vec![0..3]);
         k9::assert_equal!(
-            match_ranges("a\u{00e9}b a\u{00e9}b", "\u{00e9}b"),
+            ranges("a\u{00e9}b a\u{00e9}b", "\u{00e9}b"),
             vec![1..4, 6..9]
         );
-        k9::assert_equal!(
-            match_ranges("anything", ""),
-            Vec::<super::Range<usize>>::new()
-        );
+        k9::assert_equal!(ranges("anything", ""), Vec::<super::Range<usize>>::new());
+    }
+
+    #[test]
+    fn a_regular_expression_matches_and_locates_its_hits() {
+        // The pattern is a regex, not a literal: character classes, anchors, and
+        // alternation all apply, and an invalid pattern matches nothing.
+        k9::assert_equal!(ranges("a1 b2 c3", "[a-z][0-9]"), vec![0..2, 3..5, 6..8]);
+        k9::assert_equal!(ranges("foo bar foo", "^foo"), vec![0..3]);
+        k9::assert_equal!(ranges("cat and dog", "cat|dog"), vec![0..3, 8..11]);
+        k9::assert_equal!(is_match("anything", "(unclosed"), false);
     }
 
     #[test]
