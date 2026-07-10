@@ -31,17 +31,20 @@ use crate::render::color;
 
 /// Run the review loop over `app`, resolving key events through `keymap`, until
 /// a quit action ends it. A [`Action::Refresh`] is handed to `refresh`, which
-/// recaptures the diff and reloads the app in place, reporting its own outcome
-/// through the app's status line. The terminal is put into raw mode on an
-/// alternate screen for the duration and restored before returning. Returns how
-/// the reviewer chose to leave together with any buffered draft edits to commit.
+/// recaptures the diff and reloads the app in place, and a [`Action::Save`] to
+/// `save`, which commits the pending drafts and keeps the review open; both
+/// report their own outcome through the app's status line. The terminal is put
+/// into raw mode on an alternate screen for the duration and restored before
+/// returning. Returns how the reviewer chose to leave together with any buffered
+/// draft edits still to commit.
 pub fn run(
     app: App,
     keymap: Keymap,
     refresh: impl FnMut(&mut App),
+    save: impl FnMut(&mut App),
 ) -> io::Result<(Exit, Vec<RecordBody>)> {
     let mut terminal = TerminalGuard::enter()?;
-    event_loop(&mut terminal.terminal, app, keymap, refresh)
+    event_loop(&mut terminal.terminal, app, keymap, refresh, save)
 }
 
 /// Draw the current view: the visible lines over all but the last screen row,
@@ -125,6 +128,7 @@ fn event_loop<B: Backend>(
     mut app: App,
     keymap: Keymap,
     mut refresh: impl FnMut(&mut App),
+    mut save: impl FnMut(&mut App),
 ) -> io::Result<(Exit, Vec<RecordBody>)> {
     let mut input = Input::new(keymap);
     loop {
@@ -143,10 +147,13 @@ fn event_loop<B: Backend>(
         } else if app.exiting() {
             app.exit_key(press);
         } else if let Some(action) = input.press(press) {
-            // Refresh is the one passed-back action the loop acts on itself,
-            // handing it to the host to recapture and reload the app in place.
-            if let Update::Passed(Action::Refresh) = app.update(action) {
-                refresh(&mut app);
+            // Refresh and save are the passed-back actions the loop acts on
+            // itself, handing each to the host: refresh recaptures and reloads
+            // the app in place, save commits the pending drafts.
+            match app.update(action) {
+                Update::Passed(Action::Refresh) => refresh(&mut app),
+                Update::Passed(Action::Save) => save(&mut app),
+                _ => {}
             }
         }
         // A quit action or a confirmed dialog choice settles how to leave.

@@ -283,7 +283,7 @@ no thousand-line nested match driving the UI.
 
 Input is decoded into an **action** (an enum of intents: page up/down, next/prev
 file, next/prev hunk, next/prev comment, toggle fold, toggle comment, add
-comment, edit comment, resolve comment, delete comment, refresh,
+comment, edit comment, resolve comment, delete comment, save, refresh,
 `open_in_editor`, `quit`, `quit_keep`, `quit_remove`, etc.). Nothing in the UI
 logic branches on raw keys; it branches on actions. This keeps bindings
 reassignable and keeps the update logic small.
@@ -357,10 +357,10 @@ obvious. Reviews are not heavily concurrent (typically one human and sometimes
 one agent), so buffering the whole review and flushing on commit is acceptable;
 a crash loses only uncommitted drafts, like an editor's unsaved buffer.
 
-Committing flushes the pending drafts as append events. In v0 this happens when
-leaving the review via the Commit choice (see Exit behavior). A standalone save
-that flushes while leaving the review open is a natural future addition and the
-flush point a `--watch` / auto-refresh mode would use.
+Committing flushes the pending drafts as append events. The `save` action does
+this while leaving the review open; leaving via the Commit choice does it on the
+way out (see Exit behavior). Save is also the natural flush point a future
+`--watch` / auto-refresh mode would use.
 
 A draft holds the same anchor data a committed comment does (snippet, surrounding
 context, authored-against version and side), so `refresh` rebases drafts forward
@@ -421,7 +421,7 @@ after the rest of v0.
 
 - TOML at `$XDG_CONFIG_HOME/wiff/config.toml` (e.g. `~/.config/wiff`).
 - Keymap is `action -> [chords]`, action names in snake_case (`page_down`,
-  `next_hunk`, `next_comment`, `add_comment`, `refresh`, `quit_keep`, ...). A chord
+  `next_hunk`, `next_comment`, `add_comment`, `save`, `quit_keep`, ...). A chord
   is a space-separated
   sequence of key presses; each press is a key with optional `ctrl-`/`alt-`/
   `shift-` modifier prefixes, lowercased (e.g. `"ctrl-f"`, `"g g"`).
@@ -453,7 +453,8 @@ A cargo workspace under `crates/`:
 - Markdown rendering of comment bodies in the TUI (plain wrapped text in v0).
 - Side-by-side view; ignore-whitespace and other diff options.
 - `--watch` live reload of concurrent edits.
-- Whole-tree editor materialization and feeding editor changes back into the
-  review (single-file `open_in_editor` may still land in v0).
+- Opening files in an editor (`open_in_editor`): the action and its default
+  binding exist, but materialization and editor launch, single-file then
+  whole-tree, and feeding editor changes back into the review are deferred.
 - Additional `wiff render` output formats.
 - Leader-key and multi-key chords (schema already accommodates them).

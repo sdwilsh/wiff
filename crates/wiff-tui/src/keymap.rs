@@ -162,6 +162,7 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
         (Action::EditComment, vec![chord("e")]),
         (Action::ResolveComment, vec![chord("r")]),
         (Action::DeleteComment, vec![chord("d")]),
+        (Action::Save, vec![chord("s")]),
         (Action::Refresh, vec![chord("R")]),
         (Action::OpenInEditor, vec![chord("o")]),
         (Action::Quit, vec![chord("q")]),

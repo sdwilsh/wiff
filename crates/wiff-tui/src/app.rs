@@ -607,6 +607,38 @@ impl App {
         Ok(())
     }
 
+    /// Replace the review's committed comments with `comments`, the freshly
+    /// folded live set persisted from the drafts, and re-render in place. The
+    /// diff is unchanged, so folds keep their state; only comment collapse
+    /// state is reconciled by identity, and the cursor returns to its spot.
+    /// Passes through silently when no review is attached.
+    pub fn reload_comments(&mut self, comments: Vec<wiff_core::review::CommentState>) {
+        if self.review.is_none() {
+            return;
+        }
+        let spot = self.cursor_spot();
+        let document = {
+            let review = self.review.as_mut().expect("review present");
+            review.set_committed(comments);
+            review.document()
+        };
+        self.comment_collapsed = document
+            .comments
+            .iter()
+            .map(|region| {
+                let collapsed = self
+                    .comment_collapsed
+                    .get(&region.id)
+                    .copied()
+                    .unwrap_or(region.collapsed_default);
+                (region.id, collapsed)
+            })
+            .collect();
+        self.document = document;
+        self.rebuild_view();
+        self.restore_spot(spot);
+    }
+
     /// Show `message` in the status line until the reviewer's next action, used
     /// to report the outcome of a refresh.
     pub fn set_message(&mut self, message: String) {

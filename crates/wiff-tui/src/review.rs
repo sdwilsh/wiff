@@ -151,4 +151,11 @@ impl Review {
     pub fn take_drafts(&mut self) -> Vec<RecordBody> {
         std::mem::take(&mut self.drafts).into_records()
     }
+
+    /// Replace the committed comments with `comments`, the freshly folded live
+    /// set after the pending drafts were persisted. The caller has already
+    /// taken the drafts, so the review now reflects them as committed.
+    pub fn set_committed(&mut self, comments: Vec<CommentState>) {
+        self.committed = comments;
+    }
 }

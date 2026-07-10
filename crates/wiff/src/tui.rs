@@ -48,15 +48,21 @@ pub fn open(session_path: &Path, config: &Config) -> anyhow::Result<()> {
     let review = Review::new(view, diff, author, version.number, comments);
     let app = App::reviewing(review, 0, &theme).with_exit_default(exit_default(config.on_exit));
 
-    // Refresh recaptures the diff and reloads the app in place; any failure is
-    // reported in the status line rather than tearing down the review.
+    // Refresh recaptures the diff and reloads the app in place; save commits the
+    // pending drafts and keeps the review open. Any failure is reported in the
+    // status line rather than tearing down the review.
     let refresh = |app: &mut App| {
         if let Err(err) = refresh_in_place(session_path, app) {
             app.set_message(format!("refresh failed: {err}"));
         }
     };
+    let save = |app: &mut App| {
+        if let Err(err) = save_in_place(session_path, app) {
+            app.set_message(format!("save failed: {err}"));
+        }
+    };
 
-    let (exit, drafts) = run(app, keymap, refresh)?;
+    let (exit, drafts) = run(app, keymap, refresh, save)?;
     resolve_exit(exit, session_path, drafts)
 }
 
@@ -92,6 +98,32 @@ fn refresh_in_place(session_path: &Path, app: &mut App) -> anyhow::Result<()> {
         Ok(wiff_diff::parse(&log.read_diff(authored_version)?)?)
     })?;
     app.set_message(refresh_report(&outcome));
+    Ok(())
+}
+
+/// Commit the reviewer's pending drafts to the session log and reload the
+/// review's committed comments over them, keeping the review open. Reports the
+/// tally in the status line; a no-op when nothing is pending.
+fn save_in_place(session_path: &Path, app: &mut App) -> anyhow::Result<()> {
+    let drafts = app.take_drafts();
+    if drafts.is_empty() {
+        app.set_message("nothing to save".to_string());
+        return Ok(());
+    }
+    let count = drafts.len();
+    commit_drafts(session_path, drafts)?;
+    let state = ReviewState::load(session_path)?;
+    let comments: Vec<_> = state
+        .comments
+        .iter()
+        .filter(|comment| !comment.deleted)
+        .cloned()
+        .collect();
+    app.reload_comments(comments);
+    app.set_message(format!(
+        "committed {count} change{}",
+        if count == 1 { "" } else { "s" }
+    ));
     Ok(())
 }
 
@@ -179,12 +211,13 @@ mod tests {
     };
     use wiff_core::session::{SessionLog, read_records};
     use wiff_core::{
-        DraftComment, ProjectIdentity, RefreshOutcome, ReviewState, ScmType, create_session,
+        CapturedDiff, DraftComment, ProjectIdentity, RefreshOutcome, ReviewState, ScmType,
+        create_session,
     };
     use wiff_diff::{LineNo, Side};
-    use wiff_tui::{App, DiffView, Review, Theme};
+    use wiff_tui::{Action, App, DiffView, Key, KeyPress, Review, Theme};
 
-    use super::{commit_drafts, recapture, refresh_in_place, refresh_report};
+    use super::{commit_drafts, recapture, refresh_in_place, refresh_report, save_in_place};
     use crate::command::{DiffSelection, capture_scm_diff};
 
     /// A bare session header from `source`, for exercising recapture routing.
@@ -436,6 +469,110 @@ modified  f.txt
         5 + delta
 ---
 captured v1; rebased 1 comment: 1 exact, 0 shifted, 0 outdated
+";
+        k9::assert_equal!(screen(&app, 80), expected.to_string());
+    }
+
+    #[test]
+    fn saving_commits_the_pending_drafts_and_reloads_them_as_committed() {
+        // A session over a one-file diff, with a comment drafted in the TUI but
+        // not yet committed. Saving appends it to the log and reloads it as a
+        // committed comment, so the review keeps editing without the draft.
+        let data = tempfile::tempdir().expect("data tempdir");
+        let identity = ProjectIdentity {
+            canonical: "demo".to_string(),
+            repo_root: Some(data.path().to_path_buf()),
+            scm: Some(ScmType::Git),
+        };
+        let captured = CapturedDiff {
+            text: "\
+diff --git a/f.txt b/f.txt
+new file mode 100644
+--- /dev/null
++++ b/f.txt
+@@ -0,0 +1,4 @@
++alpha
++beta
++gamma
++delta
+"
+            .to_string(),
+            source: SourceKind::GitWorktree,
+        };
+        let log =
+            create_session(data.path(), &identity, data.path(), &captured).expect("create session");
+        let session_path = log.path().to_path_buf();
+        drop(log);
+
+        let theme = Theme::dark();
+        let state = ReviewState::load(&session_path).expect("load state");
+        let version = state.latest_version().expect("a version").number;
+        let diff = wiff_diff::parse(
+            &SessionLog::open(&session_path)
+                .unwrap()
+                .read_diff(version)
+                .unwrap(),
+        )
+        .expect("parse v0");
+        let review = Review::new(
+            DiffView::new(theme.clone()).expect("view"),
+            diff,
+            Author {
+                name: "wez".to_string(),
+                kind: AuthorKind::Human,
+            },
+            version,
+            state.comments.clone(),
+        );
+        let mut app = App::reviewing(review, 40, &theme);
+
+        // Land on the first content line (alpha) and draft a comment there.
+        app.update(Action::Top);
+        for _ in 0..3 {
+            app.update(Action::LineDown);
+        }
+        app.update(Action::AddComment);
+        for c in "why alpha?".chars() {
+            app.compose_key(KeyPress::new(Key::Char(c)));
+        }
+        app.compose_key(KeyPress::with_modifiers(Key::Char('s'), true, false, false));
+
+        save_in_place(&session_path, &mut app).expect("save in place");
+
+        // The draft is now a persisted Comment record on the added alpha line.
+        let targets: Vec<CommentTarget> = read_records(&session_path)
+            .expect("read")
+            .into_iter()
+            .filter_map(|record| match record.body {
+                RecordBody::Comment(comment) => Some(comment.target),
+                _ => None,
+            })
+            .collect();
+        k9::assert_equal!(
+            targets,
+            vec![CommentTarget::Lines {
+                file: "f.txt".to_string(),
+                side: Side::After,
+                start_line: LineNo::new(1).unwrap(),
+                end_line: LineNo::new(1).unwrap(),
+            }]
+        );
+
+        // The reloaded review shows the comment as committed (no draft badge)
+        // above the alpha line, and the status line reports the commit.
+        let expected = "\
+Review [press c here to draft the review comment]
+added  f.txt
+@@ -0,0 +1,4 @@
+┌ wez (human)  press e to edit  r to resolve  d to delete ─────────────────────┐
+│why alpha?                                                                    │
+└──────────────────────────────────────────────────────────────────────────────┘
+        1 + alpha
+        2 + beta
+        3 + gamma
+        4 + delta
+---
+committed 1 change
 ";
         k9::assert_equal!(screen(&app, 80), expected.to_string());
     }
