@@ -64,6 +64,7 @@ pub fn draw<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
     terminal.draw(|frame| {
         let area = frame.area();
         let doc_height = area.height.saturating_sub(1);
+        app.set_width(area.width as usize);
         app.set_height(doc_height as usize);
         let doc_area = Rect {
             height: doc_height,

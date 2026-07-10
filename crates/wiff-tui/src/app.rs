@@ -122,6 +122,9 @@ pub struct App {
     cursor: usize,
     top: usize,
     height: usize,
+    /// The viewport width the document was last rendered for, so comment bodies
+    /// wrap to it. Zero until the first draw supplies a real width.
+    width: usize,
     /// Whether the initial cursor has been centered in the viewport, which
     /// happens once the first real height is known.
     positioned: bool,
@@ -178,6 +181,7 @@ impl App {
             cursor: 0,
             top: 0,
             height,
+            width: 0,
             positioned: false,
             cursor_bg: theme.cursor_bg,
             search_match_bg: theme.search_match_bg,
@@ -204,7 +208,9 @@ impl App {
     /// Build the view over `review`, rendering its current state and retaining
     /// it so buffered edits re-render in place. Otherwise like [`new`](App::new).
     pub fn reviewing(review: Review, height: usize, theme: &Theme) -> Self {
-        let mut app = Self::new(review.document(), height, theme);
+        // No width is known yet, so the document renders unwrapped; the first
+        // draw's `set_width` reflows it to fit the terminal.
+        let mut app = Self::new(review.document(0), height, theme);
         app.review = Some(review);
         app
     }
@@ -266,6 +272,30 @@ impl App {
             self.cursor = (height / 2).min(self.last_view());
         }
         self.scroll_into_view();
+    }
+
+    /// Set the viewport `width` and, when it changes, reflow the review's
+    /// document so comment bodies wrap to the new width, keeping the cursor's
+    /// spot and each comment's collapse state. A read-only view has no review to
+    /// re-render, so it only records the width.
+    pub fn set_width(&mut self, width: usize) {
+        if width == self.width {
+            return;
+        }
+        self.width = width;
+        if self.review.is_none() {
+            return;
+        }
+        let spot = self.cursor_spot();
+        let document = self
+            .review
+            .as_ref()
+            .expect("review present")
+            .document(width);
+        self.reconcile_comment_collapse(&document);
+        self.document = document;
+        self.rebuild_view();
+        self.restore_spot(spot);
     }
 
     /// Handle a navigation action, or pass any other action back to the host.
@@ -595,7 +625,7 @@ impl App {
         let Some(review) = self.review.as_ref() else {
             return;
         };
-        let document = review.document();
+        let document = review.document(self.width);
         self.reload_document(document);
     }
 
@@ -607,18 +637,7 @@ impl App {
         if document.folds.len() != self.collapsed.len() {
             self.collapsed = vec![true; document.folds.len()];
         }
-        self.comment_collapsed = document
-            .comments
-            .iter()
-            .map(|region| {
-                let collapsed = self
-                    .comment_collapsed
-                    .get(&region.id)
-                    .copied()
-                    .unwrap_or(region.collapsed_default);
-                (region.id, collapsed)
-            })
-            .collect();
+        self.reconcile_comment_collapse(&document);
         self.document = document;
         self.rebuild_view();
         self.cursor = self.cursor.min(self.last_view());
@@ -646,9 +665,20 @@ impl App {
         let document = {
             let review = self.review.as_mut().expect("review present");
             review.refresh(diff, comments, version, old_diff)?;
-            review.document()
+            review.document(self.width)
         };
         self.collapsed = vec![true; document.folds.len()];
+        self.reconcile_comment_collapse(&document);
+        self.document = document;
+        self.rebuild_view();
+        self.restore_spot(spot);
+        Ok(())
+    }
+
+    /// Carry each comment's collapse state onto a freshly rendered `document`,
+    /// matching by identity, so a re-render keeps what the reviewer had folded
+    /// and gives a comment new to the document its rendered default.
+    fn reconcile_comment_collapse(&mut self, document: &Document) {
         self.comment_collapsed = document
             .comments
             .iter()
@@ -661,10 +691,6 @@ impl App {
                 (region.id, collapsed)
             })
             .collect();
-        self.document = document;
-        self.rebuild_view();
-        self.restore_spot(spot);
-        Ok(())
     }
 
     /// Replace the review's committed comments with `comments`, the freshly
@@ -685,20 +711,9 @@ impl App {
         let (sync, document) = {
             let review = self.review.as_mut().expect("review present");
             let sync = review.set_committed(comments);
-            (sync, review.document())
+            (sync, review.document(self.width))
         };
-        self.comment_collapsed = document
-            .comments
-            .iter()
-            .map(|region| {
-                let collapsed = self
-                    .comment_collapsed
-                    .get(&region.id)
-                    .copied()
-                    .unwrap_or(region.collapsed_default);
-                (region.id, collapsed)
-            })
-            .collect();
+        self.reconcile_comment_collapse(&document);
         self.document = document;
         self.rebuild_view();
         self.restore_spot(spot);
@@ -1718,7 +1733,7 @@ mod tests {
         let (diff, comments) = commented_diff();
         DiffView::new(Theme::dark())
             .unwrap()
-            .render_review(&diff, &comments, &[])
+            .render_review(&diff, &comments, &[], 0)
     }
 
     /// The [`commented_diff`] as an editable review, for comment-authoring tests.
@@ -1919,6 +1934,51 @@ mod tests {
             dump(&[app.status(28)]),
             "<#c0c5ce|#343d46|->src/lib.rs     * 2 open  30%\n".to_string()
         );
+    }
+
+    #[test]
+    fn a_long_comment_body_wraps_to_the_box_width_once_a_width_is_set() {
+        // A single-line comment far wider than the view. Before a width is known
+        // it renders on one row; setting the viewport width reflows it so the
+        // body wraps to fit inside the box.
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[(LineKind::Added, "let y = 2;", 1)],
+            )],
+        };
+        let review = Review::new(
+            DiffView::new(Theme::dark()).unwrap(),
+            diff,
+            Author {
+                name: "wez".to_string(),
+                kind: AuthorKind::Human,
+            },
+            0,
+            vec![line_comment(
+                1,
+                ("opus", AuthorKind::Agent),
+                "src/lib.rs",
+                1,
+                "this comment runs well past the width of the box and must wrap",
+                false,
+            )],
+        );
+        let mut app = App::reviewing(review, 12, &Theme::dark());
+        app.set_width(TEST_WIDTH);
+        let visible = dump(&app.visible(TEST_WIDTH));
+        let expected = "\
+<#ebcb8b|#4f5b66|b>Review<#8a8a8a|#4f5b66|-> [press c here to draft the review comment]
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,1 +1,1 @@
+<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|->  press e to edit  r to resolve  d to delete<#65737e|-|-> <#65737e|-|->┐
+<#65737e|-|->│<#c0c5ce|-|->this comment runs well past the width<-|-|-> <#65737e|-|->│
+<#65737e|-|->│<#c0c5ce|-|->of the box and must wrap<-|-|->              <#65737e|-|->│
+<#65737e|-|->└──────────────────────────────────────┘
+<#65737e|#2d3b30|->        1 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
+";
+        k9::assert_equal!(visible, expected.to_string());
     }
 
     #[test]

@@ -320,6 +320,9 @@ reassignable and keeps the update logic small.
 - The view type (unified now; side-by-side later) and options like
   ignore-whitespace are designed to be user-selectable, though only unified
   ships in v0.
+- Diff content lines are clipped to the viewport width in v0. A toggle to soft-
+  wrap them instead is planned, reusing the same column-wrapper that wraps
+  comment bodies.
 
 ### Search
 
@@ -381,9 +384,15 @@ than expanding it: the anchored line is kept like a change, with `display_contex
 lines of surrounding context, and the rest of the run stays folded. This keeps a
 comment always visible with its code without unfolding a potentially huge region.
 
-Comment bodies are plain wrapped text in v0. The body-to-lines step is isolated
-so a markdown block renderer can replace it later; the collapse model (a header
-line plus body lines) already accommodates a body that renders as several lines.
+Comment bodies are plain wrapped text in v0. A body line wider than the comment
+box soft-wraps to fit inside it, so a long line an agent writes on one physical
+row spreads across several rows rather than being clipped; the wrap follows the
+viewport, reflowing when the terminal is resized. The wrapping is a shared
+column-wrapper that breaks at spaces and hard-splits an overlong word while
+preserving span styling, so it can wrap syntax-highlighted diff lines too once
+wrapping is offered there. The body-to-lines step is isolated so a markdown block
+renderer can replace it later; the collapse model (a header line plus body lines)
+already accommodates a body that renders as several lines.
 
 ### Authoring and drafts
 

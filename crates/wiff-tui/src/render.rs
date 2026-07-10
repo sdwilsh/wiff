@@ -28,6 +28,7 @@ use wiff_diff::{
 use crate::action::Action;
 use crate::keymap::Keymap;
 use crate::theme::Theme;
+use crate::wrap::wrap_line;
 
 /// The gutter width for one side's line number.
 const LINENO_WIDTH: usize = 4;
@@ -84,6 +85,19 @@ pub struct CommentRegion {
     pub body: Range<usize>,
     /// Whether the comment starts collapsed (resolved comments do).
     pub collapsed_default: bool,
+}
+
+/// The inputs to rendering one file: the file and its index, where its comments
+/// are placed, its cached highlighting, which comments show as uncommitted
+/// drafts, and the view width comment bodies wrap to.
+#[derive(Clone, Copy)]
+struct FileRender<'a> {
+    index: usize,
+    file: &'a FileDiff,
+    placement: &'a FilePlacement<'a>,
+    highlight: Option<&'a FileHighlights>,
+    pending: &'a [Ulid],
+    width: usize,
 }
 
 /// A run of unchanged rows that can be collapsed behind a single marker line.
@@ -274,7 +288,7 @@ impl DiffView {
     /// Render every file of `diff` into one scrollable [`Document`], with no
     /// review overlay.
     pub fn render(&self, diff: &Diff) -> Document {
-        self.build(diff, &[], &[], false, None)
+        self.build(diff, &[], &[], false, None, 0)
     }
 
     /// Highlight every file in `diff`, once, so the result can be reused across
@@ -294,14 +308,17 @@ impl DiffView {
     /// Render `diff` with `comments` woven in: a review summary row at the top,
     /// whole-file comments under their file header, and line comments in a block
     /// above the line they anchor. Deleted comments are the caller's to filter.
-    /// Comments whose id is in `pending` are badged as uncommitted drafts.
+    /// Comments whose id is in `pending` are badged as uncommitted drafts. Long
+    /// comment bodies wrap to fit a `width`-column view; a `width` of zero leaves
+    /// them on one row, to be clipped at draw as the diff content is.
     pub fn render_review(
         &self,
         diff: &Diff,
         comments: &[CommentState],
         pending: &[Ulid],
+        width: usize,
     ) -> Document {
-        self.build(diff, comments, pending, true, None)
+        self.build(diff, comments, pending, true, None, width)
     }
 
     /// Like [`render_review`](Self::render_review) but reusing `highlights` from
@@ -313,8 +330,9 @@ impl DiffView {
         comments: &[CommentState],
         pending: &[Ulid],
         highlights: &[FileHighlights],
+        width: usize,
     ) -> Document {
-        self.build(diff, comments, pending, true, Some(highlights))
+        self.build(diff, comments, pending, true, Some(highlights), width)
     }
 
     /// The shared render path: build the document, optionally leading with the
@@ -326,6 +344,7 @@ impl DiffView {
         pending: &[Ulid],
         review_row: bool,
         highlights: Option<&[FileHighlights]>,
+        width: usize,
     ) -> Document {
         let mut doc = Document {
             lines: Vec::new(),
@@ -350,18 +369,27 @@ impl DiffView {
                 self.review_summary(),
             );
             for comment in &placement.review {
-                self.push_comment(&mut doc, NO_FILE, comment, pending.contains(&comment.id));
+                self.push_comment(
+                    &mut doc,
+                    NO_FILE,
+                    comment,
+                    pending.contains(&comment.id),
+                    width,
+                );
             }
         }
         for (index, file) in diff.files.iter().enumerate() {
             let highlight = highlights.map(|cached| &cached[index]);
             self.render_file(
-                index,
-                file,
-                &placement.files[index],
-                pending,
-                highlight,
                 &mut doc,
+                FileRender {
+                    index,
+                    file,
+                    placement: &placement.files[index],
+                    highlight,
+                    pending,
+                    width,
+                },
             );
         }
         doc
@@ -369,15 +397,15 @@ impl DiffView {
 
     /// Append `file`'s header, its whole-file and floated comments, and its
     /// hunks with any line comments woven in.
-    fn render_file(
-        &self,
-        index: usize,
-        file: &FileDiff,
-        placement: &FilePlacement,
-        pending: &[Ulid],
-        highlight: Option<&FileHighlights>,
-        doc: &mut Document,
-    ) {
+    fn render_file(&self, doc: &mut Document, render: FileRender) {
+        let FileRender {
+            index,
+            file,
+            placement,
+            highlight,
+            pending,
+            width,
+        } = render;
         doc.push(
             index,
             RowKind::FileHeader,
@@ -386,7 +414,7 @@ impl DiffView {
             self.file_header(file),
         );
         for comment in &placement.header {
-            self.push_comment(doc, index, comment, pending.contains(&comment.id));
+            self.push_comment(doc, index, comment, pending.contains(&comment.id), width);
         }
         // Reuse the cached highlight when the caller passed one; otherwise run
         // the syntect pass for this file now.
@@ -426,7 +454,13 @@ impl DiffView {
                 };
                 if let Some(n) = lineno {
                     for comment in placement.at(side, n.get()) {
-                        self.push_comment(doc, index, comment, pending.contains(&comment.id));
+                        self.push_comment(
+                            doc,
+                            index,
+                            comment,
+                            pending.contains(&comment.id),
+                            width,
+                        );
                     }
                 }
                 line_row.push(doc.rows.len());
@@ -481,12 +515,21 @@ impl DiffView {
         ])
     }
 
-    /// Append `comment` as a box: a top-edge header row, one row per body line,
-    /// and a bottom-edge row, all sharing the box border color. The header and
-    /// bottom rows stay visible when the body collapses, so a folded comment
-    /// still reads as a closed box. Records the collapsible body range so a
-    /// resolved comment starts collapsed.
-    fn push_comment(&self, doc: &mut Document, file: usize, comment: &CommentState, pending: bool) {
+    /// Append `comment` as a box: a top-edge header row, its body rows, and a
+    /// bottom-edge row, all sharing the box border color. Each of the body's own
+    /// lines is wrapped to fit the box interior at `width`, so a long line an
+    /// agent writes on one row spreads across several rows the reviewer can read
+    /// without scrolling sideways. The header and bottom rows stay visible when
+    /// the body collapses, so a folded comment still reads as a closed box.
+    /// Records the collapsible body range so a resolved comment starts collapsed.
+    fn push_comment(
+        &self,
+        doc: &mut Document,
+        file: usize,
+        comment: &CommentState,
+        pending: bool,
+        width: usize,
+    ) {
         let border = self.comment_border(pending);
         let header = doc.rows.len();
         doc.push(
@@ -497,14 +540,20 @@ impl DiffView {
             self.comment_title(comment, pending),
         );
         let body_start = doc.rows.len();
+        // Compensate for the border drawn around the comment box: its two
+        // columns leave the body this much room to wrap into.
+        let interior = width.saturating_sub(2);
         for text in comment.body.trim_end().split('\n') {
-            doc.push(
-                file,
-                RowKind::CommentBody { id: comment.id },
-                Some(border),
-                text.to_string(),
-                self.comment_body(text),
-            );
+            for line in wrap_line(&self.comment_body(text), interior) {
+                let plain: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+                doc.push(
+                    file,
+                    RowKind::CommentBody { id: comment.id },
+                    Some(border),
+                    plain,
+                    line,
+                );
+            }
         }
         let body_end = doc.rows.len();
         doc.push(
@@ -1287,7 +1336,7 @@ mod tests {
         )];
         let doc = DiffView::new(Theme::dark())
             .unwrap()
-            .render_review(&diff, &comments, &[]);
+            .render_review(&diff, &comments, &[], 0);
         let lines = "\
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
@@ -1308,7 +1357,7 @@ mod tests {
         // produce the identical lines; caching is a speed-up, not a change.
         let view = DiffView::new(Theme::dark()).unwrap();
         let highlights = view.highlight(&diff);
-        let cached = view.render_review_cached(&diff, &comments, &[], &highlights);
+        let cached = view.render_review_cached(&diff, &comments, &[], &highlights, 0);
         k9::assert_equal!(dump(&cached.lines), lines.to_string());
     }
 
@@ -1327,9 +1376,10 @@ mod tests {
             on_lines("src/lib.rs", 1, 1),
             "why 2?",
         )];
-        let doc = DiffView::new(Theme::dark())
-            .unwrap()
-            .render_review(&diff, &comments, &[Ulid(1)]);
+        let doc =
+            DiffView::new(Theme::dark())
+                .unwrap()
+                .render_review(&diff, &comments, &[Ulid(1)], 0);
         let lines = "\
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
@@ -1360,7 +1410,7 @@ mod tests {
         resolved.resolved = true;
         let doc = DiffView::new(Theme::dark())
             .unwrap()
-            .render_review(&diff, &[resolved], &[]);
+            .render_review(&diff, &[resolved], &[], 0);
         let lines = "\
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
@@ -1392,7 +1442,7 @@ mod tests {
         )];
         let doc = DiffView::new(Theme::dark())
             .unwrap()
-            .render_review(&diff, &comments, &[]);
+            .render_review(&diff, &comments, &[], 0);
         let lines = "\
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#8fa1b3|-|->wez (human)<#8a8a8a|-|->  press e to edit  r to resolve  d to delete
@@ -1427,7 +1477,7 @@ mod tests {
         )];
         let doc = DiffView::new(Theme::dark())
             .unwrap()
-            .render_review(&diff, &comments, &[]);
+            .render_review(&diff, &comments, &[], 0);
         let markers: Vec<Line<'static>> = doc.folds.iter().map(|f| f.marker.clone()).collect();
         let expected = "\
 <#8a8a8a|#343d46|->            [2 unchanged lines]  ctx02
@@ -1455,7 +1505,7 @@ mod tests {
         outdated.confidence = Some(Confidence::Outdated);
         let doc = DiffView::new(Theme::dark())
             .unwrap()
-            .render_review(&diff, &[outdated], &[]);
+            .render_review(&diff, &[outdated], &[], 0);
         let lines = "\
 <#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs

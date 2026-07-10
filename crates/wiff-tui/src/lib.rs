@@ -18,6 +18,7 @@ pub mod review;
 pub mod run;
 pub mod search;
 pub mod theme;
+pub mod wrap;
 
 pub use action::Action;
 pub use app::{App, Update};

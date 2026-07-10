@@ -98,8 +98,10 @@ impl Review {
 
     /// Render the effective review -- the committed comments with the pending
     /// drafts applied -- into a fresh document, badging the comments that carry
-    /// an uncommitted change.
-    pub fn document(&self) -> Document {
+    /// an uncommitted change. Comment bodies wrap to a `width`-column view; a
+    /// `width` of zero leaves them unwrapped, for use before a real width is
+    /// known.
+    pub fn document(&self, width: usize) -> Document {
         let effective = self.drafts.apply(&self.committed);
         let comments: Vec<CommentState> = effective
             .iter()
@@ -111,7 +113,7 @@ impl Review {
             .map(|entry| entry.comment.id)
             .collect();
         self.view
-            .render_review_cached(&self.diff, &comments, &pending, &self.highlights)
+            .render_review_cached(&self.diff, &comments, &pending, &self.highlights, width)
     }
 
     /// Flip the resolved state of comment `id`, buffering the change.
