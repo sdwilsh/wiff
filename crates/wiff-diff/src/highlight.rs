@@ -23,6 +23,55 @@ pub const DEFAULT_DARK_THEME: &str = "base16-ocean.dark";
 /// The default theme for a light terminal.
 pub const DEFAULT_LIGHT_THEME: &str = "InspiredGitHub";
 
+/// The chrome-relevant colors of a syntax theme, taken from its editor settings
+/// and reduced to [`Rgb`] so a consumer can derive a matching interface palette
+/// without depending on syntect. A setting a theme leaves unspecified is `None`,
+/// leaving the fallback to the consumer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ThemeChrome {
+    /// The editor background.
+    pub background: Option<Rgb>,
+    /// The default text color.
+    pub foreground: Option<Rgb>,
+    /// The gutter text color, where line numbers are drawn.
+    pub gutter_foreground: Option<Rgb>,
+    /// The background of selected text.
+    pub selection: Option<Rgb>,
+    /// The background of a search match.
+    pub find_highlight: Option<Rgb>,
+}
+
+/// The names of the built-in syntax themes, sorted, for listing the choices a
+/// reviewer can switch between.
+pub fn theme_names() -> Vec<String> {
+    let mut names: Vec<String> = ThemeSet::load_defaults().themes.into_keys().collect();
+    names.sort();
+    names
+}
+
+/// The chrome colors of the built-in theme `name`, or `None` when no such theme
+/// is bundled.
+pub fn theme_chrome(name: &str) -> Option<ThemeChrome> {
+    let themes = ThemeSet::load_defaults();
+    let settings = &themes.themes.get(name)?.settings;
+    Some(ThemeChrome {
+        background: settings.background.map(rgb_of),
+        foreground: settings.foreground.map(rgb_of),
+        gutter_foreground: settings.gutter_foreground.map(rgb_of),
+        selection: settings.selection.map(rgb_of),
+        find_highlight: settings.find_highlight.map(rgb_of),
+    })
+}
+
+/// Drop a syntect color's alpha to keep the opaque [`Rgb`] the renderer uses.
+fn rgb_of(c: syntect::highlighting::Color) -> Rgb {
+    Rgb {
+        r: c.r,
+        g: c.g,
+        b: c.b,
+    }
+}
+
 /// The markdown fence language token for a path's extension, or `None` when the
 /// extension is unknown.
 ///

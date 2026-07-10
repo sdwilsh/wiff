@@ -27,7 +27,7 @@ use wiff_diff::{
 
 use crate::action::Action;
 use crate::keymap::Keymap;
-use crate::theme::Theme;
+use crate::theme::{Theme, legible_over};
 use crate::wrap::wrap_line;
 
 /// The gutter width for one side's line number.
@@ -273,6 +273,17 @@ impl DiffView {
             sections: SectionMatchers::builtins(),
             hints: KeyHints::default(),
         })
+    }
+
+    /// Recolor the renderer to `theme`, rebuilding the syntax highlighter for
+    /// its syntax theme while keeping the display context, section matchers, and
+    /// key hints already configured. On an unknown syntax theme the renderer is
+    /// left unchanged.
+    pub fn set_theme(&mut self, theme: Theme) -> Result<(), HighlightError> {
+        let highlighter = Highlighter::with_theme(&theme.syntax_theme)?;
+        self.highlighter = highlighter;
+        self.theme = theme;
+        Ok(())
     }
 
     /// Name the reviewer's own bindings in the review hints, so the review
@@ -731,7 +742,11 @@ impl DiffView {
                 Some(self.theme.removed_emphasis_bg),
             ),
         };
-        let gutter_style = with_bg(Style::default().fg(color(self.theme.gutter_fg)), row_bg);
+        let gutter_fg = match row_bg {
+            Some(bg) => legible_over(self.theme.gutter_fg, bg, self.theme.background),
+            None => self.theme.gutter_fg,
+        };
+        let gutter_style = with_bg(Style::default().fg(color(gutter_fg)), row_bg);
         let gutter = Span::styled(
             format!(
                 "{} {} {} ",
@@ -752,9 +767,16 @@ impl DiffView {
             } else {
                 row_bg
             };
+            // The syntect color is picked to read on the theme background; over
+            // a diff tint it can dim below legibility, so lift it back to the
+            // contrast it had on the plain background.
+            let fg = match bg {
+                Some(bg) => legible_over(piece.fg, bg, self.theme.background),
+                None => piece.fg,
+            };
             content.push(Span::styled(
                 piece.text,
-                with_bg(Style::default().fg(color(piece.fg)), bg),
+                with_bg(Style::default().fg(color(fg)), bg),
             ));
         }
         // Flag trailing whitespace a change introduces, the way `git diff` warns
@@ -1280,8 +1302,8 @@ mod tests {
         let expected = "\
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
+<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;
 ";
         k9::assert_equal!(dump(&view.render(&diff).lines), expected.to_string());
     }
@@ -1306,8 +1328,8 @@ mod tests {
         let expected = "\
 <#c0c5ce|-|b>modified  greeting.txt
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|#3b2d30|->   1      - <#c0c5ce|#3b2d30|->hello there <#c0c5ce|#5a3a40|->fred
-<#65737e|#2d3b30|->        1 + <#c0c5ce|#2d3b30|->hello there <#c0c5ce|#3a5a40|->pete
+<#91959d|#463943|->   1      - <#c0c5ce|#463943|->hello there <#c0c5ce|#66444e|->fred
+<#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->hello there <#e3e5e9|#5b695b|->pete
 ";
         k9::assert_equal!(dump(&view.render(&diff).lines), expected.to_string());
     }
@@ -1331,8 +1353,8 @@ mod tests {
         let expected = "\
 <#c0c5ce|-|b>modified  notes.txt
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|#3b2d30|->   1      - <#c0c5ce|#3b2d30|->old 
-<#65737e|#2d3b30|->        1 + <#c0c5ce|#2d3b30|->new<#c0c5ce|#9a2a2a|->  
+<#91959d|#463943|->   1      - <#c0c5ce|#463943|->old 
+<#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->new<#c0c5ce|#7c4b55|->  
 ";
         k9::assert_equal!(dump(&view.render(&diff).lines), expected.to_string());
     }
@@ -1356,7 +1378,7 @@ mod tests {
         let doc = DiffView::new(Theme::dark()).unwrap().render(&diff);
         let markers: Vec<Line<'static>> = doc.folds.iter().map(|f| f.marker.clone()).collect();
         let expected = "\
-<#8a8a8a|#343d46|->            [3 unchanged lines]  fn draw() {
+<#767b84|#3a3f4a|->            [3 unchanged lines]  fn draw() {
 ";
         k9::assert_equal!(dump(&markers), expected.to_string());
     }
@@ -1404,14 +1426,14 @@ mod tests {
             ViewLayout::default(),
         );
         let lines = "\
-<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
+<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#8fa1b3|-|->wez (human)<#8a8a8a|-|->  press e to edit  r to resolve  d to delete
+<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete
 <#c0c5ce|-|->why 2?
 
-<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
+<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;
 ";
         k9::assert_equal!(dump(&doc.lines), lines.to_string());
         // The header row precedes the single body row, which is the collapsible
@@ -1450,13 +1472,13 @@ mod tests {
             ViewLayout::default(),
         );
         let lines = "\
-<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
+<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,1 +1,1 @@
-<#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#8a8a8a|-|->  press e to edit  r to resolve  d to delete
+<#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#767b84|-|->  press e to edit  r to resolve  d to delete
 <#c0c5ce|-|->why 2?
 
-<#65737e|#2d3b30|->        1 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
+<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;
 ";
         k9::assert_equal!(dump(&doc.lines), lines.to_string());
     }
@@ -1484,13 +1506,13 @@ mod tests {
             ViewLayout::default(),
         );
         let lines = "\
-<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
+<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,1 +1,1 @@
-<#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit  r to unresolve  d to delete
+<#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete
 <#c0c5ce|-|->done
 
-<#65737e|#2d3b30|->        1 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
+<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;
 ";
         k9::assert_equal!(dump(&doc.lines), lines.to_string());
         let expected_regions = "7: header 3 body 4..5 collapsed=true\n";
@@ -1519,13 +1541,13 @@ mod tests {
             ViewLayout::default(),
         );
         let lines = "\
-<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
-<#8fa1b3|-|->wez (human)<#8a8a8a|-|->  press e to edit  r to resolve  d to delete
+<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
+<#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete
 <#c0c5ce|-|->looks good overall
 
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,1 +1,1 @@
-<#65737e|#2d3b30|->        1 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
+<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;
 ";
         k9::assert_equal!(dump(&doc.lines), lines.to_string());
     }
@@ -1558,8 +1580,8 @@ mod tests {
         );
         let markers: Vec<Line<'static>> = doc.folds.iter().map(|f| f.marker.clone()).collect();
         let expected = "\
-<#8a8a8a|#343d46|->            [2 unchanged lines]  ctx02
-<#8a8a8a|#343d46|->            [7 unchanged lines]  ctx16
+<#767b84|#3a3f4a|->            [2 unchanged lines]  ctx02
+<#767b84|#3a3f4a|->            [7 unchanged lines]  ctx16
 ";
         k9::assert_equal!(dump(&markers), expected.to_string());
     }
@@ -1588,13 +1610,13 @@ mod tests {
             ViewLayout::default(),
         );
         let lines = "\
-<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
+<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
-<#8fa1b3|-|->dev (human)<#d08770|-|-> [outdated]<#8a8a8a|-|->  press e to edit  r to resolve  d to delete
+<#8fa1b3|-|->dev (human)<#d08770|-|-> [outdated]<#767b84|-|->  press e to edit  r to resolve  d to delete
 <#c0c5ce|-|->stale
 
 <#96b5b4|-|->@@ -1,1 +1,1 @@
-<#65737e|#2d3b30|->        1 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;
+<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;
 ";
         k9::assert_equal!(dump(&doc.lines), lines.to_string());
     }

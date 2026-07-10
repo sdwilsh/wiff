@@ -116,6 +116,18 @@ impl Review {
             .render_review_cached(&self.diff, &comments, &pending, &self.highlights, layout)
     }
 
+    /// Recolor the review to `theme`, rebuilding the renderer and re-running the
+    /// syntax highlighting so the next [`document`](Review::document) reflects
+    /// the new palette. Leaves the review unchanged on an unknown syntax theme.
+    pub fn set_theme(
+        &mut self,
+        theme: crate::theme::Theme,
+    ) -> Result<(), wiff_diff::HighlightError> {
+        self.view.set_theme(theme)?;
+        self.highlights = self.view.highlight(&self.diff);
+        Ok(())
+    }
+
     /// Flip the resolved state of comment `id`, buffering the change.
     pub fn toggle_resolved(&mut self, id: Ulid) {
         let resolved = self

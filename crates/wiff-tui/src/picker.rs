@@ -30,6 +30,9 @@ pub trait PickerRow<Ctx> {
 pub struct PickerColors {
     /// The modal's border and title color.
     pub border: Rgb,
+    /// The background filling the modal, so its text reads over the theme's own
+    /// background rather than whatever the terminal shows through.
+    pub background: Rgb,
     /// The background washed over the highlighted row.
     pub selected_bg: Rgb,
     /// The color of the row text.
@@ -111,6 +114,13 @@ impl<Ctx> Picker<Ctx> {
         self.scroll_into_view();
     }
 
+    /// Open the highlight on row `index`, clamped to the list, so a picker can
+    /// start on the reviewer's current choice rather than the first row.
+    pub fn select(&mut self, index: usize) {
+        self.selected = index.min(self.last_row());
+        self.scroll_into_view();
+    }
+
     /// Set how many rows the window shows, keeping the highlight in view.
     pub fn set_height(&mut self, height: usize) {
         self.height = height;
@@ -145,6 +155,12 @@ impl<Ctx> Picker<Ctx> {
         &self.title
     }
 
+    /// The background filling the modal, for the host to paint the border row
+    /// and the cells the content does not cover.
+    pub fn background(&self) -> Rgb {
+        self.colors.background
+    }
+
     /// The width of the modal's content inside its border: two columns for the
     /// highlight marker, then the widest label or the hint.
     pub fn width(&self) -> usize {
@@ -162,6 +178,7 @@ impl<Ctx> Picker<Ctx> {
     /// then a spacer and the key hint. Labels and the hint are clipped to fit.
     pub fn lines(&self, width: usize) -> Vec<Line<'static>> {
         let label_width = width.saturating_sub(2);
+        let background = color(self.colors.background);
         let end = (self.top + self.height).min(self.rows.len());
         let mut lines: Vec<Line<'static>> = (self.top..end)
             .map(|index| {
@@ -169,17 +186,24 @@ impl<Ctx> Picker<Ctx> {
                 let marker = if selected { "> " } else { "  " };
                 let label = clip(&self.rows[index].label(), label_width);
                 let text = format!("{marker}{label:<label_width$}");
-                let mut style = Style::default().fg(color(self.colors.text));
-                if selected {
-                    style = style.bg(color(self.colors.selected_bg));
-                }
-                Line::from(Span::styled(text, style))
+                let row_bg = if selected {
+                    color(self.colors.selected_bg)
+                } else {
+                    background
+                };
+                Line::from(Span::styled(
+                    text,
+                    Style::default().fg(color(self.colors.text)).bg(row_bg),
+                ))
             })
             .collect();
-        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            " ".repeat(width),
+            Style::default().bg(background),
+        )));
         lines.push(Line::from(Span::styled(
             format!("  {:<label_width$}", clip(&self.hint, label_width)),
-            Style::default().fg(color(self.colors.hint)),
+            Style::default().fg(color(self.colors.hint)).bg(background),
         )));
         lines
     }
@@ -246,6 +270,11 @@ mod tests {
                 g: 0x11,
                 b: 0x11,
             },
+            background: Rgb {
+                r: 0x55,
+                g: 0x55,
+                b: 0x55,
+            },
             selected_bg: Rgb {
                 r: 0x22,
                 g: 0x22,
@@ -290,10 +319,10 @@ mod tests {
         let picker = picker(3, 5);
         let expected = "\
 <#333333|#222222|->> item 0                                  
-<#333333|-|->  item 1                                  
-<#333333|-|->  item 2                                  
-
-<#444444|-|->  up/down move   enter select   esc cancel
+<#333333|#555555|->  item 1                                  
+<#333333|#555555|->  item 2                                  
+<-|#555555|->                                          
+<#444444|#555555|->  up/down move   enter select   esc cancel
 ";
         k9::assert_equal!(dump(&picker.lines(picker.width())), expected.to_string());
     }
@@ -309,11 +338,11 @@ mod tests {
         }
         k9::assert_equal!(picker.selected(), 3);
         let expected = "\
-<#333333|-|->  item 1                                  
-<#333333|-|->  item 2                                  
+<#333333|#555555|->  item 1                                  
+<#333333|#555555|->  item 2                                  
 <#333333|#222222|->> item 3                                  
-
-<#444444|-|->  up/down move   enter select   esc cancel
+<-|#555555|->                                          
+<#444444|#555555|->  up/down move   enter select   esc cancel
 ";
         k9::assert_equal!(dump(&picker.lines(picker.width())), expected.to_string());
     }
@@ -332,10 +361,10 @@ mod tests {
         picker.to_bottom();
         k9::assert_equal!(picker.selected(), 3);
         let expected = "\
-<#333333|-|->  item 2                                  
+<#333333|#555555|->  item 2                                  
 <#333333|#222222|->> item 3                                  
-
-<#444444|-|->  up/down move   enter select   esc cancel
+<-|#555555|->                                          
+<#444444|#555555|->  up/down move   enter select   esc cancel
 ";
         k9::assert_equal!(dump(&picker.lines(picker.width())), expected.to_string());
     }
@@ -352,8 +381,8 @@ mod tests {
         picker.set_height(1);
         let expected = "\
 <#333333|#222222|->> crates/wiff
-
-<#444444|-|->  up/down mov
+<-|#555555|->             
+<#444444|#555555|->  up/down mov
 ";
         k9::assert_equal!(dump(&picker.lines(13)), expected.to_string());
     }

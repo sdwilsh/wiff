@@ -45,6 +45,8 @@ pub enum Action {
     PickFile,
     /// Open the modal list of comments to jump to one.
     PickComment,
+    /// Open the modal list of color themes to switch to one.
+    PickTheme,
     /// Add a comment at the cursor.
     AddComment,
     /// Edit the focused comment.
@@ -103,6 +105,7 @@ impl Action {
             Action::ToggleWrap => "toggle_wrap",
             Action::PickFile => "pick_file",
             Action::PickComment => "pick_comment",
+            Action::PickTheme => "pick_theme",
             Action::AddComment => "add_comment",
             Action::EditComment => "edit_comment",
             Action::ResolveComment => "resolve_comment",

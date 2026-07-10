@@ -13,7 +13,8 @@ pub mod reconstitute;
 pub mod section;
 
 pub use highlight::{
-    HighlightError, HighlightedLine, Highlighter, Rgb, Style, StyledSpan, fence_language,
+    HighlightError, HighlightedLine, Highlighter, Rgb, Style, StyledSpan, ThemeChrome,
+    fence_language, theme_chrome, theme_names,
 };
 pub use intraline::refine;
 pub use line::LineNo;

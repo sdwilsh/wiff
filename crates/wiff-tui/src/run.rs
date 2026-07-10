@@ -77,6 +77,13 @@ pub fn draw<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
             height: 1,
             ..area
         };
+        // Fill the document area with the theme background so a light or dark
+        // theme reads coherently over the terminal's own background, then draw
+        // the view over it; rows and gaps without their own fill keep this.
+        frame.render_widget(
+            Paragraph::new("").style(Style::default().bg(crate::render::color(app.background()))),
+            doc_area,
+        );
         if let Some(compose) = app.compose_view(area.width as usize) {
             render_compose(frame, doc_area, compose);
         } else {
@@ -139,9 +146,11 @@ fn render_picker(frame: &mut Frame, area: Rect, app: &mut App) {
         width,
         height,
     };
+    let background = Style::default().bg(color(picker.background()));
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(color(picker.border())))
+        .border_style(background.fg(color(picker.border())))
+        .style(background)
         .title(picker.title().to_string());
     frame.render_widget(Clear, rect);
     frame.render_widget(Paragraph::new(picker.lines(inner)).block(block), rect);

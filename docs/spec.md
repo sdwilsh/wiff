@@ -295,8 +295,8 @@ no thousand-line nested match driving the UI.
 
 Input is decoded into an **action** (an enum of intents: page up/down, next/prev
 file, next/prev hunk, next/prev comment, toggle fold, toggle comment, toggle
-wrap, pick file, pick comment, add comment, edit comment, resolve comment,
-delete comment, submit comment, cancel
+wrap, pick file, pick comment, pick theme, add comment, edit comment, resolve
+comment, delete comment, submit comment, cancel
 comment, save, search forward/backward, search next/prev, refresh,
 `open_in_editor`, `quit`, `quit_keep`, `quit_remove`, etc.). Nothing in the UI
 logic branches on raw keys; it branches on actions. This keeps bindings
@@ -316,7 +316,8 @@ reassignable and keeps the update logic small.
   `n`/`N` repeat in the same or the opposite direction. The review summary sits
   at the top of the document, so the existing top jump (`g`, and `<` as a
   `less`-style alias) reaches it; there is no separate jump-to-review action.
-  `t` opens the file picker and `C` the comment picker (see below).
+  `t` opens the file picker, `C` the comment picker, and `T` the theme picker
+  (see below).
 
 ### Modal pickers
 
@@ -328,13 +329,30 @@ highlight in view. The widget is generic over what a row does when chosen, so
 the same modal serves several pickers. `pick_file` (`t`) lists the diff's files
 and jumps the cursor to the chosen file's header; `pick_comment` (`C`) lists the
 diff's comments, each labeled with its location and the start of its body, and
-jumps to the chosen comment. Listing the available themes is planned to reuse it.
+jumps to the chosen comment; `pick_theme` (`T`) lists the built-in color themes,
+opening on the one in effect, and recolors the whole view to the chosen theme.
 
 ### Rendering
 
 - Unified diff with syntect syntax highlighting of the file content, over as
   much context as the diff carries (expanded for git, so highlighting has
   plenty to work with).
+- The whole palette is derived from the chosen syntect theme, so a theme colors
+  both the file content and the interface around it. The background, text, and
+  selection are taken from the theme; the gutter and other structural text are
+  dimmed out of the text color and lifted to a legible contrast against the
+  background; the added and removed tints blend a fixed green and red into the
+  background; and the accents (added green, removed red, review gold, warning
+  orange) keep a fixed hue with only their lightness adapted, so their meaning
+  stays constant across themes. The view is painted with the theme background so
+  a light or dark theme reads coherently over whatever background the terminal
+  itself uses.
+- A syntect foreground is chosen to read on the theme background, so wherever a
+  glyph is painted over a different background -- an added or removed tint, or
+  the cursor wash -- its foreground is re-checked and lifted back to the
+  contrast it had on the plain background when the new background would dim it.
+  A glyph the theme keeps dim on purpose, such as a comment, stays dim: the
+  target never exceeds the contrast it had on the plain background.
 - The view type (unified now; side-by-side later) and options like
   ignore-whitespace are designed to be user-selectable, though only unified
   ships in v0.

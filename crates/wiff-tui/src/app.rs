@@ -34,7 +34,7 @@ use crate::picker::{Picker, PickerColors, PickerRow};
 use crate::render::{Document, RowKind, ViewLayout, color};
 use crate::review::{CommentSync, Review};
 use crate::search::{Direction, Matcher, Search, SearchInput};
-use crate::theme::Theme;
+use crate::theme::{Theme, legible_over};
 
 /// The result of feeding an [`Action`] to the [`App`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,6 +138,24 @@ impl PickerRow<App> for CommentRow {
     }
 }
 
+/// A color theme in the modal list, named by its syntax theme, so choosing it
+/// recolors the whole view to match.
+struct ThemeRow {
+    name: String,
+}
+
+impl PickerRow<App> for ThemeRow {
+    fn label(&self) -> String {
+        self.name.clone()
+    }
+
+    fn activate(self: Box<Self>, app: &mut App) {
+        if let Some(theme) = Theme::named(&self.name) {
+            app.apply_theme(&theme);
+        }
+    }
+}
+
 /// The review view over a rendered diff.
 pub struct App {
     document: Document,
@@ -175,6 +193,12 @@ pub struct App {
     /// Whether the initial cursor has been centered in the viewport, which
     /// happens once the first real height is known.
     positioned: bool,
+    /// The background the whole view fills with, so the theme reads coherently
+    /// over the terminal's own background.
+    background: Rgb,
+    /// The syntax theme currently in effect, so the theme picker can mark and
+    /// open on the active choice.
+    theme_name: String,
     cursor_bg: Rgb,
     search_match_bg: Rgb,
     status_fg: Rgb,
@@ -234,6 +258,8 @@ impl App {
             width: 0,
             wrap: false,
             positioned: false,
+            background: theme.background,
+            theme_name: theme.syntax_theme.clone(),
             cursor_bg: theme.cursor_bg,
             search_match_bg: theme.search_match_bg,
             status_fg: theme.status_fg,
@@ -248,6 +274,7 @@ impl App {
             },
             picker_colors: PickerColors {
                 border: theme.review_fg,
+                background: theme.background,
                 selected_bg: theme.cursor_bg,
                 text: theme.comment_fg,
                 hint: theme.fold_fg,
@@ -415,6 +442,7 @@ impl App {
             Action::ToggleWrap => return self.toggle_wrap(),
             Action::PickFile => self.open_file_picker(),
             Action::PickComment => self.open_comment_picker(),
+            Action::PickTheme => self.open_theme_picker(),
             Action::ResolveComment => return self.resolve_comment(),
             Action::DeleteComment => return self.delete_comment(),
             Action::AddComment => return self.start_add_comment(),
@@ -820,6 +848,30 @@ impl App {
         }
     }
 
+    /// Open the modal list of color themes, each recoloring the whole view when
+    /// chosen. The list opens on the theme in effect. Does nothing on a
+    /// read-only view with no review to recolor.
+    fn open_theme_picker(&mut self) {
+        if self.review.is_none() {
+            return;
+        }
+        let names = wiff_diff::theme_names();
+        let selected = names.iter().position(|name| *name == self.theme_name);
+        let rows: Vec<Box<dyn PickerRow<App>>> = names
+            .into_iter()
+            .map(|name| Box::new(ThemeRow { name }) as Box<dyn PickerRow<App>>)
+            .collect();
+        if rows.is_empty() {
+            return;
+        }
+        let hint = self.picker_hint();
+        let mut picker = Picker::new("Theme", rows, &hint, self.picker_colors);
+        if let Some(index) = selected {
+            picker.select(index);
+        }
+        self.picker = Some(picker);
+    }
+
     /// The picker's key hint, naming the reviewer's own bindings for moving the
     /// highlight alongside the fixed enter and escape keys that select and
     /// cancel, resolved from the active keymap like the inline editor's hint.
@@ -883,6 +935,49 @@ impl App {
     /// Close the modal list without acting on any row.
     pub fn picker_cancel(&mut self) {
         self.picker = None;
+    }
+
+    /// The background the whole view fills with, for the host to paint behind the
+    /// document so the theme reads over the terminal's own background.
+    pub fn background(&self) -> Rgb {
+        self.background
+    }
+
+    /// Recolor the whole view to `theme`: re-cache the palette the app paints
+    /// its own chrome with, re-theme the review so its document re-renders with
+    /// the new syntax and diff colors, and reflow, keeping the fold and comment
+    /// collapse state and the cursor in view. Leaves the view unchanged on an
+    /// unknown syntax theme.
+    pub fn apply_theme(&mut self, theme: &Theme) {
+        if let Some(review) = self.review.as_mut()
+            && review.set_theme(theme.clone()).is_err()
+        {
+            return;
+        }
+        self.theme_name = theme.syntax_theme.clone();
+        self.background = theme.background;
+        self.cursor_bg = theme.cursor_bg;
+        self.search_match_bg = theme.search_match_bg;
+        self.status_fg = theme.status_fg;
+        self.status_bg = theme.status_bg;
+        self.compose_border = theme.comment_draft_fg;
+        self.exit_colors = ExitColors {
+            border: theme.review_fg,
+            selected_bg: theme.cursor_bg,
+            text: theme.comment_fg,
+            hint: theme.fold_fg,
+        };
+        self.picker_colors = PickerColors {
+            border: theme.review_fg,
+            background: theme.background,
+            selected_bg: theme.cursor_bg,
+            text: theme.comment_fg,
+            hint: theme.fold_fg,
+        };
+        if let Some(review) = self.review.as_ref() {
+            let document = review.document(self.layout());
+            self.reload_document(document);
+        }
     }
 
     /// Re-render the document from the review after a buffered edit, preserving
@@ -1307,7 +1402,7 @@ impl App {
             .map(|i| {
                 let mut line = self.decorate(i, width);
                 if i == self.cursor {
-                    line = wash(line, self.cursor_bg, width);
+                    line = wash(line, self.cursor_bg, width, self.background);
                 }
                 if let (Some(matcher), ViewRow::Row(row)) = (&matcher, &self.view[i]) {
                     line = self.highlight_matches(line, *row, matcher);
@@ -1360,7 +1455,7 @@ impl App {
             .into_iter()
             .map(|range| base + range.start..base + range.end)
             .collect();
-        highlight_spans(line, &ranges, self.search_match_bg)
+        highlight_spans(line, &ranges, self.search_match_bg, self.background)
     }
 
     /// The fully drawn line for view row `index` at `width`, before any cursor
@@ -1808,8 +1903,12 @@ fn fill_line(mut line: Line<'static>, fill: Option<Rgb>, width: usize) -> Line<'
 /// the background while every span keeps its foreground and modifiers. Walking
 /// character by character keeps the split safe whatever the ranges hold: a byte
 /// offset never has to fall on a boundary for the code to be correct.
-fn highlight_spans(line: Line<'static>, ranges: &[Range<usize>], bg: Rgb) -> Line<'static> {
-    let color = color(bg);
+fn highlight_spans(
+    line: Line<'static>,
+    ranges: &[Range<usize>],
+    bg: Rgb,
+    reference: Rgb,
+) -> Line<'static> {
     let mut out = Vec::with_capacity(line.spans.len());
     let mut offset = 0;
     for span in line.spans {
@@ -1824,32 +1923,61 @@ fn highlight_spans(line: Line<'static>, ranges: &[Range<usize>], bg: Rgb) -> Lin
         for (index, ch) in content.char_indices() {
             let here = ranges.iter().any(|range| range.contains(&(base + index)));
             if !piece.is_empty() && here != covered {
-                out.push(highlighted_piece(&piece, span.style, covered, color));
+                out.push(highlighted_piece(
+                    &piece, span.style, covered, bg, reference,
+                ));
                 piece.clear();
             }
             covered = here;
             piece.push(ch);
         }
         if !piece.is_empty() {
-            out.push(highlighted_piece(&piece, span.style, covered, color));
+            out.push(highlighted_piece(
+                &piece, span.style, covered, bg, reference,
+            ));
         }
     }
     Line::from(out)
 }
 
 /// One highlighted or plain piece of a split span: `style` with the match
-/// background laid over it when `covered`, otherwise `style` untouched.
-fn highlighted_piece(text: &str, style: Style, covered: bool, bg: Color) -> Span<'static> {
-    let style = if covered { style.bg(bg) } else { style };
+/// background laid over it when `covered`, otherwise `style` untouched. A
+/// covered piece keeps its foreground legible over the match background, lifted
+/// to the contrast it had over `reference` when the match color would dim it.
+fn highlighted_piece(
+    text: &str,
+    style: Style,
+    covered: bool,
+    bg: Rgb,
+    reference: Rgb,
+) -> Span<'static> {
+    let style = if covered {
+        legible_style(style, bg, reference).bg(color(bg))
+    } else {
+        style
+    };
     Span::styled(text.to_string(), style)
+}
+
+/// Return `style` with its foreground lifted to stay legible over `bg`, keeping
+/// the contrast it had over `reference`. A style with no explicit `Rgb`
+/// foreground is left untouched, since there is nothing to measure.
+fn legible_style(style: Style, bg: Rgb, reference: Rgb) -> Style {
+    match style.fg {
+        Some(Color::Rgb(r, g, b)) => {
+            let adjusted = legible_over(Rgb { r, g, b }, bg, reference);
+            style.fg(color(adjusted))
+        }
+        _ => style,
+    }
 }
 
 /// Return `line` with every span's background replaced by `bg`, keeping each
 /// span's foreground and modifiers, then padded with blank cells to `width` so
 /// the background fills the row to the edge of the screen.
-fn wash(mut line: Line<'static>, bg: Rgb, width: usize) -> Line<'static> {
+fn wash(mut line: Line<'static>, bg: Rgb, width: usize, reference: Rgb) -> Line<'static> {
     for span in &mut line.spans {
-        span.style = span.style.bg(color(bg));
+        span.style = legible_style(span.style, bg, reference).bg(color(bg));
     }
     let filled: usize = line
         .spans
@@ -2120,9 +2248,9 @@ mod tests {
         // The first three rows are shown; the cursor row (the file header) is
         // washed with the selection background out to the full width.
         let expected = "\
-<#c0c5ce|#4f5b66|b>modified  src/lib.rs<-|#4f5b66|->                    
+<#cdd1d8|#4f5b66|b>modified  src/lib.rs<-|#4f5b66|->                    
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
 ";
         k9::assert_equal!(visible, expected.to_string());
     }
@@ -2138,13 +2266,13 @@ mod tests {
         let expected = "\
 <#c0c5ce|-|b>added  long.txt
 <#96b5b4|-|->@@ -1,20 +1,20 @@
-<#65737e|#2d3b30|->        1 + <#c0c5ce|#2d3b30|->row01<-|#2d3b30|->                       
-<#65737e|#2d3b30|->        2 + <#c0c5ce|#2d3b30|->row02<-|#2d3b30|->                       
-<#65737e|#4f5b66|->        3 + <#c0c5ce|#4f5b66|->row03<-|#4f5b66|->                       
-<#65737e|#2d3b30|->        4 + <#c0c5ce|#2d3b30|->row04<-|#2d3b30|->                       
-<#65737e|#2d3b30|->        5 + <#c0c5ce|#2d3b30|->row05<-|#2d3b30|->                       
-<#65737e|#2d3b30|->        6 + <#c0c5ce|#2d3b30|->row06<-|#2d3b30|->                       
-<#65737e|#2d3b30|->        7 + <#c0c5ce|#2d3b30|->row07<-|#2d3b30|->                       
+<#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->row01<-|#414a4a|->                       
+<#9ea1a9|#414a4a|->        2 + <#c0c5ce|#414a4a|->row02<-|#414a4a|->                       
+<#cfd0d4|#4f5b66|->        3 + <#cdd1d8|#4f5b66|->row03<-|#4f5b66|->                       
+<#9ea1a9|#414a4a|->        4 + <#c0c5ce|#414a4a|->row04<-|#414a4a|->                       
+<#9ea1a9|#414a4a|->        5 + <#c0c5ce|#414a4a|->row05<-|#414a4a|->                       
+<#9ea1a9|#414a4a|->        6 + <#c0c5ce|#414a4a|->row06<-|#414a4a|->                       
+<#9ea1a9|#414a4a|->        7 + <#c0c5ce|#414a4a|->row07<-|#414a4a|->                       
 ";
         k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
@@ -2159,15 +2287,15 @@ mod tests {
         k9::assert_equal!(cursor, 12);
         k9::assert_equal!(top, 7);
         let expected = "\
-<#65737e|#2d3b30|->        6 + <#c0c5ce|#2d3b30|->row06<-|#2d3b30|->                       
-<#65737e|#2d3b30|->        7 + <#c0c5ce|#2d3b30|->row07<-|#2d3b30|->                       
-<#65737e|#2d3b30|->        8 + <#c0c5ce|#2d3b30|->row08<-|#2d3b30|->                       
-<#65737e|#2d3b30|->        9 + <#c0c5ce|#2d3b30|->row09<-|#2d3b30|->                       
-<#65737e|#2d3b30|->       10 + <#c0c5ce|#2d3b30|->row10<-|#2d3b30|->                       
-<#65737e|#4f5b66|->       11 + <#c0c5ce|#4f5b66|->row11<-|#4f5b66|->                       
-<#65737e|#2d3b30|->       12 + <#c0c5ce|#2d3b30|->row12<-|#2d3b30|->                       
-<#65737e|#2d3b30|->       13 + <#c0c5ce|#2d3b30|->row13<-|#2d3b30|->                       
-<#65737e|#2d3b30|->       14 + <#c0c5ce|#2d3b30|->row14<-|#2d3b30|->                       
+<#9ea1a9|#414a4a|->        6 + <#c0c5ce|#414a4a|->row06<-|#414a4a|->                       
+<#9ea1a9|#414a4a|->        7 + <#c0c5ce|#414a4a|->row07<-|#414a4a|->                       
+<#9ea1a9|#414a4a|->        8 + <#c0c5ce|#414a4a|->row08<-|#414a4a|->                       
+<#9ea1a9|#414a4a|->        9 + <#c0c5ce|#414a4a|->row09<-|#414a4a|->                       
+<#9ea1a9|#414a4a|->       10 + <#c0c5ce|#414a4a|->row10<-|#414a4a|->                       
+<#cfd0d4|#4f5b66|->       11 + <#cdd1d8|#4f5b66|->row11<-|#4f5b66|->                       
+<#9ea1a9|#414a4a|->       12 + <#c0c5ce|#414a4a|->row12<-|#414a4a|->                       
+<#9ea1a9|#414a4a|->       13 + <#c0c5ce|#414a4a|->row13<-|#414a4a|->                       
+<#9ea1a9|#414a4a|->       14 + <#c0c5ce|#414a4a|->row14<-|#414a4a|->                       
 ";
         k9::assert_equal!(visible, expected.to_string());
     }
@@ -2179,12 +2307,12 @@ mod tests {
         let mut app = App::new(document(), 10, &Theme::dark());
         k9::assert_equal!(
             dump(&[app.status(28)]),
-            "<#c0c5ce|#343d46|->src/lib.rs        0 open  0%\n".to_string()
+            "<#c0c5ce|#3a3f4a|->src/lib.rs        0 open  0%\n".to_string()
         );
         app.update(Action::NextFile);
         k9::assert_equal!(
             dump(&[app.status(28)]),
-            "<#c0c5ce|#343d46|->notes.txt        0 open  66%\n".to_string()
+            "<#c0c5ce|#3a3f4a|->notes.txt        0 open  66%\n".to_string()
         );
     }
 
@@ -2200,12 +2328,12 @@ mod tests {
         }
         k9::assert_equal!(
             dump(&[app.status(28)]),
-            "<#c0c5ce|#343d46|->src/lib.rs       1 open  30%\n".to_string()
+            "<#c0c5ce|#3a3f4a|->src/lib.rs       1 open  30%\n".to_string()
         );
         app.update(Action::ResolveComment);
         k9::assert_equal!(
             dump(&[app.status(28)]),
-            "<#c0c5ce|#343d46|->src/lib.rs     * 2 open  30%\n".to_string()
+            "<#c0c5ce|#3a3f4a|->src/lib.rs     * 2 open  30%\n".to_string()
         );
     }
 
@@ -2242,14 +2370,14 @@ mod tests {
         app.set_width(TEST_WIDTH);
         let visible = dump(&app.visible(TEST_WIDTH));
         let expected = "\
-<#ebcb8b|#4f5b66|b>Review<#8a8a8a|#4f5b66|-> [press c here to draft the review comment]
+<#ecce91|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,1 +1,1 @@
-<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|->  press e to edit  r to resolve  d to delete<#65737e|-|-> <#65737e|-|->┐
-<#65737e|-|->│<#c0c5ce|-|->this comment runs well past the width<-|-|-> <#65737e|-|->│
-<#65737e|-|->│<#c0c5ce|-|->of the box and must wrap<-|-|->              <#65737e|-|->│
-<#65737e|-|->└──────────────────────────────────────┘
-<#65737e|#2d3b30|->        1 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
+<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|->  press e to edit  r to resolve  d to delete<#767b84|-|-> <#767b84|-|->┐
+<#767b84|-|->│<#c0c5ce|-|->this comment runs well past the width<-|-|-> <#767b84|-|->│
+<#767b84|-|->│<#c0c5ce|-|->of the box and must wrap<-|-|->              <#767b84|-|->│
+<#767b84|-|->└──────────────────────────────────────┘
+<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
         k9::assert_equal!(visible, expected.to_string());
     }
@@ -2284,20 +2412,20 @@ mod tests {
         let mut app = App::reviewing(review, 12, &Theme::dark());
         app.set_width(TEST_WIDTH);
         let clipped = "\
-<#ebcb8b|#4f5b66|b>Review<#8a8a8a|#4f5b66|-> [press c here to draft the review comment]
+<#ecce91|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,1 +1,1 @@
-<#65737e|#2d3b30|->        1 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> total <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> alpha plus beta plus gamma<#c0c5ce|#2d3b30|->;
+<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> total <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> alpha plus beta plus gamma<#c0c5ce|#414a4a|->;
 ";
         k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), clipped.to_string());
 
         app.update(Action::ToggleWrap);
         let wrapped = "\
-<#ebcb8b|#4f5b66|b>Review<#8a8a8a|#4f5b66|-> [press c here to draft the review comment]
+<#ecce91|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,1 +1,1 @@
-<#65737e|#2d3b30|->        1 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> total = alpha plus beta<-|#2d3b30|-> 
-<#65737e|#2d3b30|->            <#c0c5ce|#2d3b30|->plus gamma;<-|#2d3b30|->                 
+<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> total = alpha plus beta<-|#414a4a|-> 
+<#9ea1a9|#414a4a|->            <#c0c5ce|#414a4a|->plus gamma;<-|#414a4a|->                 
 ";
         k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), wrapped.to_string());
 
@@ -2344,14 +2472,14 @@ mod tests {
         typed(&mut app, "why?");
         let view = app.compose_view(TEST_WIDTH).expect("composing");
         let expected = "\
-<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
+<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,1 +1,1 @@
 --editor--
 why?
 --below--
-<#65737e|#2d3b30|->        1 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> total = alpha plus beta<-|#2d3b30|-> 
-<#65737e|#2d3b30|->            <#c0c5ce|#2d3b30|->plus gamma;<-|#2d3b30|->                 
+<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> total = alpha plus beta<-|#414a4a|-> 
+<#9ea1a9|#414a4a|->            <#c0c5ce|#414a4a|->plus gamma;<-|#414a4a|->                 
 ";
         k9::assert_equal!(dump_compose(&view), expected.to_string());
     }
@@ -2389,9 +2517,9 @@ why?
         k9::assert_equal!(app.picking(), true);
         let expected = "\
 <#c0c5ce|#4f5b66|->> src/lib.rs                            
-<#c0c5ce|-|->  notes.txt                             
-
-<#8a8a8a|-|->  up/down move  enter select  esc cancel
+<#c0c5ce|#2b303b|->  notes.txt                             
+<-|#2b303b|->                                        
+<#767b84|#2b303b|->  up/down move  enter select  esc cancel
 ";
         k9::assert_equal!(dump_picker(&mut app), expected.to_string());
     }
@@ -2430,9 +2558,9 @@ why?
         k9::assert_equal!(app.picking(), true);
         let expected = "\
 <#c0c5ce|#4f5b66|->> src/lib.rs  ok                        
-<#c0c5ce|-|->  src/lib.rs  why 2?                    
-
-<#8a8a8a|-|->  up/down move  enter select  esc cancel
+<#c0c5ce|#2b303b|->  src/lib.rs  why 2?                    
+<-|#2b303b|->                                        
+<#767b84|#2b303b|->  up/down move  enter select  esc cancel
 ";
         k9::assert_equal!(dump_picker(&mut app), expected.to_string());
     }
@@ -2450,6 +2578,42 @@ why?
             app.kind_at(app.cursor()),
             Some(&RowKind::CommentHeader { id: Ulid(2) })
         );
+    }
+
+    #[test]
+    fn the_theme_picker_lists_every_theme_with_the_current_one_highlighted() {
+        // Opening the picker over a review lists the bundled themes in name
+        // order, opening on the one in effect (the default dark theme) rather
+        // than the first, then a spacer and the key hint.
+        let mut app = App::reviewing(commented_review(), 8, &Theme::dark());
+        app.update(Action::PickTheme);
+        k9::assert_equal!(app.picking(), true);
+        let expected = "\
+<#c0c5ce|#2b303b|->  InspiredGitHub                        
+<#c0c5ce|#2b303b|->  Solarized (dark)                      
+<#c0c5ce|#2b303b|->  Solarized (light)                     
+<#c0c5ce|#2b303b|->  base16-eighties.dark                  
+<#c0c5ce|#2b303b|->  base16-mocha.dark                     
+<#c0c5ce|#4f5b66|->> base16-ocean.dark                     
+<#c0c5ce|#2b303b|->  base16-ocean.light                    
+<-|#2b303b|->                                        
+<#767b84|#2b303b|->  up/down move  enter select  esc cancel
+";
+        k9::assert_equal!(dump_picker(&mut app), expected.to_string());
+    }
+
+    #[test]
+    fn choosing_a_theme_from_the_picker_recolors_the_whole_view() {
+        // Activating the light theme closes the picker and recolors the view:
+        // the background and status bar take the light palette, and the diff
+        // re-renders with it.
+        let mut app = App::reviewing(commented_review(), 8, &Theme::dark());
+        app.update(Action::PickTheme);
+        app.picker_nav(Action::Top);
+        app.picker_activate();
+        k9::assert_equal!(app.picking(), false);
+        let light = Theme::light();
+        k9::assert_equal!(app.background(), light.background);
     }
 
     #[test]
@@ -2531,17 +2695,17 @@ why?
         k9::assert_equal!(cursor, 0);
         k9::assert_equal!(top, 0);
         let expected = "\
-<#c0c5ce|#4f5b66|b>modified  notes.txt<-|#4f5b66|->                     
+<#cdd1d8|#4f5b66|b>modified  notes.txt<-|#4f5b66|->                     
 <#96b5b4|-|->@@ -1,17 +1,17 @@
-<#8a8a8a|#343d46|->            [5 unchanged lines]  ctx05<-|#343d46|->  
-<#65737e|-|->   6    6   <#c0c5ce|-|->ctx06
-<#65737e|-|->   7    7   <#c0c5ce|-|->ctx07
-<#65737e|-|->   8    8   <#c0c5ce|-|->ctx08
-<#65737e|#2d3b30|->        9 + <#c0c5ce|#2d3b30|->change!<-|#2d3b30|->                     
-<#65737e|-|->  10   10   <#c0c5ce|-|->ctx09
-<#65737e|-|->  11   11   <#c0c5ce|-|->ctx10
-<#65737e|-|->  12   12   <#c0c5ce|-|->ctx11
-<#8a8a8a|#343d46|->            [5 unchanged lines]  ctx16<-|#343d46|->  
+<#767b84|#3a3f4a|->            [5 unchanged lines]  ctx05<-|#3a3f4a|->  
+<#7d828c|-|->   6    6   <#c0c5ce|-|->ctx06
+<#7d828c|-|->   7    7   <#c0c5ce|-|->ctx07
+<#7d828c|-|->   8    8   <#c0c5ce|-|->ctx08
+<#9ea1a9|#414a4a|->        9 + <#c0c5ce|#414a4a|->change!<-|#414a4a|->                     
+<#7d828c|-|->  10   10   <#c0c5ce|-|->ctx09
+<#7d828c|-|->  11   11   <#c0c5ce|-|->ctx10
+<#7d828c|-|->  12   12   <#c0c5ce|-|->ctx11
+<#767b84|#3a3f4a|->            [5 unchanged lines]  ctx16<-|#3a3f4a|->  
 ";
         k9::assert_equal!(visible, expected.to_string());
     }
@@ -2559,10 +2723,10 @@ why?
         let expected = "\
 <#c0c5ce|-|b>modified  notes.txt
 <#96b5b4|-|->@@ -1,17 +1,17 @@
-<#65737e|#4f5b66|->   1    1   <#c0c5ce|#4f5b66|->ctx01<-|#4f5b66|->                       
-<#65737e|-|->   2    2   <#c0c5ce|-|->ctx02
-<#65737e|-|->   3    3   <#c0c5ce|-|->ctx03
-<#65737e|-|->   4    4   <#c0c5ce|-|->ctx04
+<#b8bac0|#4f5b66|->   1    1   <#cdd1d8|#4f5b66|->ctx01<-|#4f5b66|->                       
+<#7d828c|-|->   2    2   <#c0c5ce|-|->ctx02
+<#7d828c|-|->   3    3   <#c0c5ce|-|->ctx03
+<#7d828c|-|->   4    4   <#c0c5ce|-|->ctx04
 ";
         k9::assert_equal!(visible, expected.to_string());
     }
@@ -2585,10 +2749,10 @@ why?
         let expected = "\
 <#c0c5ce|-|b>modified  notes.txt
 <#96b5b4|-|->@@ -1,17 +1,17 @@
-<#8a8a8a|#4f5b66|->            [5 unchanged lines]  ctx05<-|#4f5b66|->  
-<#65737e|-|->   6    6   <#c0c5ce|-|->ctx06
-<#65737e|-|->   7    7   <#c0c5ce|-|->ctx07
-<#65737e|-|->   8    8   <#c0c5ce|-|->ctx08
+<#adb0b5|#4f5b66|->            [5 unchanged lines]  ctx05<-|#4f5b66|->  
+<#7d828c|-|->   6    6   <#c0c5ce|-|->ctx06
+<#7d828c|-|->   7    7   <#c0c5ce|-|->ctx07
+<#7d828c|-|->   8    8   <#c0c5ce|-|->ctx08
 ";
         k9::assert_equal!(visible, expected.to_string());
     }
@@ -2601,17 +2765,17 @@ why?
         k9::assert_equal!(cursor, 0);
         k9::assert_equal!(top, 0);
         let expected = "\
-<#ebcb8b|#4f5b66|b>Review<#8a8a8a|#4f5b66|-> [press c here to draft the review comment]
+<#ecce91|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit  r to unresolve  d to delete<#65737e|-|-> <#65737e|-|->┐
-<#65737e|-|->└──────────────────────────────────────┘
-<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#65737e|-|->┌ <#8fa1b3|-|->wez (human)<#8a8a8a|-|->  press e to edit  r to resolve  d to delete<#65737e|-|-> <#65737e|-|->┐
-<#65737e|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#65737e|-|->│
-<#65737e|-|->│<#c0c5ce|-|->say more<-|-|->                              <#65737e|-|->│
-<#65737e|-|->└──────────────────────────────────────┘
-<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
+<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete<#767b84|-|-> <#767b84|-|->┐
+<#767b84|-|->└──────────────────────────────────────┘
+<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#767b84|-|->┌ <#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete<#767b84|-|-> <#767b84|-|->┐
+<#767b84|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#767b84|-|->│
+<#767b84|-|->│<#c0c5ce|-|->say more<-|-|->                              <#767b84|-|->│
+<#767b84|-|->└──────────────────────────────────────┘
+<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
         k9::assert_equal!(visible, expected.to_string());
     }
@@ -2657,15 +2821,15 @@ why?
         k9::assert_equal!(cursor, 6);
         k9::assert_equal!(top, 0);
         let expected = "\
-<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
+<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit  r to unresolve  d to delete<#65737e|-|-> <#65737e|-|->┐
-<#65737e|-|->└──────────────────────────────────────┘
-<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#65737e|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#8a8a8a|#4f5b66|->  press e to edit  r to resolve  d to delete<#65737e|#4f5b66|-> <#65737e|#4f5b66|->┐
-<#65737e|-|->└──────────────────────────────────────┘
-<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
+<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete<#767b84|-|-> <#767b84|-|->┐
+<#767b84|-|->└──────────────────────────────────────┘
+<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#adb0b5|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete<#adb0b5|#4f5b66|-> <#adb0b5|#4f5b66|->┐
+<#767b84|-|->└──────────────────────────────────────┘
+<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
         k9::assert_equal!(visible, expected.to_string());
 
@@ -2681,17 +2845,17 @@ why?
         );
         k9::assert_equal!(cursor, 6);
         let expected = "\
-<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
+<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit  r to unresolve  d to delete<#65737e|-|-> <#65737e|-|->┐
-<#65737e|-|->└──────────────────────────────────────┘
-<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#65737e|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#8a8a8a|#4f5b66|->  press e to edit  r to resolve  d to delete<#65737e|#4f5b66|-> <#65737e|#4f5b66|->┐
-<#65737e|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#65737e|-|->│
-<#65737e|-|->│<#c0c5ce|-|->say more<-|-|->                              <#65737e|-|->│
-<#65737e|-|->└──────────────────────────────────────┘
-<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
+<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete<#767b84|-|-> <#767b84|-|->┐
+<#767b84|-|->└──────────────────────────────────────┘
+<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#adb0b5|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete<#adb0b5|#4f5b66|-> <#adb0b5|#4f5b66|->┐
+<#767b84|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#767b84|-|->│
+<#767b84|-|->│<#c0c5ce|-|->say more<-|-|->                              <#767b84|-|->│
+<#767b84|-|->└──────────────────────────────────────┘
+<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
         k9::assert_equal!(visible, expected.to_string());
     }
@@ -2712,17 +2876,17 @@ why?
         k9::assert_equal!(cursor, 6);
         k9::assert_equal!(top, 0);
         let expected = "\
-<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
+<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit  r to unresolve  d to delete<#65737e|-|-> <#65737e|-|->┐
-<#65737e|-|->└──────────────────────────────────────┘
-<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#a3be8c|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<#8a8a8a|#4f5b66|-> [resolved by wez]<#8a8a8a|#4f5b66|->  press e to edit  r to unresolve  d to delete<#a3be8c|#4f5b66|-> <#a3be8c|#4f5b66|->┐
+<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete<#767b84|-|-> <#767b84|-|->┐
+<#767b84|-|->└──────────────────────────────────────┘
+<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#c8d8ba|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#c8d8ba|#4f5b66|-> [draft]<#adb0b5|#4f5b66|-> [resolved by wez]<#adb0b5|#4f5b66|->  press e to edit  r to unresolve  d to delete<#c8d8ba|#4f5b66|-> <#c8d8ba|#4f5b66|->┐
 <#a3be8c|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#a3be8c|-|->│
 <#a3be8c|-|->│<#c0c5ce|-|->say more<-|-|->                              <#a3be8c|-|->│
 <#a3be8c|-|->└──────────────────────────────────────┘
-<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
+<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
         k9::assert_equal!(visible, expected.to_string());
     }
@@ -2744,15 +2908,15 @@ why?
         k9::assert_equal!(cursor, 6);
         k9::assert_equal!(top, 0);
         let expected = "\
-<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
+<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit  r to unresolve  d to delete<#65737e|-|-> <#65737e|-|->┐
-<#65737e|-|->└──────────────────────────────────────┘
-<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#a3be8c|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<#8a8a8a|#4f5b66|-> [deleted by wez]<#8a8a8a|#4f5b66|->  press e to edit  r to resolve  d to undelete<#a3be8c|#4f5b66|-> <#a3be8c|#4f5b66|->┐
+<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete<#767b84|-|-> <#767b84|-|->┐
+<#767b84|-|->└──────────────────────────────────────┘
+<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#c8d8ba|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#c8d8ba|#4f5b66|-> [draft]<#adb0b5|#4f5b66|-> [deleted by wez]<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to undelete<#c8d8ba|#4f5b66|-> <#c8d8ba|#4f5b66|->┐
 <#a3be8c|-|->└──────────────────────────────────────┘
-<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
+<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
         k9::assert_equal!(visible, expected.to_string());
     }
@@ -2775,17 +2939,17 @@ why?
         k9::assert_equal!(cursor, 6);
         k9::assert_equal!(top, 0);
         let expected = "\
-<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
+<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit  r to unresolve  d to delete<#65737e|-|-> <#65737e|-|->┐
-<#65737e|-|->└──────────────────────────────────────┘
-<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#65737e|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#8a8a8a|#4f5b66|->  press e to edit  r to resolve  d to delete<#65737e|#4f5b66|-> <#65737e|#4f5b66|->┐
-<#65737e|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#65737e|-|->│
-<#65737e|-|->│<#c0c5ce|-|->say more<-|-|->                              <#65737e|-|->│
-<#65737e|-|->└──────────────────────────────────────┘
-<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
+<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete<#767b84|-|-> <#767b84|-|->┐
+<#767b84|-|->└──────────────────────────────────────┘
+<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#adb0b5|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete<#adb0b5|#4f5b66|-> <#adb0b5|#4f5b66|->┐
+<#767b84|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#767b84|-|->│
+<#767b84|-|->│<#c0c5ce|-|->say more<-|-|->                              <#767b84|-|->│
+<#767b84|-|->└──────────────────────────────────────┘
+<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
         k9::assert_equal!(visible, expected.to_string());
     }
@@ -2827,14 +2991,14 @@ why?
         app.compose_key(submit());
         k9::assert_equal!(app.composing(), false);
         let expected = "\
-<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
+<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#a3be8c|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<#8a8a8a|#4f5b66|->  press e to edit  r to resolve  d to delete<#a3be8c|#4f5b66|-> <#a3be8c|#4f5b66|->┐
+<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#c8d8ba|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#c8d8ba|#4f5b66|-> [draft]<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete<#c8d8ba|#4f5b66|-> <#c8d8ba|#4f5b66|->┐
 <#a3be8c|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#a3be8c|-|->│
 <#a3be8c|-|->└──────────────────────────────────────┘
-<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
+<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
         k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
@@ -2851,14 +3015,14 @@ why?
         typed(&mut app, "why 2?");
         let view = app.compose_view(TEST_WIDTH).expect("composing");
         let expected = "\
-<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
+<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
 --editor--
 why 2?
 --below--
-<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
+<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
         k9::assert_equal!(dump_compose(&view), expected.to_string());
     }
@@ -2928,14 +3092,14 @@ why 2?
         app.compose_key(KeyPress::with_modifiers(Key::Char('g'), true, false, false));
         k9::assert_equal!(app.composing(), false);
         let expected = "\
-<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
+<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#a3be8c|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<#8a8a8a|#4f5b66|->  press e to edit  r to resolve  d to delete<#a3be8c|#4f5b66|-> <#a3be8c|#4f5b66|->┐
+<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#c8d8ba|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#c8d8ba|#4f5b66|-> [draft]<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete<#c8d8ba|#4f5b66|-> <#c8d8ba|#4f5b66|->┐
 <#a3be8c|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#a3be8c|-|->│
 <#a3be8c|-|->└──────────────────────────────────────┘
-<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
+<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
         k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
@@ -2962,16 +3126,16 @@ why 2?
         app.compose_key(submit());
         k9::assert_equal!(app.composing(), false);
         let expected = "\
-<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
+<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit  r to unresolve  d to delete<#65737e|-|-> <#65737e|-|->┐
-<#65737e|-|->└──────────────────────────────────────┘
-<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#a3be8c|#4f5b66|->┌ <#8fa1b3|#4f5b66|->wez (human)<#a3be8c|#4f5b66|-> [draft]<#8a8a8a|#4f5b66|->  press e to edit  r to resolve  d to delete<#a3be8c|#4f5b66|-> <#a3be8c|#4f5b66|->┐
+<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete<#767b84|-|-> <#767b84|-|->┐
+<#767b84|-|->└──────────────────────────────────────┘
+<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#c8d8ba|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#c8d8ba|#4f5b66|-> [draft]<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete<#c8d8ba|#4f5b66|-> <#c8d8ba|#4f5b66|->┐
 <#a3be8c|-|->│<#c0c5ce|-|->use a constant<-|-|->                        <#a3be8c|-|->│
 <#a3be8c|-|->└──────────────────────────────────────┘
-<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
+<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
         k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
@@ -2987,17 +3151,17 @@ why 2?
         app.update(Action::EditComment);
         let view = app.compose_view(TEST_WIDTH).expect("composing");
         let expected = "\
-<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
+<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit  r to unresolve  d to delete<#65737e|-|-> <#65737e|-|->┐
-<#65737e|-|->└──────────────────────────────────────┘
-<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete<#767b84|-|-> <#767b84|-|->┐
+<#767b84|-|->└──────────────────────────────────────┘
+<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
 --editor--
 why 2?
 say more
 --below--
-<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
+<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
         k9::assert_equal!(dump_compose(&view), expected.to_string());
     }
@@ -3016,8 +3180,8 @@ say more
         typed(&mut app, "second");
         let view = app.compose_view(TEST_WIDTH).expect("composing");
         let expected = "\
-<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
-<#a3be8c|-|->┌ <#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#8a8a8a|-|->  press e to edit  r to resolve  d to delete<#a3be8c|-|-> <#a3be8c|-|->┐
+<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
+<#a3be8c|-|->┌ <#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#767b84|-|->  press e to edit  r to resolve  d to delete<#a3be8c|-|-> <#a3be8c|-|->┐
 <#a3be8c|-|->│<#c0c5ce|-|->first<-|-|->                                 <#a3be8c|-|->│
 <#a3be8c|-|->└──────────────────────────────────────┘
 --editor--
@@ -3025,9 +3189,9 @@ second
 --below--
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit  r to unresolve  d to delete<#65737e|-|-> <#65737e|-|->┐
-<#65737e|-|->└──────────────────────────────────────┘
-<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete<#767b84|-|-> <#767b84|-|->┐
+<#767b84|-|->└──────────────────────────────────────┘
+<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
 ";
         k9::assert_equal!(dump_compose(&view), expected.to_string());
     }
@@ -3076,12 +3240,12 @@ second
         k9::assert_equal!(app.cursor(), 4);
         k9::assert_equal!(app.top(), 0);
         let expected = "\
-<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
+<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,3 +1,3 @@
-<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#65737e|#4f5b66|->        2 + <#b48ead|#4f5b66|->let<#c0c5ce|#4f5b66|-> y <#c0c5ce|#4f5b66|->=<#c0c5ce|#4f5b66|-> <#d08770|#4f5b66|->2<#c0c5ce|#4f5b66|->;<-|#4f5b66|->                  
-<#65737e|#2d3b30|->        3 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> z <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->3<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
+<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#cfd0d4|#4f5b66|->        2 + <#ddccda|#4f5b66|->let<#cdd1d8|#4f5b66|-> y <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#ebcdc3|#4f5b66|->2<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  
+<#9ea1a9|#414a4a|->        3 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> z <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->3<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
         k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
         // The status line truncates the note to the screen width.
@@ -3138,15 +3302,15 @@ second
         // The drafted comment sits above the added `let y = 2;`, which has moved
         // to the third line, and still wears its uncommitted draft badge.
         let expected = "\
-<#ebcb8b|#4f5b66|b>Review<#8a8a8a|#4f5b66|-> [press c here to draft the review comment]
+<#ecce91|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,3 +1,3 @@
-<#65737e|#2d3b30|->        1 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> a <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->0<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
-<#65737e|-|->   2    2   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#a3be8c|-|->┌ <#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#8a8a8a|-|->  press e to edit  r to resolve  d to delete<#a3be8c|-|-> <#a3be8c|-|->┐
+<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> a <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->0<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
+<#7d828c|-|->   2    2   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#a3be8c|-|->┌ <#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#767b84|-|->  press e to edit  r to resolve  d to delete<#a3be8c|-|-> <#a3be8c|-|->┐
 <#a3be8c|-|->│<#c0c5ce|-|->why?<-|-|->                                  <#a3be8c|-|->│
 <#a3be8c|-|->└──────────────────────────────────────┘
-<#65737e|#2d3b30|->        3 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
+<#9ea1a9|#414a4a|->        3 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
         k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
@@ -3174,10 +3338,10 @@ second
         k9::assert_equal!(app.cursor(), 3);
         k9::assert_equal!(app.top(), 0);
         let expected = "\
-<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
+<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,1 +1,1 @@
-<#65737e|#4f5b66|->   1    1   <#b48ead|#4f5b66|->let<#c0c5ce|#4f5b66|-> x <#c0c5ce|#4f5b66|->=<#c0c5ce|#4f5b66|-> <#d08770|#4f5b66|->1<#c0c5ce|#4f5b66|->;<-|#4f5b66|->                  
+<#b8bac0|#4f5b66|->   1    1   <#ddccda|#4f5b66|->let<#cdd1d8|#4f5b66|-> x <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#eac9bf|#4f5b66|->1<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  
 ";
         k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
@@ -3205,11 +3369,11 @@ second
         let expected = "\
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
+<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 <#c0c5ce|-|b>added  notes.txt
 <#96b5b4|-|->@@ -1,1 +1,1 @@
-<#65737e|#4f5b66|->        1 + <#c0c5ce|#6a5d1a|->hello<-|#4f5b66|->                       
+<#cfd0d4|#4f5b66|->        1 + <#dcdfe4|#686255|->hello<-|#4f5b66|->                       
 ";
         k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
         app.search_key(KeyPress::new(Key::Enter));
@@ -3230,11 +3394,11 @@ second
         let expected = "\
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|#4f5b66|->   1    1   <#b48ead|#6a5d1a|->let<#c0c5ce|#4f5b66|-> x <#c0c5ce|#4f5b66|->=<#c0c5ce|#4f5b66|-> <#d08770|#4f5b66|->1<#c0c5ce|#4f5b66|->;<-|#4f5b66|->                  
-<#65737e|#2d3b30|->        2 + <#b48ead|#6a5d1a|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
+<#b8bac0|#4f5b66|->   1    1   <#e7dbe5|#686255|->let<#cdd1d8|#4f5b66|-> x <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#eac9bf|#4f5b66|->1<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  
+<#9ea1a9|#414a4a|->        2 + <#e8dbe5|#686255|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 <#c0c5ce|-|b>added  notes.txt
 <#96b5b4|-|->@@ -1,1 +1,1 @@
-<#65737e|#2d3b30|->        1 + <#c0c5ce|#2d3b30|->hello<-|#2d3b30|->                       
+<#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->hello<-|#414a4a|->                       
 ";
         k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
@@ -3265,11 +3429,11 @@ second
         let expected = "\
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|#4f5b66|->   1    1   <#b48ead|#6a5d1a|->let<#c0c5ce|#4f5b66|-> x <#c0c5ce|#4f5b66|->=<#c0c5ce|#4f5b66|-> <#d08770|#4f5b66|->1<#c0c5ce|#4f5b66|->;<-|#4f5b66|->                  
-<#65737e|#2d3b30|->        2 + <#b48ead|#6a5d1a|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
+<#b8bac0|#4f5b66|->   1    1   <#e7dbe5|#686255|->let<#cdd1d8|#4f5b66|-> x <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#eac9bf|#4f5b66|->1<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  
+<#9ea1a9|#414a4a|->        2 + <#e8dbe5|#686255|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 <#c0c5ce|-|b>added  notes.txt
 <#96b5b4|-|->@@ -1,1 +1,1 @@
-<#65737e|#2d3b30|->        1 + <#c0c5ce|#2d3b30|->hello<-|#2d3b30|->                       
+<#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->hello<-|#414a4a|->                       
 ";
         k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
@@ -3293,17 +3457,17 @@ second
         let mut app = App::new(folded_document(), 20, &Theme::dark());
         search_for(&mut app, Action::SearchForward, "ctx03");
         let expected = "\
-<#c0c5ce|#4f5b66|b>modified  notes.txt<-|#4f5b66|->                     
+<#cdd1d8|#4f5b66|b>modified  notes.txt<-|#4f5b66|->                     
 <#96b5b4|-|->@@ -1,17 +1,17 @@
-<#8a8a8a|#343d46|->            [5 unchanged lines]  ctx05<-|#343d46|->  
-<#65737e|-|->   6    6   <#c0c5ce|-|->ctx06
-<#65737e|-|->   7    7   <#c0c5ce|-|->ctx07
-<#65737e|-|->   8    8   <#c0c5ce|-|->ctx08
-<#65737e|#2d3b30|->        9 + <#c0c5ce|#2d3b30|->change!<-|#2d3b30|->                     
-<#65737e|-|->  10   10   <#c0c5ce|-|->ctx09
-<#65737e|-|->  11   11   <#c0c5ce|-|->ctx10
-<#65737e|-|->  12   12   <#c0c5ce|-|->ctx11
-<#8a8a8a|#343d46|->            [5 unchanged lines]  ctx16<-|#343d46|->  
+<#767b84|#3a3f4a|->            [5 unchanged lines]  ctx05<-|#3a3f4a|->  
+<#7d828c|-|->   6    6   <#c0c5ce|-|->ctx06
+<#7d828c|-|->   7    7   <#c0c5ce|-|->ctx07
+<#7d828c|-|->   8    8   <#c0c5ce|-|->ctx08
+<#9ea1a9|#414a4a|->        9 + <#c0c5ce|#414a4a|->change!<-|#414a4a|->                     
+<#7d828c|-|->  10   10   <#c0c5ce|-|->ctx09
+<#7d828c|-|->  11   11   <#c0c5ce|-|->ctx10
+<#7d828c|-|->  12   12   <#c0c5ce|-|->ctx11
+<#767b84|#3a3f4a|->            [5 unchanged lines]  ctx16<-|#3a3f4a|->  
 ";
         k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
@@ -3316,15 +3480,15 @@ second
         let expected = "\
 <#c0c5ce|-|b>modified  notes.txt
 <#96b5b4|-|->@@ -1,17 +1,17 @@
-<#8a8a8a|#343d46|->            [5 unchanged lines]  ctx05<-|#343d46|->  
-<#65737e|-|->   6    6   <#c0c5ce|-|->ctx06
-<#65737e|#4f5b66|->   7    7   <#c0c5ce|#6a5d1a|->ctx07<-|#4f5b66|->                       
-<#65737e|-|->   8    8   <#c0c5ce|-|->ctx08
-<#65737e|#2d3b30|->        9 + <#c0c5ce|#2d3b30|->change!<-|#2d3b30|->                     
-<#65737e|-|->  10   10   <#c0c5ce|-|->ctx09
-<#65737e|-|->  11   11   <#c0c5ce|-|->ctx10
-<#65737e|-|->  12   12   <#c0c5ce|-|->ctx11
-<#8a8a8a|#343d46|->            [5 unchanged lines]  ctx16<-|#343d46|->  
+<#767b84|#3a3f4a|->            [5 unchanged lines]  ctx05<-|#3a3f4a|->  
+<#7d828c|-|->   6    6   <#c0c5ce|-|->ctx06
+<#b8bac0|#4f5b66|->   7    7   <#dcdfe4|#686255|->ctx07<-|#4f5b66|->                       
+<#7d828c|-|->   8    8   <#c0c5ce|-|->ctx08
+<#9ea1a9|#414a4a|->        9 + <#c0c5ce|#414a4a|->change!<-|#414a4a|->                     
+<#7d828c|-|->  10   10   <#c0c5ce|-|->ctx09
+<#7d828c|-|->  11   11   <#c0c5ce|-|->ctx10
+<#7d828c|-|->  12   12   <#c0c5ce|-|->ctx11
+<#767b84|#3a3f4a|->            [5 unchanged lines]  ctx16<-|#3a3f4a|->  
 ";
         k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
@@ -3337,18 +3501,18 @@ second
         let mut app = App::reviewing(commented_review(), 14, &Theme::dark());
         search_for(&mut app, Action::SearchForward, "ok");
         let expected = "\
-<#ebcb8b|#343d46|b>Review<#8a8a8a|#343d46|-> [press c here to draft the review comment]
+<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|-|->┌ <#8fa1b3|-|->opus (agent)<#8a8a8a|-|-> [resolved]<#8a8a8a|-|->  press e to edit  r to unresolve  d to delete<#65737e|-|-> <#65737e|-|->┐
-<#65737e|#4f5b66|->│<#c0c5ce|#6a5d1a|->ok<-|#4f5b66|->                                    <#65737e|#4f5b66|->│
-<#65737e|-|->└──────────────────────────────────────┘
-<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#65737e|-|->┌ <#8fa1b3|-|->wez (human)<#8a8a8a|-|->  press e to edit  r to resolve  d to delete<#65737e|-|-> <#65737e|-|->┐
-<#65737e|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#65737e|-|->│
-<#65737e|-|->│<#c0c5ce|-|->say more<-|-|->                              <#65737e|-|->│
-<#65737e|-|->└──────────────────────────────────────┘
-<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
+<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete<#767b84|-|-> <#767b84|-|->┐
+<#adb0b5|#4f5b66|->│<#dcdfe4|#686255|->ok<-|#4f5b66|->                                    <#adb0b5|#4f5b66|->│
+<#767b84|-|->└──────────────────────────────────────┘
+<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#767b84|-|->┌ <#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete<#767b84|-|-> <#767b84|-|->┐
+<#767b84|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#767b84|-|->│
+<#767b84|-|->│<#c0c5ce|-|->say more<-|-|->                              <#767b84|-|->│
+<#767b84|-|->└──────────────────────────────────────┘
+<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
         k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
@@ -3366,11 +3530,11 @@ second
         let expected = "\
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|#4f5b66|->   1    1   <#b48ead|#4f5b66|->let<#c0c5ce|#4f5b66|-> x <#c0c5ce|#4f5b66|->=<#c0c5ce|#4f5b66|-> <#d08770|#4f5b66|->1<#c0c5ce|#4f5b66|->;<-|#4f5b66|->                  
-<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
+<#b8bac0|#4f5b66|->   1    1   <#ddccda|#4f5b66|->let<#cdd1d8|#4f5b66|-> x <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#eac9bf|#4f5b66|->1<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  
+<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 <#c0c5ce|-|b>added  notes.txt
 <#96b5b4|-|->@@ -1,1 +1,1 @@
-<#65737e|#2d3b30|->        1 + <#c0c5ce|#2d3b30|->hello<-|#2d3b30|->                       
+<#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->hello<-|#414a4a|->                       
 ";
         k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
@@ -3393,11 +3557,11 @@ second
         let expected = "\
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#65737e|#2d3b30|->        2 + <#b48ead|#2d3b30|->let<#c0c5ce|#2d3b30|-> y <#c0c5ce|#2d3b30|->=<#c0c5ce|#2d3b30|-> <#d08770|#2d3b30|->2<#c0c5ce|#2d3b30|->;<-|#2d3b30|->                  
+<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 <#c0c5ce|-|b>added  notes.txt
 <#96b5b4|-|->@@ -1,1 +1,1 @@
-<#65737e|#4f5b66|->        1 + <#c0c5ce|#6a5d1a|->hello<-|#4f5b66|->                       
+<#cfd0d4|#4f5b66|->        1 + <#dcdfe4|#686255|->hello<-|#4f5b66|->                       
 ";
         k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
@@ -3418,11 +3582,11 @@ second
         let expected = "\
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
-<#65737e|-|->   1    1   <#b48ead|#6a5d1a|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#65737e|#4f5b66|->        2 + <#b48ead|#6a5d1a|->let<#c0c5ce|#4f5b66|-> y <#c0c5ce|#4f5b66|->=<#c0c5ce|#4f5b66|-> <#d08770|#4f5b66|->2<#c0c5ce|#4f5b66|->;<-|#4f5b66|->                  
+<#7d828c|-|->   1    1   <#e9dde6|#686255|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#cfd0d4|#4f5b66|->        2 + <#e7dbe5|#686255|->let<#cdd1d8|#4f5b66|-> y <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#ebcdc3|#4f5b66|->2<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  
 <#c0c5ce|-|b>added  notes.txt
 <#96b5b4|-|->@@ -1,1 +1,1 @@
-<#65737e|#2d3b30|->        1 + <#c0c5ce|#2d3b30|->hello<-|#2d3b30|->                       
+<#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->hello<-|#414a4a|->                       
 ";
         k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
