@@ -243,6 +243,8 @@ pub struct KeyHints {
     pub resolve_comment: String,
     /// The key that deletes or restores the focused comment.
     pub delete_comment: String,
+    /// The key that expands or collapses the focused comment.
+    pub toggle_comment: String,
 }
 
 impl KeyHints {
@@ -264,6 +266,9 @@ impl KeyHints {
             delete_comment: keymap
                 .primary_label(Action::DeleteComment)
                 .unwrap_or(default.delete_comment),
+            toggle_comment: keymap
+                .primary_label(Action::ToggleComment)
+                .unwrap_or(default.toggle_comment),
         }
     }
 }
@@ -283,6 +288,9 @@ impl Default for KeyHints {
                 .unwrap_or_default(),
             delete_comment: keymap
                 .primary_label(Action::DeleteComment)
+                .unwrap_or_default(),
+            toggle_comment: keymap
+                .primary_label(Action::ToggleComment)
                 .unwrap_or_default(),
         }
     }
@@ -681,8 +689,8 @@ impl DiffView {
     }
 
     /// The title shown along a comment box's top edge: the author and kind, the
-    /// status badges, and a dimmed hint at the keys that edit and delete or
-    /// restore the comment.
+    /// status badges, and a dimmed hint at the keys that edit, resolve, delete,
+    /// and expand or collapse the comment.
     fn comment_title(&self, comment: &CommentState, pending: bool) -> Line<'static> {
         let mut spans = vec![Span::styled(
             format!("{} ({})", comment.author.name, comment.author.kind.as_str()),
@@ -711,8 +719,11 @@ impl DiffView {
         };
         spans.push(Span::styled(
             format!(
-                "  press {} to edit  {} to {resolve_verb}  {} to {delete_verb}",
-                self.hints.edit_comment, self.hints.resolve_comment, self.hints.delete_comment
+                "  press {} to edit  {} to {resolve_verb}  {} to {delete_verb}  {} to expand/collapse",
+                self.hints.edit_comment,
+                self.hints.resolve_comment,
+                self.hints.delete_comment,
+                self.hints.toggle_comment
             ),
             Style::default().fg(color(self.theme.fold_fg)),
         ));
@@ -1493,7 +1504,7 @@ mod tests {
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
 <#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete
+<#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse
 <#c0c5ce|-|->why 2?
 
 <#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;
@@ -1542,7 +1553,7 @@ mod tests {
 <#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,1 +1,1 @@
-<#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#767b84|-|->  press e to edit  r to resolve  d to delete
+<#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse
 <#c0c5ce|-|->why 2?
 
 <#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;
@@ -1576,7 +1587,7 @@ mod tests {
 <#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,1 +1,1 @@
-<#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete
+<#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse
 <#c0c5ce|-|->done
 
 <#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;
@@ -1609,7 +1620,7 @@ mod tests {
         );
         let lines = "\
 <#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
-<#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete
+<#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse
 <#c0c5ce|-|->looks good overall
 
 <#c0c5ce|-|b>modified  src/lib.rs
@@ -1679,7 +1690,7 @@ mod tests {
         let lines = "\
 <#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
-<#8fa1b3|-|->dev (human)<#d08770|-|-> [outdated]<#767b84|-|->  press e to edit  r to resolve  d to delete
+<#8fa1b3|-|->dev (human)<#d08770|-|-> [outdated]<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse
 <#c0c5ce|-|->stale
 
 <#96b5b4|-|->@@ -1,1 +1,1 @@

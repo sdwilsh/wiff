@@ -159,6 +159,7 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
         (Action::ToggleFold, vec![chord("enter")]),
         (Action::ToggleComment, vec![chord("tab")]),
         (Action::ToggleWrap, vec![chord("w")]),
+        (Action::HideComments, vec![chord("V")]),
         (Action::PickFile, vec![chord("t")]),
         (Action::PickComment, vec![chord("C")]),
         (Action::PickTheme, vec![chord("T")]),
@@ -240,6 +241,10 @@ mod tests {
             Resolution::Action(Action::Refresh)
         );
         k9::assert_equal!(map.resolve(&presses("q")), Resolution::Action(Action::Quit));
+        k9::assert_equal!(
+            map.resolve(&presses("V")),
+            Resolution::Action(Action::HideComments)
+        );
         k9::assert_equal!(
             map.resolve(&presses("/")),
             Resolution::Action(Action::SearchForward)

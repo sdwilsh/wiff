@@ -41,6 +41,9 @@ pub enum Action {
     ToggleComment,
     /// Toggle whether diff content wraps to the viewport width or is clipped.
     ToggleWrap,
+    /// Toggle whether comments are shown at all, so the code reads without the
+    /// annotations in the way.
+    HideComments,
     /// Open the modal list of files to jump to one.
     PickFile,
     /// Open the modal list of comments to jump to one.
@@ -103,6 +106,7 @@ impl Action {
             Action::ToggleFold => "toggle_fold",
             Action::ToggleComment => "toggle_comment",
             Action::ToggleWrap => "toggle_wrap",
+            Action::HideComments => "hide_comments",
             Action::PickFile => "pick_file",
             Action::PickComment => "pick_comment",
             Action::PickTheme => "pick_theme",

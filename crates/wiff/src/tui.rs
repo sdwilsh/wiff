@@ -535,7 +535,7 @@ modified  f.txt
    1    2   alpha
    2    3   beta
    3    4   gamma
-┌ wez (human)  press e to edit  r to resolve  d to delete ─────────────────────┐
+┌ wez (human)  press e to edit  r to resolve  d to delete  tab to expand/collapse ┐
 │why delta?                                                                    │
 └──────────────────────────────────────────────────────────────────────────────┘
         5 + delta
@@ -636,7 +636,7 @@ new file mode 100644
 Review [press c here to draft the review comment]
 added  f.txt
 @@ -0,0 +1,4 @@
-┌ wez (human)  press e to edit  r to resolve  d to delete ─────────────────────┐
+┌ wez (human)  press e to edit  r to resolve  d to delete  tab to expand/collapse ┐
 │why alpha?                                                                    │
 └──────────────────────────────────────────────────────────────────────────────┘
         1 + alpha
@@ -750,7 +750,7 @@ new file mode 100644
 Review [press c here to draft the review comment]
 added  f.txt
 @@ -0,0 +1,4 @@
-┌ assistant (agent)  press e to edit  r to resolve  d to delete ───────────────┐
+┌ assistant (agent)  press e to edit  r to resolve  d to delete  tab to expand/collapse ┐
 │alpha looks off                                                               │
 └──────────────────────────────────────────────────────────────────────────────┘
         1 + alpha

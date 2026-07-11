@@ -294,7 +294,8 @@ no thousand-line nested match driving the UI.
 ### Action model
 
 Input is decoded into an **action** (an enum of intents: page up/down, next/prev
-file, next/prev hunk, next/prev comment, toggle fold, toggle comment, toggle
+file, next/prev hunk, next/prev comment, toggle fold, toggle comment, hide
+comments, toggle
 wrap, pick file, pick comment, pick theme, add comment, edit comment, resolve
 comment, delete comment, submit comment, cancel
 comment, save, search forward/backward, search next/prev, refresh,
@@ -317,7 +318,7 @@ reassignable and keeps the update logic small.
   at the top of the document, so the existing top jump (`g`, and `<` as a
   `less`-style alias) reaches it; there is no separate jump-to-review action.
   `t` opens the file picker, `C` the comment picker, and `T` the theme picker
-  (see below).
+  (see below). `V` hides and shows all comments.
 
 ### Modal pickers
 
@@ -411,7 +412,9 @@ independently collapsible. A collapsed comment occupies a single line showing a
 marker, the author (name and kind), and status badges naming who resolved or
 withdrew it; metadata only, no body preview. Expanding adds the body. Resolved comments default to collapsed.
 Collapse state is per-process view state keyed by annotation ULID, not persisted
-across runs.
+across runs. The `hide_comments` action drops every comment from the view,
+leaving only the code, so several rounds of annotation do not crowd out the diff;
+it is a single per-process flag independent of the per-comment collapse state.
 
 Confidence is shown distinctly: an approximate re-anchor carries a `shifted`
 badge and an outdated one an `outdated` badge. An outdated comment whose anchored
