@@ -177,6 +177,7 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
         (Action::SearchNext, vec![chord("n")]),
         (Action::SearchPrev, vec![chord("N")]),
         (Action::Refresh, vec![chord("R")]),
+        (Action::CompareVersions, vec![chord("v")]),
         (Action::OpenInEditor, vec![chord("o")]),
         (Action::Quit, vec![chord("q")]),
     ]

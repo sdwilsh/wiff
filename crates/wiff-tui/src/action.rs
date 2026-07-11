@@ -77,6 +77,9 @@ pub enum Action {
     SearchPrev,
     /// Capture a new diff version and rebase comments.
     Refresh,
+    /// Open the modal list of captured versions to compare the review against
+    /// an earlier one.
+    CompareVersions,
     /// Open the focused file in the user's editor.
     OpenInEditor,
     /// Quit, honoring the configured keep-or-remove default.
@@ -122,6 +125,7 @@ impl Action {
             Action::SearchNext => "search_next",
             Action::SearchPrev => "search_prev",
             Action::Refresh => "refresh",
+            Action::CompareVersions => "compare_versions",
             Action::OpenInEditor => "open_in_editor",
             Action::Quit => "quit",
             Action::QuitKeep => "quit_keep",

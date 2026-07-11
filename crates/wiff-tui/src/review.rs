@@ -368,6 +368,12 @@ impl Review {
         self.comparing.as_ref().map(|comparing| comparing.from)
     }
 
+    /// The latest captured version, which the review's after side always shows
+    /// and which new comments anchor against.
+    pub fn version(&self) -> u32 {
+        self.version
+    }
+
     /// Buffer a new `body` for comment `id`.
     pub fn edit_comment(&mut self, id: Ulid, body: String) {
         self.drafts.edit(id, body);

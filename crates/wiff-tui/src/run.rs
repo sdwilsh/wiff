@@ -23,7 +23,7 @@ use ratatui::{Frame, Terminal};
 use wiff_core::record::RecordBody;
 
 use crate::action::Action;
-use crate::app::{App, ComposeView, Update};
+use crate::app::{App, CompareRequest, ComposeView, Update};
 use crate::event::to_key_press;
 use crate::exit::Exit;
 use crate::input::Input;
@@ -46,22 +46,32 @@ const HIGHLIGHT_POLL_INTERVAL: Duration = Duration::from_millis(30);
 /// a quit action ends it. A [`Action::Refresh`] is handed to `refresh`, which
 /// recaptures the diff and reloads the app in place, and a [`Action::Save`] to
 /// `save`, which commits the pending drafts and keeps the review open; both
-/// report their own outcome through the app's status line. While the review sits
-/// idle the loop periodically calls `sync`, which picks up another actor's
-/// updates to the session and folds them into the app, returning whether it
-/// changed anything so the loop repaints only when it did. The terminal is put
-/// into raw mode on an alternate screen for the duration and restored before
-/// returning. Returns how the reviewer chose to leave together with any buffered
-/// draft edits still to commit.
+/// report their own outcome through the app's status line. When the reviewer
+/// chooses a version to compare against, `compare` reconstructs that diff and
+/// shows it in place. While the review sits idle the loop periodically calls
+/// `sync`, which picks up another actor's updates to the session and folds them
+/// into the app, returning whether it changed anything so the loop repaints only
+/// when it did. The terminal is put into raw mode on an alternate screen for the
+/// duration and restored before returning. Returns how the reviewer chose to
+/// leave together with any buffered draft edits still to commit.
 pub fn run(
     app: App,
     keymap: Keymap,
     refresh: impl FnMut(&mut App),
     save: impl FnMut(&mut App),
     sync: impl FnMut(&mut App) -> bool,
+    compare: impl FnMut(&mut App, CompareRequest),
 ) -> io::Result<(Exit, Vec<RecordBody>)> {
     let mut terminal = TerminalGuard::enter()?;
-    event_loop(&mut terminal.terminal, app, keymap, refresh, save, sync)
+    event_loop(
+        &mut terminal.terminal,
+        app,
+        keymap,
+        refresh,
+        save,
+        sync,
+        compare,
+    )
 }
 
 /// Draw the current view: the visible lines over all but the last screen row,
@@ -171,6 +181,7 @@ fn event_loop<B: Backend>(
     mut refresh: impl FnMut(&mut App),
     mut save: impl FnMut(&mut App),
     mut sync: impl FnMut(&mut App) -> bool,
+    mut compare: impl FnMut(&mut App, CompareRequest),
 ) -> io::Result<(Exit, Vec<RecordBody>)> {
     let mut input = Input::new(keymap);
     // Repaint only when the view might have changed, so an idle poll that finds
@@ -241,6 +252,11 @@ fn event_loop<B: Backend>(
                 Update::Passed(Action::Save) => save(&mut app),
                 _ => {}
             }
+        }
+        // A version chosen from the compare picker is reconstructed and shown in
+        // place by the host, which reads the journalled diffs off disk.
+        if let Some(request) = app.take_pending_compare() {
+            compare(&mut app, request);
         }
         // A quit action or a confirmed picker choice settles how to leave.
         if let Some(exit) = app.pending_exit() {

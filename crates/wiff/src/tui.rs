@@ -10,8 +10,10 @@ use anyhow::Context;
 use wiff_config::{Config, OnExit};
 use wiff_core::record::{AuthorKind, RecordBody, SessionHeader};
 use wiff_core::session::{SessionWatcher, remove_session};
-use wiff_core::{RefreshOutcome, ReviewState, SessionLog, refresh_session};
-use wiff_tui::{App, CommentSync, DiffView, Exit, ExitDefault, KeyHints, Review, Theme, run};
+use wiff_core::{RefreshOutcome, ReviewState, SessionLog, compare_versions, refresh_session};
+use wiff_tui::{
+    App, CommentSync, CompareRequest, DiffView, Exit, ExitDefault, KeyHints, Review, Theme, run,
+};
 
 use crate::command::recapture_diff;
 
@@ -64,6 +66,11 @@ pub fn open(session_path: &Path, config: &Config) -> anyhow::Result<()> {
             app.set_message(format!("save failed: {err}"));
         }
     };
+    let compare = |app: &mut App, request: CompareRequest| {
+        if let Err(err) = compare_in_place(session_path, app, request) {
+            app.set_message(format!("compare failed: {err}"));
+        }
+    };
     // Between key presses, pick up comments another actor (an agent, or a second
     // human) has committed to this session and fold them in. The watcher is a
     // cheap stat, so it costs nothing while the file is untouched.
@@ -86,8 +93,39 @@ pub fn open(session_path: &Path, config: &Config) -> anyhow::Result<()> {
         true
     };
 
-    let (exit, drafts) = run(app, keymap, refresh, save, sync)?;
+    let (exit, drafts) = run(app, keymap, refresh, save, sync, compare)?;
     resolve_exit(exit, session_path, drafts)
+}
+
+/// Reconstruct the diff the reviewer chose to compare against and show it in
+/// place: an earlier version's after content on the left against the latest
+/// version's, or the latest version's own captured diff when returning to it.
+/// Reports what is shown in the status line.
+fn compare_in_place(
+    session_path: &Path,
+    app: &mut App,
+    request: CompareRequest,
+) -> anyhow::Result<()> {
+    let state = ReviewState::load(session_path)?;
+    let latest = state
+        .latest_version()
+        .context("this session has no captured diff to compare")?
+        .number;
+    let log = SessionLog::open(session_path)?;
+    let latest_diff = wiff_diff::parse(&log.read_diff(latest)?)?;
+    match request {
+        CompareRequest::Latest => {
+            app.show_comparison(latest_diff, None);
+            app.set_message(format!("showing the latest diff (v{latest})"));
+        }
+        CompareRequest::Version(from) => {
+            let from_diff = wiff_diff::parse(&log.read_diff(from)?)?;
+            let comparison = compare_versions(&latest_diff, latest, &from_diff, from);
+            app.show_comparison(comparison.diff, Some((from, comparison.before_origin)));
+            app.set_message(format!("comparing v{from} against v{latest}"));
+        }
+    }
+    Ok(())
 }
 
 /// Recapture the session's diff as a new version, rebase its committed comments
@@ -261,11 +299,13 @@ mod tests {
         create_session,
     };
     use wiff_diff::{LineNo, Side};
-    use wiff_tui::{Action, App, CommentSync, DiffView, Key, KeyPress, Review, Theme};
+    use wiff_tui::{
+        Action, App, CommentSync, CompareRequest, DiffView, Key, KeyPress, Review, Theme,
+    };
 
     use super::{
-        commit_drafts, recapture, refresh_in_place, refresh_report, reload_committed,
-        save_in_place, sync_report,
+        commit_drafts, compare_in_place, recapture, refresh_in_place, refresh_report,
+        reload_committed, save_in_place, sync_report,
     };
     use crate::command::{DiffSelection, capture_scm_diff};
 
@@ -543,6 +583,103 @@ modified  f.txt
 captured v1; rebased 1 comment: 1 exact, 0 shifted, 0 outdated
 ";
         k9::assert_equal!(screen(&app, 80), expected.to_string());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn comparing_against_an_earlier_version_shows_the_change_since_then() {
+        // A committed base, a working change captured as v0, then a further
+        // change refreshed into v1. Comparing the review against v0 reconstructs
+        // the change made between the two versions -- beta becoming BETA -- with
+        // the still-present delta as context, rather than the whole v1 diff.
+        let repo = tempfile::tempdir().expect("repo tempdir");
+        let data = tempfile::tempdir().expect("data tempdir");
+        let file = repo.path().join("f.txt");
+
+        git(repo.path(), &["init", "-q"]);
+        std::fs::write(&file, "alpha\nbeta\ngamma\n").expect("write base");
+        git(repo.path(), &["add", "f.txt"]);
+        git(repo.path(), &["commit", "-q", "-m", "base"]);
+        // v0 appends delta to the working tree.
+        std::fs::write(&file, "alpha\nbeta\ngamma\ndelta\n").expect("write v0");
+
+        let identity = ProjectIdentity {
+            canonical: "demo".to_string(),
+            repo_root: Some(repo.path().to_path_buf()),
+            scm: Some(ScmType::Git),
+        };
+        let captured = capture_scm_diff(
+            Some(ScmType::Git),
+            repo.path().to_path_buf(),
+            DiffSelection::Worktree,
+        )
+        .await
+        .expect("capture v0");
+        let log =
+            create_session(data.path(), &identity, repo.path(), &captured).expect("create session");
+        let session_path = log.path().to_path_buf();
+        drop(log);
+
+        let theme = Theme::dark();
+        let state = ReviewState::load(&session_path).expect("load state");
+        let version = state.latest_version().expect("a captured version").number;
+        let diff = wiff_diff::parse(
+            &SessionLog::open(&session_path)
+                .unwrap()
+                .read_diff(version)
+                .unwrap(),
+        )
+        .expect("parse v0");
+        let review = Review::new(
+            DiffView::new(theme.clone()).expect("renderer"),
+            diff,
+            Author {
+                name: "wez".to_string(),
+                kind: AuthorKind::Human,
+            },
+            version,
+            state.comments.clone(),
+        );
+        let mut app = App::reviewing(review, 40, &theme);
+
+        // v1 rewrites beta in the working tree; refreshing captures it.
+        std::fs::write(&file, "alpha\nBETA\ngamma\ndelta\n").expect("write v1");
+        refresh_in_place(&session_path, &mut app).expect("refresh to v1");
+
+        compare_in_place(&session_path, &mut app, CompareRequest::Version(0)).expect("compare");
+
+        // The review now shows only what changed between v0 and v1: beta on the
+        // left, BETA on the right, with the unchanged lines as context, and the
+        // status line names the comparison.
+        let expected = "\
+Review [press c here to draft the review comment]
+modified  f.txt
+@@ -1,4 +1,4 @@
+   1    1   alpha
+   2      - beta
+        2 + BETA
+   3    3   gamma
+   4    4   delta
+---
+comparing v0 against v1
+";
+        k9::assert_equal!(screen(&app, 80), expected.to_string());
+
+        // Returning to the latest diff shows v1's own captured change against
+        // its baseline again.
+        compare_in_place(&session_path, &mut app, CompareRequest::Latest).expect("back to latest");
+        let latest = "\
+Review [press c here to draft the review comment]
+modified  f.txt
+@@ -1,3 +1,4 @@
+   1    1   alpha
+   2      - beta
+        2 + BETA
+   3    3   gamma
+        4 + delta
+---
+showing the latest diff (v1)
+";
+        k9::assert_equal!(screen(&app, 80), latest.to_string());
     }
 
     #[test]

@@ -98,6 +98,35 @@ struct CursorSpot {
     line: Option<(Side, LineNo)>,
 }
 
+/// What the review's left side should show: an earlier version's after-content
+/// as the reference point, or the latest version's own diff against its
+/// baseline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompareRequest {
+    /// Compare the latest version against version `k`'s after-content.
+    Version(u32),
+    /// Return to the latest version's own captured diff.
+    Latest,
+}
+
+/// A captured version in the modal list.
+struct VersionRow {
+    /// The text shown for the version in the list.
+    label: String,
+    /// The comparison choosing this row records.
+    request: CompareRequest,
+}
+
+impl PickerRow<App> for VersionRow {
+    fn label(&self) -> String {
+        self.label.clone()
+    }
+
+    fn activate(self: Box<Self>, app: &mut App) {
+        app.pending_compare = Some(self.request);
+    }
+}
+
 /// A file in the modal list: its display path and the document row of its
 /// header, so choosing it jumps the cursor to that file.
 struct FileRow {
@@ -187,6 +216,9 @@ pub struct App {
     exit: Option<Exit>,
     /// The open modal list, present while the reviewer is choosing from it.
     picker: Option<Picker<App>>,
+    /// The version comparison the reviewer chose from the picker, present until
+    /// the host takes it to reconstruct the diff.
+    pending_compare: Option<CompareRequest>,
     /// The default a quit resolves to, from the host's configured on-exit policy.
     exit_default: ExitDefault,
     /// Whether each of the document's folds is currently collapsed.
@@ -263,6 +295,7 @@ impl App {
             compose: None,
             exit: None,
             picker: None,
+            pending_compare: None,
             exit_default: ExitDefault::Prompt,
             collapsed,
             comment_collapsed,
@@ -454,6 +487,7 @@ impl App {
             Action::PickFile => self.open_file_picker(),
             Action::PickComment => self.open_comment_picker(),
             Action::PickTheme => self.open_theme_picker(),
+            Action::CompareVersions => self.open_compare_picker(),
             Action::ResolveComment => return self.resolve_comment(),
             Action::DeleteComment => return self.delete_comment(),
             Action::AddComment => return self.start_add_comment(),
@@ -864,6 +898,50 @@ impl App {
         self.picker = Some(picker);
     }
 
+    /// Open the modal list of captured versions to compare the review against.
+    /// The list offers the latest version's own diff and every earlier version
+    /// as a reference point, opening on the one in effect. Reports instead when
+    /// there is no earlier version, and does nothing on a read-only view.
+    fn open_compare_picker(&mut self) {
+        let Some(latest) = self.latest_version() else {
+            return;
+        };
+        if latest == 0 {
+            self.set_message("no earlier version to compare against".to_string());
+            return;
+        }
+        let mut choices = vec![(
+            format!("the latest diff (v{latest})"),
+            CompareRequest::Latest,
+        )];
+        for k in (0..latest).rev() {
+            choices.push((format!("changes since v{k}"), CompareRequest::Version(k)));
+        }
+        let selected = match self.comparing_from() {
+            None => 0,
+            Some(from) => choices
+                .iter()
+                .position(|(_, request)| *request == CompareRequest::Version(from))
+                .unwrap_or(0),
+        };
+        let rows: Vec<Box<dyn PickerRow<App>>> = choices
+            .into_iter()
+            .map(|(label, request)| {
+                Box::new(VersionRow { label, request }) as Box<dyn PickerRow<App>>
+            })
+            .collect();
+        let hint = self.picker_hint();
+        let mut picker = Picker::new("Compare versions", rows, &hint, self.picker_colors);
+        picker.select(selected);
+        self.picker = Some(picker);
+    }
+
+    /// Take the version comparison the reviewer chose from the picker, if any,
+    /// clearing it.
+    pub fn take_pending_compare(&mut self) -> Option<CompareRequest> {
+        self.pending_compare.take()
+    }
+
     /// The picker's key hint, naming the reviewer's own bindings for moving the
     /// highlight alongside the fixed enter and escape keys that select and
     /// cancel, resolved from the active keymap like the inline editor's hint.
@@ -1081,9 +1159,15 @@ impl App {
     }
 
     /// The reference version the review is comparing against, or `None` when it
-    /// shows the latest version's own diff, for the host to name in the status.
+    /// shows the latest version's own diff.
     pub fn comparing_from(&self) -> Option<u32> {
         self.review.as_ref().and_then(Review::comparing_from)
+    }
+
+    /// The latest captured version under review, or `None` on a read-only view
+    /// with no review attached.
+    fn latest_version(&self) -> Option<u32> {
+        self.review.as_ref().map(Review::version)
     }
 
     /// Carry each comment's collapse state onto a freshly rendered `document`,
@@ -1854,15 +1938,19 @@ impl App {
     /// `percent`, how far the cursor sits through the view.
     fn status_meta(&self, percent: &str) -> String {
         let marker = if self.has_drafts() { "* " } else { "" };
+        let compare = match (self.comparing_from(), self.latest_version()) {
+            (Some(from), Some(latest)) => format!("v{from}..v{latest}  "),
+            _ => String::new(),
+        };
         if self.comments_hidden {
             let key = self
                 .keymap
                 .primary_label(Action::HideComments)
                 .unwrap_or_default();
-            return format!("{marker}comments hidden, toggle with {key}  {percent}");
+            return format!("{marker}{compare}comments hidden, toggle with {key}  {percent}");
         }
         let open = self.review.as_ref().map_or(0, Review::open_comments);
-        format!("{marker}{open} open  {percent}")
+        format!("{marker}{compare}{open} open  {percent}")
     }
 
     /// The file index the cursor is in: its own row's file, or the file of the
@@ -2091,7 +2179,7 @@ mod tests {
     use wiff_core::review::CommentState;
     use wiff_diff::{Diff, FileStatus, LineKind, Side};
 
-    use super::{App, ComposeView, Update};
+    use super::{App, CompareRequest, ComposeView, Update};
     use crate::action::Action;
     use crate::exit::{Exit, ExitDefault};
     use crate::key::{Chord, Key, KeyPress};
@@ -2727,6 +2815,73 @@ why?
         k9::assert_equal!(app.picking(), false);
         let light = Theme::light();
         k9::assert_equal!(app.background(), light.background);
+    }
+
+    /// A review over a one-line file whose latest captured version is `version`,
+    /// for the version-comparison picker.
+    fn versioned_review(version: u32) -> Review {
+        Review::new(
+            DiffView::new(Theme::dark()).unwrap(),
+            Diff {
+                files: vec![file(
+                    "src/lib.rs",
+                    FileStatus::Modified,
+                    &[(LineKind::Added, "let y = 2;", 1)],
+                )],
+            },
+            Author {
+                name: "wez".to_string(),
+                kind: AuthorKind::Human,
+            },
+            version,
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn the_compare_picker_lists_the_latest_diff_and_each_earlier_version() {
+        // A review whose latest version is v2 offers the latest diff plus the
+        // two earlier versions as reference points, newest first, opening on the
+        // latest diff since no comparison is in effect.
+        let mut app = App::reviewing(versioned_review(2), 8, &Theme::dark());
+        app.update(Action::CompareVersions);
+        k9::assert_equal!(app.picking(), true);
+        let expected = "\
+<#c0c5ce|#4f5b66|->> the latest diff (v2)                  
+<#c0c5ce|#2b303b|->  changes since v1                      
+<#c0c5ce|#2b303b|->  changes since v0                      
+<-|#2b303b|->                                        
+<#767b84|#2b303b|->  up/down move  enter select  esc cancel
+";
+        k9::assert_equal!(dump_picker(&mut app), expected.to_string());
+    }
+
+    #[test]
+    fn choosing_an_earlier_version_records_the_comparison_request() {
+        // Stepping down to the first earlier version and activating closes the
+        // picker and records a request to compare against v1, which the host
+        // reads back to reconstruct the diff.
+        let mut app = App::reviewing(versioned_review(2), 8, &Theme::dark());
+        app.update(Action::CompareVersions);
+        app.picker_nav(Action::LineDown);
+        app.picker_activate();
+        k9::assert_equal!(app.picking(), false);
+        k9::assert_equal!(app.take_pending_compare(), Some(CompareRequest::Version(1)));
+        k9::assert_equal!(app.take_pending_compare(), None);
+    }
+
+    #[test]
+    fn the_compare_picker_reports_when_there_is_no_earlier_version() {
+        // At v0 there is nothing earlier to compare against, so the picker does
+        // not open and the status line says so.
+        let mut app = App::reviewing(versioned_review(0), 8, &Theme::dark());
+        app.set_width(TEST_WIDTH);
+        app.update(Action::CompareVersions);
+        k9::assert_equal!(app.picking(), false);
+        k9::assert_equal!(
+            status_text(&app),
+            "no earlier version to compare against   ".to_string()
+        );
     }
 
     #[test]

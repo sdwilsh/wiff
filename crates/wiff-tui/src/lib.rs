@@ -23,7 +23,7 @@ pub mod theme;
 pub mod wrap;
 
 pub use action::Action;
-pub use app::{App, Update};
+pub use app::{App, CompareRequest, Update};
 pub use event::to_key_press;
 pub use exit::{Exit, ExitDefault};
 pub use highlight::BackgroundHighlighter;
