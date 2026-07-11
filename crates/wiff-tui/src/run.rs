@@ -25,7 +25,7 @@ use wiff_core::record::RecordBody;
 use crate::action::Action;
 use crate::app::{App, ComposeView, Update};
 use crate::event::to_key_press;
-use crate::exit::{Exit, ExitDialog};
+use crate::exit::Exit;
 use crate::input::Input;
 use crate::key::Key;
 use crate::keymap::Keymap;
@@ -95,35 +95,12 @@ pub fn draw<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
             frame.render_widget(Paragraph::new(app.visible(area.width as usize)), doc_area);
         }
         frame.render_widget(Paragraph::new(app.status(area.width as usize)), status_area);
-        // The exit dialog and the modal list each float centered over whatever
-        // they interrupt.
-        if let Some(dialog) = app.exit_dialog() {
-            render_exit_dialog(frame, doc_area, dialog);
-        }
+        // The modal list floats centered over whatever it interrupts.
         if app.picking() {
             render_picker(frame, doc_area, app);
         }
     })?;
     Ok(())
-}
-
-/// Draw the exit dialog centered over `area`, clearing the cells behind it so
-/// the underlying view does not show through the box.
-fn render_exit_dialog(frame: &mut Frame, area: Rect, dialog: &ExitDialog) {
-    let width = (dialog.width() as u16 + 2).min(area.width);
-    let height = (dialog.height() as u16 + 2).min(area.height);
-    let rect = Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(color(dialog.border())))
-        .title(dialog.title().to_string());
-    frame.render_widget(Clear, rect);
-    frame.render_widget(Paragraph::new(dialog.lines()).block(block), rect);
 }
 
 /// Draw the modal list centered over `area`, clearing the cells behind it. The
@@ -201,10 +178,10 @@ fn event_loop<B: Backend>(
     // opening frame.
     let mut dirty = true;
     loop {
-        // A modal view -- the comment editor, search prompt, exit dialog, or
-        // theme picker -- owns a spot or buffer that folding a document change
-        // in would disturb.
-        let modal = app.composing() || app.searching() || app.exiting() || app.picking();
+        // A modal view -- the comment editor, search prompt, or picker (the
+        // file, comment, theme, or exit list) -- owns a spot or buffer that
+        // folding a document change in would disturb.
+        let modal = app.composing() || app.searching() || app.picking();
         // Reveal files as their background highlight arrives, repainting
         // immediately only when the change is on screen.
         if !modal && app.poll_highlights() {
@@ -236,15 +213,12 @@ fn event_loop<B: Backend>(
         let Some(press) = to_key_press(key) else {
             continue;
         };
-        // While the search prompt, the inline editor, or the exit dialog is
-        // open, raw presses go to it rather than being resolved into review
-        // actions.
+        // While the search prompt, the inline editor, or a picker is open, raw
+        // presses go to it rather than being resolved into review actions.
         if app.searching() {
             app.search_key(press);
         } else if app.composing() {
             app.compose_key(press);
-        } else if app.exiting() {
-            app.exit_key(press);
         } else if app.picking() {
             // Enter activates the highlight and escape closes the list; every
             // other press resolves through the keymap so the list moves with the
@@ -268,7 +242,7 @@ fn event_loop<B: Backend>(
                 _ => {}
             }
         }
-        // A quit action or a confirmed dialog choice settles how to leave.
+        // A quit action or a confirmed picker choice settles how to leave.
         if let Some(exit) = app.pending_exit() {
             return Ok((exit, app.take_drafts()));
         }
@@ -319,7 +293,7 @@ mod tests {
     use crate::theme::Theme;
 
     /// A review over a one-line added file authored by a human, for driving the
-    /// exit dialog after a draft is made.
+    /// exit picker after a draft is made.
     fn draft_review() -> Review {
         let diff = Diff {
             files: vec![file(
@@ -429,10 +403,10 @@ mod tests {
     }
 
     #[test]
-    fn draws_the_exit_dialog_centered_over_the_view_with_pending_drafts() {
+    fn draws_the_exit_picker_centered_over_the_view_with_pending_drafts() {
         let mut app = App::reviewing(draft_review(), 0, &Theme::dark())
             .with_exit_default(ExitDefault::Prompt);
-        // Author a comment so a draft is pending, then quit to raise the dialog.
+        // Author a comment so a draft is pending, then quit to raise the picker.
         app.update(Action::AddComment);
         for c in "why?".chars() {
             app.compose_key(KeyPress::new(Key::Char(c)));
@@ -440,19 +414,19 @@ mod tests {
         app.compose_key(KeyPress::with_modifiers(Key::Char('d'), true, false, false));
         app.update(Action::Quit);
 
-        // The three-choice dialog floats centered over the review, the first
+        // The three-choice picker floats centered over the review, the first
         // choice highlighted with its marker and the key hint along the bottom.
         // It clears the cells behind it, so the underlying diff shows only where
         // the box does not cover it.
         let expected = concat!(
             "Review [press c here to draft the review comment] \n",
-            "┌ w┌You have uncommitted comments─────────────┐sol\n",
-            "│wh│> Commit review                           │  │\n",
-            "└──│  Quit without saving                     │──┘\n",
-            "mod│  Remove session                          │   \n",
-            "@@ │                                          │   \n",
-            "   │  up/down move   enter select   esc cancel│   \n",
-            "   └──────────────────────────────────────────┘   \n",
+            "┌ we┌You have uncommitted comments───────────┐esol\n",
+            "│why│> Commit review                         │   │\n",
+            "└───│  Quit without saving                   │───┘\n",
+            "modi│  Remove session                        │    \n",
+            "@@ -│                                        │    \n",
+            "    │  up/down move  enter select  esc cancel│    \n",
+            "    └────────────────────────────────────────┘    \n",
             "                                                  \n",
             "                                                  \n",
             "src/lib.rs                           * 1 open  83%\n",

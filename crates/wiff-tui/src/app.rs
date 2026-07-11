@@ -27,7 +27,7 @@ use wiff_diff::{LineNo, Rgb, Side};
 
 use crate::action::Action;
 use crate::compose::{Compose, ComposeKind};
-use crate::exit::{Exit, ExitColors, ExitDefault, ExitDialog, ExitPlan, plan_exit};
+use crate::exit::{Exit, ExitDefault, ExitPlan, plan_exit};
 use crate::key::{Key, KeyPress};
 use crate::keymap::{Keymap, Resolution};
 use crate::picker::{Picker, PickerColors, PickerRow};
@@ -156,6 +156,23 @@ impl PickerRow<App> for ThemeRow {
     }
 }
 
+/// A way to leave in the modal list: its label and the outcome it settles on,
+/// so choosing it resolves the quit the host is waiting on.
+struct ExitRow {
+    label: String,
+    exit: Exit,
+}
+
+impl PickerRow<App> for ExitRow {
+    fn label(&self) -> String {
+        self.label.clone()
+    }
+
+    fn activate(self: Box<Self>, app: &mut App) {
+        app.exit = Some(self.exit);
+    }
+}
+
 /// The review view over a rendered diff.
 pub struct App {
     document: Document,
@@ -164,9 +181,6 @@ pub struct App {
     review: Option<Review>,
     /// The inline comment editor, present while authoring or revising a comment.
     compose: Option<Compose>,
-    /// The modal asking how to leave, present once a quit begins and until it is
-    /// confirmed or cancelled.
-    exit_dialog: Option<ExitDialog>,
     /// The chosen way to leave, set once a quit resolves, which the host reads
     /// to end the loop.
     exit: Option<Exit>,
@@ -209,8 +223,6 @@ pub struct App {
     /// the host's own loop resolves keys; the app keeps the map to resolve the
     /// inline editor's own submit and cancel keys while composing.
     keymap: Keymap,
-    /// The colors the exit dialog paints with.
-    exit_colors: ExitColors,
     /// The colors the modal list paints with.
     picker_colors: PickerColors,
     /// A transient note shown in the status line until the next key press, used
@@ -245,7 +257,6 @@ impl App {
             document,
             review: None,
             compose: None,
-            exit_dialog: None,
             exit: None,
             picker: None,
             exit_default: ExitDefault::Prompt,
@@ -266,12 +277,6 @@ impl App {
             status_bg: theme.status_bg,
             compose_border: theme.comment_draft_fg,
             keymap: Keymap::defaults(),
-            exit_colors: ExitColors {
-                border: theme.review_fg,
-                selected_bg: theme.cursor_bg,
-                text: theme.comment_fg,
-                hint: theme.fold_fg,
-            },
             picker_colors: PickerColors {
                 border: theme.review_fg,
                 background: theme.background,
@@ -715,7 +720,7 @@ impl App {
 
     /// Begin leaving the review for a quit `action`: resolve it against the
     /// configured default and any pending drafts, either settling how to leave
-    /// at once or opening the dialog to ask.
+    /// immediately or opening the picker to ask.
     fn request_exit(&mut self, action: Action) -> Update {
         match plan_exit(action, self.exit_default, self.has_drafts()) {
             ExitPlan::Now(exit) => self.exit = Some(exit),
@@ -724,8 +729,19 @@ impl App {
                 choices,
                 selected,
             } => {
-                self.exit_dialog =
-                    Some(ExitDialog::new(title, choices, selected, self.exit_colors));
+                let rows: Vec<Box<dyn PickerRow<App>>> = choices
+                    .into_iter()
+                    .map(|(label, exit)| {
+                        Box::new(ExitRow {
+                            label: label.to_string(),
+                            exit,
+                        }) as Box<dyn PickerRow<App>>
+                    })
+                    .collect();
+                let hint = self.picker_hint();
+                let mut picker = Picker::new(title, rows, &hint, self.picker_colors);
+                picker.select(selected);
+                self.picker = Some(picker);
             }
         }
         Update::Handled
@@ -736,40 +752,10 @@ impl App {
         self.review.as_ref().is_some_and(Review::has_drafts)
     }
 
-    /// Whether the exit dialog is open, so the host routes raw key presses to it
-    /// rather than resolving them into actions.
-    pub fn exiting(&self) -> bool {
-        self.exit_dialog.is_some()
-    }
-
-    /// The open exit dialog, for the host to render centered over the view.
-    pub fn exit_dialog(&self) -> Option<&ExitDialog> {
-        self.exit_dialog.as_ref()
-    }
-
     /// The chosen way to leave once a quit has resolved, which the host reads to
     /// end the loop. Absent until the reviewer settles the choice.
     pub fn pending_exit(&self) -> Option<Exit> {
         self.exit
-    }
-
-    /// Feed a key press to the open exit dialog: move the highlight with the
-    /// arrows, confirm the highlighted choice on enter, and cancel back to the
-    /// review on escape. Does nothing when the dialog is closed.
-    pub fn exit_key(&mut self, press: KeyPress) {
-        let Some(dialog) = self.exit_dialog.as_mut() else {
-            return;
-        };
-        match press.key {
-            Key::Up | Key::Char('k') => dialog.select_prev(),
-            Key::Down | Key::Char('j') => dialog.select_next(),
-            Key::Enter => {
-                self.exit = Some(dialog.selected_exit());
-                self.exit_dialog = None;
-            }
-            Key::Escape => self.exit_dialog = None,
-            _ => {}
-        }
     }
 
     /// Open the modal list of the diff's files, each jumping to that file's
@@ -961,12 +947,6 @@ impl App {
         self.status_fg = theme.status_fg;
         self.status_bg = theme.status_bg;
         self.compose_border = theme.comment_draft_fg;
-        self.exit_colors = ExitColors {
-            border: theme.review_fg,
-            selected_bg: theme.cursor_bg,
-            text: theme.comment_fg,
-            hint: theme.fold_fg,
-        };
         self.picker_colors = PickerColors {
             border: theme.review_fg,
             background: theme.background,
@@ -2685,33 +2665,33 @@ why?
         // and settles on keeping the session.
         let mut app = App::new(document(), 10, &Theme::dark()).with_exit_default(ExitDefault::Keep);
         k9::assert_equal!(app.update(Action::Quit), Update::Handled);
-        k9::assert_equal!(app.exiting(), false);
+        k9::assert_equal!(app.picking(), false);
         k9::assert_equal!(app.pending_exit(), Some(Exit::Commit));
     }
 
     #[test]
-    fn a_prompt_default_opens_the_dialog_and_the_choice_settles_the_exit() {
+    fn a_prompt_default_opens_the_picker_and_the_choice_settles_the_exit() {
         // A prompt default with nothing buffered asks keep-or-remove; moving to
         // the second choice and confirming removes the session.
         let mut app =
             App::new(document(), 10, &Theme::dark()).with_exit_default(ExitDefault::Prompt);
         k9::assert_equal!(app.update(Action::Quit), Update::Handled);
-        k9::assert_equal!(app.exiting(), true);
+        k9::assert_equal!(app.picking(), true);
         k9::assert_equal!(app.pending_exit(), None);
-        app.exit_key(KeyPress::new(Key::Down));
-        app.exit_key(KeyPress::new(Key::Enter));
-        k9::assert_equal!(app.exiting(), false);
+        app.picker_nav(Action::LineDown);
+        app.picker_activate();
+        k9::assert_equal!(app.picking(), false);
         k9::assert_equal!(app.pending_exit(), Some(Exit::Remove));
     }
 
     #[test]
-    fn cancelling_the_exit_dialog_returns_to_the_review() {
-        // Escape closes the dialog without choosing, leaving the exit unresolved.
+    fn cancelling_the_exit_picker_returns_to_the_review() {
+        // Escape closes the picker without choosing, leaving the exit unresolved.
         let mut app =
             App::new(document(), 10, &Theme::dark()).with_exit_default(ExitDefault::Prompt);
         app.update(Action::Quit);
-        app.exit_key(KeyPress::new(Key::Escape));
-        k9::assert_equal!(app.exiting(), false);
+        app.picker_cancel();
+        k9::assert_equal!(app.picking(), false);
         k9::assert_equal!(app.pending_exit(), None);
     }
 

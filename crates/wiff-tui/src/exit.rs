@@ -5,19 +5,11 @@
 //! entirely. When there are pending drafts the reviewer is always asked, since
 //! leaving would otherwise silently lose work; with nothing buffered the choice
 //! is only keep-or-remove and the host's configured default settles it without a
-//! prompt unless the default is to prompt. The dialog that does the asking lives
-//! here as [`ExitDialog`], along with the pure [`plan_exit`] that decides
-//! between resolving at once and putting the question to the reviewer.
-
-use ratatui::style::Style;
-use ratatui::text::{Line, Span};
-use wiff_diff::Rgb;
+//! prompt unless the default is to prompt. The pure [`plan_exit`] here decides
+//! between resolving immediately and putting the question to the reviewer, which
+//! the app then asks through its modal picker.
 
 use crate::action::Action;
-use crate::render::color;
-
-/// The hint shown along the bottom of the exit dialog.
-const HINT: &str = "up/down move   enter select   esc cancel";
 
 /// What leaving the review does to the session and its buffered drafts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,20 +33,7 @@ pub enum ExitDefault {
     Prompt,
 }
 
-/// The colors the exit dialog paints with, taken from the theme by the host.
-#[derive(Debug, Clone, Copy)]
-pub struct ExitColors {
-    /// The dialog's border and title color.
-    pub border: Rgb,
-    /// The background washed over the highlighted choice.
-    pub selected_bg: Rgb,
-    /// The color of the choice text.
-    pub text: Rgb,
-    /// The color of the key hint along the bottom.
-    pub hint: Rgb,
-}
-
-/// Whether leaving resolves at once or the reviewer is asked how to leave.
+/// Whether leaving resolves immediately or the reviewer is asked how to leave.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExitPlan {
     /// Leave immediately with this outcome.
@@ -103,112 +82,6 @@ pub fn plan_exit(action: Action, default: ExitDefault, has_drafts: bool) -> Exit
                 selected: 0,
             },
         },
-    }
-}
-
-/// The modal asking how to leave the review: a list of outcomes with one
-/// highlighted, moved through with the arrows and confirmed or cancelled.
-pub struct ExitDialog {
-    title: String,
-    choices: Vec<(String, Exit)>,
-    selected: usize,
-    colors: ExitColors,
-}
-
-impl ExitDialog {
-    /// A dialog titled `title` offering `choices`, opening on `selected`, drawn
-    /// with `colors`.
-    pub fn new(
-        title: &str,
-        choices: Vec<(&str, Exit)>,
-        selected: usize,
-        colors: ExitColors,
-    ) -> Self {
-        let choices = choices
-            .into_iter()
-            .map(|(label, exit)| (label.to_string(), exit))
-            .collect::<Vec<_>>();
-        let selected = selected.min(choices.len().saturating_sub(1));
-        Self {
-            title: title.to_string(),
-            choices,
-            selected,
-            colors,
-        }
-    }
-
-    /// Move the highlight to the previous choice, stopping at the first.
-    pub fn select_prev(&mut self) {
-        self.selected = self.selected.saturating_sub(1);
-    }
-
-    /// Move the highlight to the next choice, stopping at the last.
-    pub fn select_next(&mut self) {
-        self.selected = (self.selected + 1).min(self.choices.len().saturating_sub(1));
-    }
-
-    /// The outcome the highlighted choice produces.
-    pub fn selected_exit(&self) -> Exit {
-        self.choices[self.selected].1
-    }
-
-    /// The dialog's border and title color.
-    pub fn border(&self) -> Rgb {
-        self.colors.border
-    }
-
-    /// The heading for the dialog's border.
-    pub fn title(&self) -> &str {
-        &self.title
-    }
-
-    /// The width of the dialog's content, inside its border.
-    pub fn width(&self) -> usize {
-        // Two columns for the selection marker, then the widest label or hint.
-        2 + self.inner_width()
-    }
-
-    /// The height of the dialog's content, inside its border: one row per
-    /// choice, a blank spacer, and the hint.
-    pub fn height(&self) -> usize {
-        self.choices.len() + 2
-    }
-
-    /// The dialog's content lines: each choice, marked and highlighted when it
-    /// is the selection, then a spacer and the key hint.
-    pub fn lines(&self) -> Vec<Line<'static>> {
-        let inner = self.inner_width();
-        let mut lines: Vec<Line<'static>> = self
-            .choices
-            .iter()
-            .enumerate()
-            .map(|(index, (label, _))| {
-                let selected = index == self.selected;
-                let marker = if selected { "> " } else { "  " };
-                let text = format!("{marker}{label:<inner$}");
-                let mut style = Style::default().fg(color(self.colors.text));
-                if selected {
-                    style = style.bg(color(self.colors.selected_bg));
-                }
-                Line::from(Span::styled(text, style))
-            })
-            .collect();
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            format!("  {HINT:<inner$}"),
-            Style::default().fg(color(self.colors.hint)),
-        )));
-        lines
-    }
-
-    /// The widest content the dialog must fit: its widest label or the hint.
-    fn inner_width(&self) -> usize {
-        self.choices
-            .iter()
-            .map(|(label, _)| label.chars().count())
-            .max()
-            .unwrap_or(0)
-            .max(HINT.chars().count())
     }
 }
 
