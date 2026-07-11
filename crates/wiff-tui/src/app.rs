@@ -117,6 +117,16 @@ struct VersionRow {
     request: CompareRequest,
 }
 
+impl VersionRow {
+    /// Box a row labeled `label` that records `request` when chosen.
+    fn boxed(label: impl Into<String>, request: CompareRequest) -> Box<dyn PickerRow<App>> {
+        Box::new(Self {
+            label: label.into(),
+            request,
+        })
+    }
+}
+
 impl PickerRow<App> for VersionRow {
     fn label(&self) -> String {
         self.label.clone()
@@ -124,6 +134,26 @@ impl PickerRow<App> for VersionRow {
 
     fn activate(self: Box<Self>, app: &mut App) {
         app.pending_compare = Some(self.request);
+    }
+}
+
+/// A choice in the launch-time refresh prompt.
+struct RefreshRow {
+    /// The text shown for the choice in the list.
+    label: String,
+    /// Whether choosing it asks the host to recapture the source.
+    refresh: bool,
+}
+
+impl PickerRow<App> for RefreshRow {
+    fn label(&self) -> String {
+        self.label.clone()
+    }
+
+    fn activate(self: Box<Self>, app: &mut App) {
+        if self.refresh {
+            app.pending_refresh = true;
+        }
     }
 }
 
@@ -219,6 +249,13 @@ pub struct App {
     /// The version comparison the reviewer chose from the picker, present until
     /// the host takes it to reconstruct the diff.
     pending_compare: Option<CompareRequest>,
+    /// The comparison a cancel of the open picker records, present for the
+    /// post-refresh picker where cancelling keeps the reviewer's pre-refresh
+    /// perspective; absent for pickers whose cancel does nothing.
+    compare_on_cancel: Option<CompareRequest>,
+    /// Whether the reviewer chose to refresh from the launch prompt, present
+    /// until the host reads it to trigger a recapture.
+    pending_refresh: bool,
     /// The default a quit resolves to, from the host's configured on-exit policy.
     exit_default: ExitDefault,
     /// Whether each of the document's folds is currently collapsed.
@@ -296,6 +333,8 @@ impl App {
             exit: None,
             picker: None,
             pending_compare: None,
+            compare_on_cancel: None,
+            pending_refresh: false,
             exit_default: ExitDefault::Prompt,
             collapsed,
             comment_collapsed,
@@ -899,9 +938,8 @@ impl App {
     }
 
     /// Open the modal list of captured versions to compare the review against.
-    /// The list offers the latest version's own diff and every earlier version
-    /// as a reference point, opening on the one in effect. Reports instead when
-    /// there is no earlier version, and does nothing on a read-only view.
+    /// Reports instead when there is no earlier version, and does nothing on a
+    /// read-only view.
     fn open_compare_picker(&mut self) {
         let Some(latest) = self.latest_version() else {
             return;
@@ -910,14 +948,52 @@ impl App {
             self.set_message("no earlier version to compare against".to_string());
             return;
         }
+        self.picker =
+            Some(self.compare_picker("Compare versions", latest, self.comparing_from(), None));
+    }
+
+    /// Build the modal list of captured versions to compare against, titled
+    /// `title`. It offers the latest version's own diff and every earlier
+    /// version as a reference point. `showing` is the version the reviewer sees
+    /// as their current view (`None` for the latest diff): its row is marked and
+    /// the list opens on it. When `last_commented` is given, that version's row
+    /// is marked as where the reviewer last committed comments.
+    fn compare_picker(
+        &self,
+        title: &str,
+        latest: u32,
+        showing: Option<u32>,
+        last_commented: Option<u32>,
+    ) -> Picker<App> {
+        let annotate = |text: String, version: Option<u32>| {
+            let mut marks = Vec::new();
+            if showing == version {
+                marks.push("showing now");
+            }
+            // Only an actual earlier version can be where comments were last
+            // committed; the latest-diff row (a `None` version) never is.
+            if let Some(last) = last_commented
+                && version == Some(last)
+            {
+                marks.push("your last comments");
+            }
+            if marks.is_empty() {
+                text
+            } else {
+                format!("{text} ({})", marks.join(", "))
+            }
+        };
         let mut choices = vec![(
-            format!("the latest diff (v{latest})"),
+            annotate(format!("the latest diff (v{latest})"), None),
             CompareRequest::Latest,
         )];
         for k in (0..latest).rev() {
-            choices.push((format!("changes since v{k}"), CompareRequest::Version(k)));
+            choices.push((
+                annotate(format!("changes since v{k}"), Some(k)),
+                CompareRequest::Version(k),
+            ));
         }
-        let selected = match self.comparing_from() {
+        let selected = match showing {
             None => 0,
             Some(from) => choices
                 .iter()
@@ -926,20 +1002,75 @@ impl App {
         };
         let rows: Vec<Box<dyn PickerRow<App>>> = choices
             .into_iter()
-            .map(|(label, request)| {
-                Box::new(VersionRow { label, request }) as Box<dyn PickerRow<App>>
-            })
+            .map(|(label, request)| VersionRow::boxed(label, request))
             .collect();
         let hint = self.picker_hint();
-        let mut picker = Picker::new("Compare versions", rows, &hint, self.picker_colors);
+        let mut picker = Picker::new(title, rows, &hint, self.picker_colors);
         picker.select(selected);
-        self.picker = Some(picker);
+        picker
     }
 
     /// Take the version comparison the reviewer chose from the picker, if any,
     /// clearing it.
     pub fn take_pending_compare(&mut self) -> Option<CompareRequest> {
         self.pending_compare.take()
+    }
+
+    /// Open a modal asking whether to recapture the source, for a launch where
+    /// the source has changed since the latest captured version. Choosing to
+    /// refresh records the request for the host to act on. Does nothing on a
+    /// read-only view with no review.
+    pub fn offer_refresh(&mut self) {
+        let Some(latest) = self.latest_version() else {
+            return;
+        };
+        let rows: Vec<Box<dyn PickerRow<App>>> = vec![
+            Box::new(RefreshRow {
+                label: "Refresh now".to_string(),
+                refresh: true,
+            }) as Box<dyn PickerRow<App>>,
+            Box::new(RefreshRow {
+                label: "Keep the current diff".to_string(),
+                refresh: false,
+            }) as Box<dyn PickerRow<App>>,
+        ];
+        let hint = self.picker_hint();
+        let title = format!("The source has changed since v{latest}");
+        self.picker = Some(Picker::new(&title, rows, &hint, self.picker_colors));
+    }
+
+    /// Take whether the reviewer chose to refresh from the launch prompt,
+    /// clearing it.
+    pub fn take_pending_refresh(&mut self) -> bool {
+        std::mem::take(&mut self.pending_refresh)
+    }
+
+    /// Open the compare-versions list after a refresh, keeping the reviewer's
+    /// perspective from before the recapture: `showing` is the version they were
+    /// viewing (`None` for the latest diff) and its row opens marked as where
+    /// they were, and `last_commented` marks where they last committed comments.
+    /// The list is the same one the compare hotkey opens, under a title naming
+    /// the capture that prompted it. Cancelling keeps that same perspective
+    /// against the fresh capture, still a valid view since the comparison's
+    /// right side is always the latest. Does nothing when there is no earlier
+    /// version or on a read-only view with no review.
+    pub fn offer_compare_after_refresh(
+        &mut self,
+        showing: Option<u32>,
+        last_commented: Option<u32>,
+    ) {
+        let Some(latest) = self.latest_version() else {
+            return;
+        };
+        if latest == 0 {
+            return;
+        }
+        let title = format!("Captured v{latest}: compare against a version, or keep the latest");
+        self.picker = Some(self.compare_picker(&title, latest, showing, last_commented));
+        self.compare_on_cancel = Some(match showing {
+            Some(from) => CompareRequest::Version(from),
+            None => CompareRequest::Latest,
+        });
     }
 
     /// The picker's key hint, naming the reviewer's own bindings for moving the
@@ -994,16 +1125,22 @@ impl App {
         }
     }
 
-    /// Close the modal list and act on its highlighted row. Does nothing when
-    /// the list is closed.
+    /// Close the modal list and act on its highlighted row. An explicit
+    /// selection supersedes any cancel fallback, so that is dropped. Does
+    /// nothing when the list is closed.
     pub fn picker_activate(&mut self) {
+        self.compare_on_cancel = None;
         if let Some(picker) = self.picker.take() {
             picker.activate_selected(self);
         }
     }
 
-    /// Close the modal list without acting on any row.
+    /// Close the modal list without acting on any row, recording the comparison
+    /// the cancel resolves to when the picker set one.
     pub fn picker_cancel(&mut self) {
+        if let Some(request) = self.compare_on_cancel.take() {
+            self.pending_compare = Some(request);
+        }
         self.picker = None;
     }
 
@@ -2847,8 +2984,27 @@ why?
         app.update(Action::CompareVersions);
         k9::assert_equal!(app.picking(), true);
         let expected = "\
-<#c0c5ce|#4f5b66|->> the latest diff (v2)                  
+<#c0c5ce|#4f5b66|->> the latest diff (v2) (showing now)    
 <#c0c5ce|#2b303b|->  changes since v1                      
+<#c0c5ce|#2b303b|->  changes since v0                      
+<-|#2b303b|->                                        
+<#767b84|#2b303b|->  up/down move  enter select  esc cancel
+";
+        k9::assert_equal!(dump_picker(&mut app), expected.to_string());
+    }
+
+    #[test]
+    fn the_compare_picker_marks_the_earlier_version_a_comparison_is_showing() {
+        // With a comparison against v1 already in effect, the showing-now mark
+        // follows it onto the earlier row rather than staying on the latest diff,
+        // and the list opens on that row.
+        let mut app = App::reviewing(versioned_review(2), 8, &Theme::dark());
+        app.show_comparison(comparison_diff(), Some((1, from_v1_before_origin())));
+        app.update(Action::CompareVersions);
+        k9::assert_equal!(app.picking(), true);
+        let expected = "\
+<#c0c5ce|#2b303b|->  the latest diff (v2)                  
+<#c0c5ce|#4f5b66|->> changes since v1 (showing now)        
 <#c0c5ce|#2b303b|->  changes since v0                      
 <-|#2b303b|->                                        
 <#767b84|#2b303b|->  up/down move  enter select  esc cancel
@@ -2882,6 +3038,158 @@ why?
             status_text(&app),
             "no earlier version to compare against   ".to_string()
         );
+    }
+
+    #[test]
+    fn the_refresh_prompt_offers_to_recapture_or_keep_the_current_diff() {
+        // The launch prompt names the version the source has moved past and
+        // offers the two choices, opening on the first.
+        let mut app = App::reviewing(versioned_review(1), 8, &Theme::dark());
+        app.offer_refresh();
+        k9::assert_equal!(app.picking(), true);
+        let expected = "\
+<#c0c5ce|#4f5b66|->> Refresh now                           
+<#c0c5ce|#2b303b|->  Keep the current diff                 
+<-|#2b303b|->                                        
+<#767b84|#2b303b|->  up/down move  enter select  esc cancel
+";
+        k9::assert_equal!(dump_picker(&mut app), expected.to_string());
+    }
+
+    #[test]
+    fn choosing_refresh_from_the_prompt_records_the_request() {
+        // Activating the first choice closes the prompt and records the refresh
+        // for the host to act on, taken exactly once.
+        let mut app = App::reviewing(versioned_review(1), 8, &Theme::dark());
+        app.offer_refresh();
+        app.picker_activate();
+        k9::assert_equal!(app.picking(), false);
+        k9::assert_equal!(app.take_pending_refresh(), true);
+        k9::assert_equal!(app.take_pending_refresh(), false);
+    }
+
+    #[test]
+    fn keeping_the_current_diff_from_the_prompt_records_no_refresh() {
+        // Stepping to the second choice and activating closes the prompt without
+        // asking the host to refresh.
+        let mut app = App::reviewing(versioned_review(1), 8, &Theme::dark());
+        app.offer_refresh();
+        app.picker_nav(Action::LineDown);
+        app.picker_activate();
+        k9::assert_equal!(app.picking(), false);
+        k9::assert_equal!(app.take_pending_refresh(), false);
+    }
+
+    #[test]
+    fn the_post_refresh_prompt_marks_the_latest_when_the_reviewer_was_on_the_latest() {
+        // Refreshing while on the latest diff opens the list marking and opening
+        // on the latest, where the reviewer was.
+        let mut app = App::reviewing(versioned_review(1), 8, &Theme::dark());
+        app.offer_compare_after_refresh(None, None);
+        k9::assert_equal!(app.picking(), true);
+        let expected = "\
+<#c0c5ce|#4f5b66|->> the latest diff (v1) (showing now)    
+<#c0c5ce|#2b303b|->  changes since v0                      
+<-|#2b303b|->                                        
+<#767b84|#2b303b|->  up/down move  enter select  esc cancel
+";
+        k9::assert_equal!(dump_picker(&mut app), expected.to_string());
+    }
+
+    #[test]
+    fn the_post_refresh_prompt_marks_and_opens_on_the_reviewers_prior_comparison() {
+        // Refreshing while comparing against v1 opens the list marking and
+        // opening on that row, so the reviewer keeps the perspective they had.
+        let mut app = App::reviewing(versioned_review(2), 8, &Theme::dark());
+        app.offer_compare_after_refresh(Some(1), None);
+        k9::assert_equal!(app.picking(), true);
+        let expected = "\
+<#c0c5ce|#2b303b|->  the latest diff (v2)                  
+<#c0c5ce|#4f5b66|->> changes since v1 (showing now)        
+<#c0c5ce|#2b303b|->  changes since v0                      
+<-|#2b303b|->                                        
+<#767b84|#2b303b|->  up/down move  enter select  esc cancel
+";
+        k9::assert_equal!(dump_picker(&mut app), expected.to_string());
+    }
+
+    #[test]
+    fn the_post_refresh_prompt_marks_where_the_reviewer_last_committed() {
+        // Refreshing while on the latest with comments committed against v1 opens
+        // on the latest, where the reviewer was, and marks v1 as where their
+        // comments are so they can step to it.
+        let mut app = App::reviewing(versioned_review(2), 8, &Theme::dark());
+        app.offer_compare_after_refresh(None, Some(1));
+        k9::assert_equal!(app.picking(), true);
+        let expected = "\
+<#c0c5ce|#4f5b66|->> the latest diff (v2) (showing now)    
+<#c0c5ce|#2b303b|->  changes since v1 (your last comments) 
+<#c0c5ce|#2b303b|->  changes since v0                      
+<-|#2b303b|->                                        
+<#767b84|#2b303b|->  up/down move  enter select  esc cancel
+";
+        k9::assert_equal!(dump_picker(&mut app), expected.to_string());
+    }
+
+    #[test]
+    fn choosing_a_version_after_refresh_records_the_comparison() {
+        // Stepping to the earlier version and activating closes the prompt and
+        // records a request to compare against v0, taken exactly once.
+        let mut app = App::reviewing(versioned_review(1), 8, &Theme::dark());
+        app.offer_compare_after_refresh(None, None);
+        app.picker_nav(Action::LineDown);
+        app.picker_activate();
+        k9::assert_equal!(app.picking(), false);
+        k9::assert_equal!(app.take_pending_compare(), Some(CompareRequest::Version(0)));
+        k9::assert_equal!(app.take_pending_compare(), None);
+    }
+
+    #[test]
+    fn keeping_the_latest_after_refresh_records_a_return_to_the_latest() {
+        // Activating the default choice closes the prompt and records a return
+        // to the latest diff the refresh already reloaded.
+        let mut app = App::reviewing(versioned_review(1), 8, &Theme::dark());
+        app.offer_compare_after_refresh(None, None);
+        app.picker_activate();
+        k9::assert_equal!(app.picking(), false);
+        k9::assert_equal!(app.take_pending_compare(), Some(CompareRequest::Latest));
+        k9::assert_equal!(app.take_pending_compare(), None);
+    }
+
+    #[test]
+    fn cancelling_the_post_refresh_prompt_keeps_the_prior_comparison() {
+        // Escaping the post-refresh list keeps the reviewer comparing against the
+        // version they were on before the refresh, against the fresh capture,
+        // taken exactly once.
+        let mut app = App::reviewing(versioned_review(2), 8, &Theme::dark());
+        app.offer_compare_after_refresh(Some(1), None);
+        app.picker_cancel();
+        k9::assert_equal!(app.picking(), false);
+        k9::assert_equal!(app.take_pending_compare(), Some(CompareRequest::Version(1)));
+        k9::assert_equal!(app.take_pending_compare(), None);
+    }
+
+    #[test]
+    fn cancelling_the_post_refresh_prompt_from_the_latest_returns_to_the_latest() {
+        // Escaping when the reviewer was on the latest before the refresh keeps
+        // them on the latest, taken exactly once.
+        let mut app = App::reviewing(versioned_review(2), 8, &Theme::dark());
+        app.offer_compare_after_refresh(None, None);
+        app.picker_cancel();
+        k9::assert_equal!(app.picking(), false);
+        k9::assert_equal!(app.take_pending_compare(), Some(CompareRequest::Latest));
+        k9::assert_equal!(app.take_pending_compare(), None);
+    }
+
+    #[test]
+    fn cancelling_the_compare_hotkey_picker_records_no_comparison() {
+        // The compare hotkey's list has no cancel comparison, so escaping it
+        // leaves the reviewer where they were with nothing recorded.
+        let mut app = App::reviewing(versioned_review(2), 8, &Theme::dark());
+        app.update(Action::CompareVersions);
+        app.picker_cancel();
+        k9::assert_equal!(app.picking(), false);
+        k9::assert_equal!(app.take_pending_compare(), None);
     }
 
     #[test]

@@ -48,7 +48,7 @@ impl NewArgs {
             return Ok(());
         }
         let config = Config::load()?;
-        tui::open(log.path(), &config)
+        tui::open(log.path(), &config, false)
     }
 
     /// Choose and run the diff source: a diff piped on stdin, else git.

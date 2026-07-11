@@ -258,6 +258,11 @@ fn event_loop<B: Backend>(
         if let Some(request) = app.take_pending_compare() {
             compare(&mut app, request);
         }
+        // A refresh chosen from the launch prompt recaptures the source, just as
+        // the refresh action does.
+        if app.take_pending_refresh() {
+            refresh(&mut app);
+        }
         // A quit action or a confirmed picker choice settles how to leave.
         if let Some(exit) = app.pending_exit() {
             return Ok((exit, app.take_drafts()));

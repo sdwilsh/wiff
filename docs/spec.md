@@ -89,7 +89,9 @@ $XDG_DATA_HOME/wiff/                 (e.g. ~/.local/share/wiff)
   folds, or pending drafts, noting in the status line what was added, updated, or
   removed. The reload waits while a comment edit, search prompt, or exit dialog
   is open and resumes when the reviewer returns to the plain view. A capture of a
-  new diff version is left for a manual refresh.
+  new diff version is left for a refresh the reviewer triggers by hand; on
+  reopening a session whose source has moved on since the last capture, the TUI
+  offers to refresh from the launch prompt (see Version comparison and refresh).
 
 ### Record schema
 
@@ -318,7 +320,8 @@ reassignable and keeps the update logic small.
   at the top of the document, so the existing top jump (`g`, and `<` as a
   `less`-style alias) reaches it; there is no separate jump-to-review action.
   `t` opens the file picker, `C` the comment picker, and `T` the theme picker
-  (see below). `V` hides and shows all comments.
+  (see below). `V` hides and shows all comments. `v` opens the compare-versions
+  picker and `R` refreshes (see Version comparison and refresh).
 
 ### Modal pickers
 
@@ -331,7 +334,30 @@ the same modal serves several pickers. `pick_file` (`t`) lists the diff's files
 and jumps the cursor to the chosen file's header; `pick_comment` (`C`) lists the
 diff's comments, each labeled with its location and the start of its body, and
 jumps to the chosen comment; `pick_theme` (`T`) lists the built-in color themes,
-opening on the one in effect, and recolors the whole view to the chosen theme.
+opening on the one in effect, and recolors the whole view to the chosen theme;
+`compare_versions` (`v`) lists the captured versions to view the change against
+(see Version comparison and refresh).
+
+### Version comparison and refresh
+
+The review normally shows the latest captured diff. The compare-versions picker
+(`v`) views the change since an earlier captured version instead: the right side
+stays the latest, the left is the chosen version, so the reviewer sees only what
+moved since then. The list opens on the version in effect, and choosing the
+latest returns to the full diff.
+
+Refresh (`R`) recaptures the source into a new version and rebases comments and
+drafts forward (see Comments & anchoring). It keeps the reviewer on the version
+they were viewing and then opens the compare-versions picker, opening on where
+they were and marking where they last committed comments, so they choose how to
+see what changed. Cancelling keeps their prior perspective against the fresh
+capture, which stays valid since the comparison's right side is always the
+latest.
+
+On reopening a session whose source has moved on since the last capture, the TUI
+opens over the existing review and asks whether to refresh, rather than silently
+showing a stale diff. This launch prompt is skipped for diffs piped on stdin,
+which cannot be recaptured once the TUI owns the terminal.
 
 ### Rendering
 

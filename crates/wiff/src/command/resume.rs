@@ -22,6 +22,6 @@ impl ResumeArgs {
     pub fn run(self) -> anyhow::Result<()> {
         let path = resolve_session(self.session.as_deref(), self.project.as_deref())?;
         let config = Config::load()?;
-        tui::open(&path, &config)
+        tui::open(&path, &config, true)
     }
 }

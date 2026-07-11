@@ -8,9 +8,11 @@ use std::path::Path;
 
 use anyhow::Context;
 use wiff_config::{Config, OnExit};
-use wiff_core::record::{AuthorKind, RecordBody, SessionHeader};
-use wiff_core::session::{SessionWatcher, remove_session};
-use wiff_core::{RefreshOutcome, ReviewState, SessionLog, compare_versions, refresh_session};
+use wiff_core::record::{Author, AuthorKind, RecordBody, SessionHeader};
+use wiff_core::session::{SessionWatcher, read_records, remove_session};
+use wiff_core::{
+    RefreshOutcome, ReviewState, SessionLog, SidebandHash, compare_versions, refresh_session,
+};
 use wiff_tui::{
     App, CommentSync, CompareRequest, DiffView, Exit, ExitDefault, KeyHints, Review, Theme, run,
 };
@@ -18,8 +20,11 @@ use wiff_tui::{
 use crate::command::recapture_diff;
 
 /// Open `session_path` in the review TUI, then keep or remove the session per
-/// the reviewer's choice and the configured `on_exit` default.
-pub fn open(session_path: &Path, config: &Config) -> anyhow::Result<()> {
+/// the reviewer's choice and the configured `on_exit` default. When
+/// `offer_refresh` is set and recapturing the source would produce a diff
+/// different from the latest captured version, a modal offers to refresh once
+/// the existing state is on screen.
+pub fn open(session_path: &Path, config: &Config, offer_refresh: bool) -> anyhow::Result<()> {
     let log = SessionLog::open(session_path)?;
     let state = ReviewState::load(session_path)?;
     let version = state
@@ -47,17 +52,22 @@ pub fn open(session_path: &Path, config: &Config) -> anyhow::Result<()> {
     // Comments authored in the TUI are attributed to the human reviewer and
     // anchored against the diff version being reviewed.
     let author = config.author.resolve(AuthorKind::Human);
-    let review = Review::deferred(view, diff, author, version.number, comments);
-    let app = App::reviewing(review, 0, &theme)
+    let review = Review::deferred(view, diff, author.clone(), version.number, comments);
+    let mut app = App::reviewing(review, 0, &theme)
         .with_exit_default(exit_default(config.on_exit))
         .with_keymap(keymap.clone())
         .with_wrap_content(config.wrap_lines);
+    // A resumed session whose source has moved on opens over the existing state
+    // with a prompt to recapture it, rather than silently showing a stale diff.
+    if offer_refresh && source_changed(&state) {
+        app.offer_refresh();
+    }
 
     // Refresh recaptures the diff and reloads the app in place; save commits the
     // pending drafts and keeps the review open. Any failure is reported in the
     // status line rather than tearing down the review.
     let refresh = |app: &mut App| {
-        if let Err(err) = refresh_in_place(session_path, app) {
+        if let Err(err) = refresh_in_place(session_path, &author, app) {
             app.set_message(format!("refresh failed: {err}"));
         }
     };
@@ -129,38 +139,76 @@ fn compare_in_place(
 }
 
 /// Recapture the session's diff as a new version, rebase its committed comments
-/// and the reviewer's pending drafts onto it, and reload `app` over the result,
-/// reporting the tally in the status line. A no-op capture (nothing changed)
-/// says so instead.
-fn refresh_in_place(session_path: &Path, app: &mut App) -> anyhow::Result<()> {
+/// and the reviewer's pending drafts onto it, and reload `app` over the full new
+/// diff, reporting the tally in the status line and offering the
+/// version-comparison list to narrow the view, opened on where the reviewer last
+/// left comments. A no-op capture (nothing changed) says so instead.
+fn refresh_in_place(session_path: &Path, author: &Author, app: &mut App) -> anyhow::Result<()> {
+    // The reference version the reviewer was comparing against before the
+    // recapture, or none when they were on the latest diff. The recapture resets
+    // the view, but the picker below marks this as where they were.
+    let viewing = app.comparing_from();
     let state = ReviewState::load(session_path)?;
+    let prior_latest = state.latest_version().map(|v| v.number);
     let diff_text = recapture(&state.session)?;
     let mut log = SessionLog::open(session_path)?;
     let outcome = match refresh_session(&mut log, &diff_text)? {
         Some(outcome) => outcome,
         None => {
-            let current = state.latest_version().map(|v| v.number).unwrap_or(0);
+            let current = prior_latest.unwrap_or(0);
             app.set_message(format!("no changes since v{current}"));
             return Ok(());
         }
     };
+    // The newest version at or before the pre-refresh latest where the reviewer
+    // left comments is where their in-progress work sits; the picker offers
+    // comparing against it.
+    let last_commented = match prior_latest {
+        Some(viewed) => last_commented_version(session_path, author, viewed)?,
+        None => None,
+    };
 
     let state = ReviewState::load(session_path)?;
-    let version = state
+    let latest = state
         .latest_version()
-        .context("the refreshed session has no captured diff")?;
-    let diff = wiff_diff::parse(&log.read_diff(version.number)?)?;
+        .context("the refreshed session has no captured diff")?
+        .number;
+    let latest_diff = wiff_diff::parse(&log.read_diff(latest)?)?;
     let comments: Vec<_> = state
         .comments
         .iter()
         .filter(|comment| !comment.deleted)
         .cloned()
         .collect();
-    app.refresh(diff, comments, version.number, |authored_version| {
+    app.refresh(latest_diff, comments, latest, |authored_version| {
         Ok(wiff_diff::parse(&log.read_diff(authored_version)?)?)
     })?;
     app.set_message(refresh_report(&outcome));
+    // Offer the version list from the reviewer's pre-refresh perspective: their
+    // prior view is marked and pre-selected, and cancelling keeps it against the
+    // fresh capture, rather than switching under them mid-review.
+    app.offer_compare_after_refresh(viewing, last_commented);
     Ok(())
+}
+
+/// The newest diff version at or before `viewed` that `author` committed a
+/// comment against, read from the session's records. Reads the authored version
+/// from each comment record, which is fixed at commit time even as later
+/// refreshes rebase the comment's anchor forward. None when they committed no
+/// comment at or before that version.
+fn last_commented_version(
+    session_path: &Path,
+    author: &Author,
+    viewed: u32,
+) -> anyhow::Result<Option<u32>> {
+    Ok(read_records(session_path)?
+        .into_iter()
+        .filter_map(|record| match record.body {
+            RecordBody::Comment(comment) if comment.author == *author => Some(comment.version),
+            _ => None,
+        })
+        .filter(|version| *version <= viewed)
+        .max())
 }
 
 /// Commit the reviewer's pending drafts to the session log and reload the
@@ -209,6 +257,20 @@ fn sync_report(summary: &CommentSync) -> String {
         parts.push(format!("{} removed", summary.removed));
     }
     format!("synced: {}", parts.join(", "))
+}
+
+/// Whether recapturing the session's source would produce a diff different from
+/// its latest captured version. False when the source cannot be recaptured (a
+/// stdin diff) or the recapture fails, so opening a session is never blocked on
+/// it.
+fn source_changed(state: &ReviewState) -> bool {
+    let Some(latest) = state.latest_version() else {
+        return false;
+    };
+    let recaptured = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(recapture_diff(&state.session))
+    });
+    matches!(recaptured, Ok(Some(text)) if SidebandHash::of(text.as_bytes()) != latest.diff_hash)
 }
 
 /// Recapture the diff from the session's original source. A stdin source cannot
@@ -305,7 +367,7 @@ mod tests {
 
     use super::{
         commit_drafts, compare_in_place, recapture, refresh_in_place, refresh_report,
-        reload_committed, save_in_place, sync_report,
+        reload_committed, save_in_place, source_changed, sync_report,
     };
     use crate::command::{DiffSelection, capture_scm_diff};
 
@@ -562,11 +624,17 @@ mod tests {
         );
         let mut app = App::reviewing(review, 40, &theme);
 
-        refresh_in_place(&session_path, &mut app).expect("refresh in place");
+        let author = Author {
+            name: "wez".to_string(),
+            kind: AuthorKind::Human,
+        };
+        refresh_in_place(&session_path, &author, &mut app).expect("refresh in place");
 
-        // The reloaded review shows the recaptured v1 diff, with the comment
+        // The reloaded review shows the full recaptured v1 diff, with the comment
         // rebased above the added delta on its new line, and the status line
-        // reports the tally.
+        // reports the tally. A version-comparison prompt is offered over the full
+        // diff, opening on the latest where the reviewer was reading.
+        k9::assert_equal!(app.picking(), true);
         let expected = "\
 Review [press c here to draft the review comment]
 modified  f.txt
@@ -643,7 +711,11 @@ captured v1; rebased 1 comment: 1 exact, 0 shifted, 0 outdated
 
         // v1 rewrites beta in the working tree; refreshing captures it.
         std::fs::write(&file, "alpha\nBETA\ngamma\ndelta\n").expect("write v1");
-        refresh_in_place(&session_path, &mut app).expect("refresh to v1");
+        let author = Author {
+            name: "wez".to_string(),
+            kind: AuthorKind::Human,
+        };
+        refresh_in_place(&session_path, &author, &mut app).expect("refresh to v1");
 
         compare_in_place(&session_path, &mut app, CompareRequest::Version(0)).expect("compare");
 
@@ -680,6 +752,80 @@ modified  f.txt
 showing the latest diff (v1)
 ";
         k9::assert_equal!(screen(&app, 80), latest.to_string());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_resumed_session_detects_when_its_source_has_moved_on() {
+        // A committed base captured as v0. With the working tree untouched since
+        // capture, recapturing matches v0 and nothing is offered; changing the
+        // working tree makes the recapture differ, which the launch check
+        // reports so a resume can prompt to refresh.
+        let repo = tempfile::tempdir().expect("repo tempdir");
+        let data = tempfile::tempdir().expect("data tempdir");
+        let file = repo.path().join("f.txt");
+
+        git(repo.path(), &["init", "-q"]);
+        std::fs::write(&file, "alpha\nbeta\ngamma\n").expect("write base");
+        git(repo.path(), &["add", "f.txt"]);
+        git(repo.path(), &["commit", "-q", "-m", "base"]);
+        std::fs::write(&file, "alpha\nbeta\ngamma\ndelta\n").expect("write v0");
+
+        let identity = ProjectIdentity {
+            canonical: "demo".to_string(),
+            repo_root: Some(repo.path().to_path_buf()),
+            scm: Some(ScmType::Git),
+        };
+        let captured = capture_scm_diff(
+            Some(ScmType::Git),
+            repo.path().to_path_buf(),
+            DiffSelection::Worktree,
+        )
+        .await
+        .expect("capture v0");
+        let log =
+            create_session(data.path(), &identity, repo.path(), &captured).expect("create session");
+        let session_path = log.path().to_path_buf();
+        drop(log);
+
+        let state = ReviewState::load(&session_path).expect("load state");
+        k9::assert_equal!(source_changed(&state), false);
+
+        // The working tree gains another line, so a recapture no longer matches
+        // v0.
+        std::fs::write(&file, "alpha\nbeta\ngamma\ndelta\nepsilon\n").expect("write change");
+        let state = ReviewState::load(&session_path).expect("reload state");
+        k9::assert_equal!(source_changed(&state), true);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stdin_session_never_offers_a_refresh_on_resume() {
+        // A stdin diff cannot be recaptured once the TUI owns the terminal, so
+        // resuming such a session never reports its source as changed.
+        let data = tempfile::tempdir().expect("data tempdir");
+        let identity = ProjectIdentity {
+            canonical: "demo".to_string(),
+            repo_root: Some(data.path().to_path_buf()),
+            scm: Some(ScmType::Git),
+        };
+        let captured = CapturedDiff {
+            text: "\
+diff --git a/f.txt b/f.txt
+new file mode 100644
+--- /dev/null
++++ b/f.txt
+@@ -0,0 +1,1 @@
++alpha
+"
+            .to_string(),
+            source: SourceKind::Stdin,
+        };
+        let log =
+            create_session(data.path(), &identity, data.path(), &captured).expect("create session");
+        let session_path = log.path().to_path_buf();
+        drop(log);
+
+        let state = ReviewState::load(&session_path).expect("load state");
+        k9::assert_equal!(source_changed(&state), false);
     }
 
     #[test]
