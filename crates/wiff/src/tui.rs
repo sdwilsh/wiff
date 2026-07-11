@@ -45,7 +45,7 @@ pub fn open(session_path: &Path, config: &Config) -> anyhow::Result<()> {
     // Comments authored in the TUI are attributed to the human reviewer and
     // anchored against the diff version being reviewed.
     let author = config.author.resolve(AuthorKind::Human);
-    let review = Review::new(view, diff, author, version.number, comments);
+    let review = Review::deferred(view, diff, author, version.number, comments);
     let app = App::reviewing(review, 0, &theme)
         .with_exit_default(exit_default(config.on_exit))
         .with_keymap(keymap.clone())

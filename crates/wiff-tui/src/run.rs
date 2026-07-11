@@ -34,8 +34,13 @@ use crate::render::color;
 
 /// How long the loop waits for a key before waking to pick up another actor's
 /// changes to the session. Long enough that an idle review costs almost nothing,
-/// short enough that an update lands promptly.
+/// short enough that an update arrives promptly.
 const POLL_INTERVAL: Duration = Duration::from_millis(750);
+
+/// The poll interval used while background highlighting is in progress, shorter
+/// than [`POLL_INTERVAL`] so arriving parses reveal without waiting a full poll
+/// cycle.
+const HIGHLIGHT_POLL_INTERVAL: Duration = Duration::from_millis(30);
 
 /// Run the review loop over `app`, resolving key events through `keymap`, until
 /// a quit action ends it. A [`Action::Refresh`] is handed to `refresh`, which
@@ -196,23 +201,28 @@ fn event_loop<B: Backend>(
     // opening frame.
     let mut dirty = true;
     loop {
+        // A modal view -- the comment editor, search prompt, exit dialog, or
+        // theme picker -- owns a spot or buffer that folding a document change
+        // in would disturb.
+        let modal = app.composing() || app.searching() || app.exiting() || app.picking();
+        // Reveal files as their background highlight arrives, repainting
+        // immediately only when the change is on screen.
+        if !modal && app.poll_highlights() {
+            dirty = true;
+        }
         if dirty {
             draw(terminal, &mut app)?;
             dirty = false;
         }
-        // A wait bounded by the poll interval, so a lull between key presses
-        // wakes the loop to fold in another actor's session updates. A pending
-        // key press is delivered at once, so responsiveness is unaffected.
-        if !event::poll(POLL_INTERVAL)? {
-            // Only pick up updates in the plain review view: a comment edit,
-            // search prompt, or exit dialog owns a spot or buffer that a reload
-            // would disturb, so the change waits until the reviewer returns.
-            if !app.composing()
-                && !app.searching()
-                && !app.exiting()
-                && !app.picking()
-                && sync(&mut app)
-            {
+        // A wait bounded by the poll interval between key presses, or
+        // HIGHLIGHT_POLL_INTERVAL while background highlighting runs.
+        let timeout = if app.highlighting() && !modal {
+            HIGHLIGHT_POLL_INTERVAL
+        } else {
+            POLL_INTERVAL
+        };
+        if !event::poll(timeout)? {
+            if !modal && sync(&mut app) {
                 dirty = true;
             }
             continue;

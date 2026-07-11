@@ -22,7 +22,7 @@ use wiff_core::record::{Author, CommentTarget, Confidence};
 use wiff_core::review::CommentState;
 use wiff_diff::{
     Diff, DiffLine, FileDiff, FileStatus, HighlightError, HighlightedLine, Highlighter, LineKind,
-    LineNo, ParsedSide, Rgb, Section, SectionMatchers, Side, StyledSpan, intraline,
+    LineNo, ParsedSide, Parser, Rgb, Section, SectionMatchers, Side, StyledSpan, intraline,
 };
 
 use crate::action::Action;
@@ -100,16 +100,27 @@ pub struct ViewLayout {
 }
 
 /// The inputs to rendering one file: the file and its index, where its comments
-/// are placed, its cached highlighting, which comments show as uncommitted
+/// are placed, how its content is colored, which comments show as uncommitted
 /// drafts, and the layout its content and comment bodies fit.
 #[derive(Clone, Copy)]
 struct FileRender<'a> {
     index: usize,
     file: &'a FileDiff,
     placement: &'a FilePlacement<'a>,
-    highlight: Option<&'a FileHighlights>,
+    highlight: FileHighlight<'a>,
     pending: &'a [Ulid],
     layout: ViewLayout,
+}
+
+/// Which highlight a file's content is painted from for a render.
+#[derive(Clone, Copy)]
+enum FileHighlight<'a> {
+    /// Paint the file from this cached highlight.
+    Ready(&'a FileHighlights),
+    /// Paint the file plain: its highlight is still being computed.
+    Plain,
+    /// No cache is kept; highlight the file now, on the render.
+    OnDemand,
 }
 
 /// A run of unchanged rows that can be collapsed behind a single marker line.
@@ -203,6 +214,13 @@ pub struct FileHighlights {
 pub struct ParsedFile {
     before: ParsedSide,
     after: ParsedSide,
+}
+
+impl ParsedFile {
+    /// Assemble a parsed file from its two already-parsed sides.
+    pub fn from_sides(before: ParsedSide, after: ParsedSide) -> Self {
+        Self { before, after }
+    }
 }
 
 /// A renderer pairing a syntax highlighter with a color theme.
@@ -341,13 +359,22 @@ impl DiffView {
     /// the cheap part of highlighting: a theme change replays the cached parse
     /// through the new theme rather than parsing the diff again.
     pub fn recolor(&self, parsed: &[ParsedFile]) -> Vec<FileHighlights> {
-        parsed
-            .iter()
-            .map(|file| FileHighlights {
-                before: self.highlighter.color_side(&file.before),
-                after: self.highlighter.color_side(&file.after),
-            })
-            .collect()
+        parsed.iter().map(|file| self.recolor_file(file)).collect()
+    }
+
+    /// Color one `parsed` file with the current theme, for folding a single
+    /// background parse result into the highlight cache as it arrives.
+    pub fn recolor_file(&self, parsed: &ParsedFile) -> FileHighlights {
+        FileHighlights {
+            before: self.highlighter.color_side(&parsed.before),
+            after: self.highlighter.color_side(&parsed.after),
+        }
+    }
+
+    /// Return a [`Parser`] that shares this view's syntaxes, for parsing files
+    /// off the main thread while the view stays put to color the results.
+    pub fn parser(&self) -> Parser {
+        self.highlighter.parser()
     }
 
     /// Render `diff` with `comments` woven in: a review summary row at the top,
@@ -366,15 +393,15 @@ impl DiffView {
         self.build(diff, comments, pending, true, None, layout)
     }
 
-    /// Like [`render_review`](Self::render_review) but reusing `highlights` from
-    /// an earlier [`highlight`](Self::highlight) of the same diff, so a comment
-    /// edit re-renders without re-running the syntect pass.
+    /// Render using `highlights` from an earlier [`recolor`](Self::recolor) of
+    /// the same diff. A file whose highlight is not yet available renders plain
+    /// until it arrives.
     pub fn render_review_cached(
         &self,
         diff: &Diff,
         comments: &[CommentState],
         pending: &[Ulid],
-        highlights: &[FileHighlights],
+        highlights: &[Option<FileHighlights>],
         layout: ViewLayout,
     ) -> Document {
         self.build(diff, comments, pending, true, Some(highlights), layout)
@@ -388,7 +415,7 @@ impl DiffView {
         comments: &[CommentState],
         pending: &[Ulid],
         review_row: bool,
-        highlights: Option<&[FileHighlights]>,
+        highlights: Option<&[Option<FileHighlights>]>,
         layout: ViewLayout,
     ) -> Document {
         let mut doc = Document {
@@ -424,7 +451,13 @@ impl DiffView {
             }
         }
         for (index, file) in diff.files.iter().enumerate() {
-            let highlight = highlights.map(|cached| &cached[index]);
+            let highlight = match highlights {
+                None => FileHighlight::OnDemand,
+                Some(cached) => match cached[index].as_ref() {
+                    Some(ready) => FileHighlight::Ready(ready),
+                    None => FileHighlight::Plain,
+                },
+            };
             self.render_file(
                 &mut doc,
                 FileRender {
@@ -462,15 +495,23 @@ impl DiffView {
         for comment in &placement.header {
             self.push_comment(doc, index, comment, pending.contains(&comment.id), width);
         }
-        // Reuse the cached highlight when the caller passed one; otherwise run
-        // the syntect pass for this file now.
+        // Paint from the cached highlight when it has arrived; render plain
+        // while it is still being computed; or, when no cache is kept, run the
+        // syntect pass for this file now.
         let computed;
         let (before, after) = match highlight {
-            Some(cached) => (&cached.before, &cached.after),
-            None => {
+            FileHighlight::Ready(cached) => (&cached.before, &cached.after),
+            FileHighlight::OnDemand => {
                 computed = FileHighlights {
                     before: self.highlighter.highlight_side(file, Side::Before),
                     after: self.highlighter.highlight_side(file, Side::After),
+                };
+                (&computed.before, &computed.after)
+            }
+            FileHighlight::Plain => {
+                computed = FileHighlights {
+                    before: BTreeMap::new(),
+                    after: BTreeMap::new(),
                 };
                 (&computed.before, &computed.after)
             }
@@ -1466,7 +1507,11 @@ mod tests {
         // The cached render, reusing a prior highlight of the same diff, must
         // produce the identical lines; caching is a speed-up, not a change.
         let view = DiffView::new(Theme::dark()).unwrap();
-        let highlights = view.recolor(&view.parse(&diff));
+        let highlights: Vec<_> = view
+            .recolor(&view.parse(&diff))
+            .into_iter()
+            .map(Some)
+            .collect();
         let cached =
             view.render_review_cached(&diff, &comments, &[], &highlights, ViewLayout::default());
         k9::assert_equal!(dump(&cached.lines), lines.to_string());

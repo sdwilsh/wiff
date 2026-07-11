@@ -8,6 +8,7 @@
 //! change, so pending work is visible until it is committed.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use ulid::Ulid;
 use wiff_core::draft::{DraftBuffer, draft_record};
@@ -15,6 +16,7 @@ use wiff_core::record::{Author, CommentTarget, RecordBody};
 use wiff_core::review::CommentState;
 use wiff_diff::Diff;
 
+use crate::highlight::BackgroundHighlighter;
 use crate::render::{DiffView, Document, FileHighlights, ParsedFile, ViewLayout};
 
 /// How a reload of committed comments differed from the set already shown, so a
@@ -58,14 +60,16 @@ impl CommentSync {
 pub struct Review {
     view: DiffView,
     diff: Diff,
-    /// The diff's parsed scope operations, the costly part of highlighting done
-    /// once per diff so a theme change recolors without parsing again. Refreshed
-    /// alongside the diff.
-    parsed: Vec<ParsedFile>,
-    /// The diff's syntax highlighting, colored from `parsed` so a comment edit
-    /// re-renders without recoloring and a theme change recolors without
-    /// parsing. Refreshed alongside the diff and recolored on a theme change.
-    highlights: Vec<FileHighlights>,
+    /// The parsed scope operations per file: the costly, theme-independent part
+    /// of highlighting. `None` until its parse results have been computed.
+    parsed: Vec<Option<ParsedFile>>,
+    /// The colored highlight per file, colored from `parsed`. `None` until its
+    /// parse results have been computed; a file with none yet renders plain.
+    highlights: Vec<Option<FileHighlights>>,
+    /// The pool parsing files in the background. Present when the review defers
+    /// highlighting; absent when it highlights eagerly on construction, which
+    /// enables more deterministic testing.
+    highlighter: Option<BackgroundHighlighter>,
     /// The author newly drafted comments are attributed to.
     author: Author,
     /// The diff version drafted comments are authored against.
@@ -88,18 +92,112 @@ impl Review {
         version: u32,
         comments: Vec<CommentState>,
     ) -> Self {
-        let parsed = view.parse(&diff);
-        let highlights = view.recolor(&parsed);
-        Self {
+        let mut review = Self {
             view,
             diff,
-            parsed,
-            highlights,
+            parsed: Vec::new(),
+            highlights: Vec::new(),
+            highlighter: None,
             author,
             version,
             committed: comments,
             drafts: DraftBuffer::new(),
+        };
+        review.highlight_eagerly();
+        review
+    }
+
+    /// Build a review over `diff` that parses its syntax highlighting on
+    /// background worker threads instead of on construction. Every file starts
+    /// plain; the caller polls [`poll_highlights`](Review::poll_highlights) to
+    /// fold in each parse as it completes.
+    pub fn deferred(
+        view: DiffView,
+        diff: Diff,
+        author: Author,
+        version: u32,
+        comments: Vec<CommentState>,
+    ) -> Self {
+        let highlighter = BackgroundHighlighter::new(view.parser());
+        let mut review = Self {
+            view,
+            diff,
+            parsed: Vec::new(),
+            highlights: Vec::new(),
+            highlighter: Some(highlighter),
+            author,
+            version,
+            committed: comments,
+            drafts: DraftBuffer::new(),
+        };
+        review.start_background();
+        review
+    }
+
+    /// Recompute the highlights for the current diff the way this review is
+    /// configured to: in the background when it has a pool, eagerly otherwise.
+    fn rehighlight(&mut self) {
+        if self.highlighter.is_some() {
+            self.start_background();
+        } else {
+            self.highlight_eagerly();
         }
+    }
+
+    /// Parse and color every file now, on the calling thread, for a review that
+    /// highlights eagerly.
+    fn highlight_eagerly(&mut self) {
+        let parsed = self.view.parse(&self.diff);
+        self.highlights = parsed
+            .iter()
+            .map(|p| Some(self.view.recolor_file(p)))
+            .collect();
+        self.parsed = parsed.into_iter().map(Some).collect();
+    }
+
+    /// Clear the highlight caches to all-plain and hand the current diff to the
+    /// background pool, abandoning any parse still running for an earlier diff.
+    fn start_background(&mut self) {
+        let count = self.diff.files.len();
+        self.parsed = (0..count).map(|_| None).collect();
+        self.highlights = (0..count).map(|_| None).collect();
+        if let Some(highlighter) = self.highlighter.as_mut() {
+            highlighter.start(Arc::new(self.diff.clone()));
+        }
+    }
+
+    /// Fold any parse results that have arrived into the highlight cache,
+    /// coloring each with the current theme, and return the indices of the files
+    /// whose highlight just became ready.
+    pub fn poll_highlights(&mut self) -> Vec<usize> {
+        let ready = match self.highlighter.as_mut() {
+            Some(highlighter) => highlighter.drain(),
+            None => return Vec::new(),
+        };
+        let mut changed = Vec::with_capacity(ready.len());
+        for parsed in ready {
+            self.highlights[parsed.index] = Some(self.view.recolor_file(&parsed.parsed));
+            self.parsed[parsed.index] = Some(parsed.parsed);
+            changed.push(parsed.index);
+        }
+        changed
+    }
+
+    /// Whether files are still being parsed in the background.
+    pub fn highlighting(&self) -> bool {
+        self.highlighter
+            .as_ref()
+            .is_some_and(BackgroundHighlighter::in_progress)
+    }
+
+    /// Block until the next background parse result arrives or `timeout`
+    /// elapses. Returns true if a background parse result arrived, false if the
+    /// timeout was reached. If true is returned, the background parse result can
+    /// be obtained by calling [`poll_highlights`](Review::poll_highlights).
+    pub fn wait_for_highlight(&mut self, timeout: std::time::Duration) -> bool {
+        self.highlighter
+            .as_mut()
+            .is_some_and(|highlighter| highlighter.wait(timeout))
     }
 
     /// Render the effective review -- the committed comments with the pending
@@ -124,13 +222,19 @@ impl Review {
 
     /// Recolor the review to `theme`, replaying the parsed diff through the new
     /// palette so the next [`document`](Review::document) reflects it without
-    /// re-parsing. Leaves the review unchanged on an unknown syntax theme.
+    /// re-parsing. Files still parsing in the background are colored with the
+    /// new theme once their parse arrives. Leaves the review unchanged on an
+    /// unknown syntax theme.
     pub fn set_theme(
         &mut self,
         theme: crate::theme::Theme,
     ) -> Result<(), wiff_diff::HighlightError> {
         self.view.set_theme(theme)?;
-        self.highlights = self.view.recolor(&self.parsed);
+        self.highlights = self
+            .parsed
+            .iter()
+            .map(|parsed| parsed.as_ref().map(|parsed| self.view.recolor_file(parsed)))
+            .collect();
         Ok(())
     }
 
@@ -216,9 +320,8 @@ impl Review {
         old_diff: impl FnMut(u32) -> wiff_core::Result<Diff>,
     ) -> wiff_core::Result<()> {
         self.drafts.rebase(version, &diff, old_diff)?;
-        self.parsed = self.view.parse(&diff);
-        self.highlights = self.view.recolor(&self.parsed);
         self.diff = diff;
+        self.rehighlight();
         self.committed = comments;
         self.version = version;
         Ok(())
@@ -296,5 +399,65 @@ mod tests {
             }
         );
         k9::assert_equal!(CommentSync::between(&before, &before).is_empty(), true);
+    }
+
+    /// Block until `review` finishes parsing every file in the background,
+    /// folding in each result as it arrives.
+    fn finish_highlighting(review: &mut super::Review) {
+        while review.highlighting() {
+            assert!(
+                review.wait_for_highlight(std::time::Duration::from_secs(30)),
+                "timed out waiting for a background parse result"
+            );
+            review.poll_highlights();
+        }
+    }
+
+    #[test]
+    fn a_deferred_review_opens_plain_and_colors_in_to_match_an_eager_one() {
+        use wiff_diff::{Diff, FileStatus, LineKind};
+
+        use crate::render::ViewLayout;
+        use crate::render::testutil::{dump, file};
+        use crate::theme::Theme;
+
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[
+                    (LineKind::Context, "let x = 1;", 1),
+                    (LineKind::Added, "let y = 2;", 2),
+                ],
+            )],
+        };
+        let author = Author {
+            name: "wez".to_string(),
+            kind: AuthorKind::Human,
+        };
+        let view = || crate::render::DiffView::new(Theme::dark()).expect("view");
+        let layout = ViewLayout::default();
+
+        // A deferred review opens with every file plain, before any parse arrives.
+        let mut deferred =
+            super::Review::deferred(view(), diff.clone(), author.clone(), 0, Vec::new());
+        let plain = dump(&deferred.document(layout).lines);
+        let expected_plain = "\
+<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,2 +1,2 @@
+<#7d828c|-|->   1    1   <#c0c5ce|-|->let x = 1;
+<#9ea1a9|#414a4a|->        2 + <#c0c5ce|#414a4a|->let y = 2;
+";
+        k9::assert_equal!(plain, expected_plain.to_string());
+
+        // Once every file's parse arrives, the deferred review colors in to the
+        // exact same document an eager review produces up front.
+        finish_highlighting(&mut deferred);
+        let eager = super::Review::new(view(), diff, author, 0, Vec::new());
+        k9::assert_equal!(
+            dump(&deferred.document(layout).lines),
+            dump(&eager.document(layout).lines)
+        );
     }
 }

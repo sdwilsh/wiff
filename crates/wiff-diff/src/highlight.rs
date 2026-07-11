@@ -8,6 +8,7 @@
 //! syntect dependency and the output is straightforward to assert.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use syntect::highlighting::{
     FontStyle, HighlightIterator, HighlightState, Highlighter as ThemeHighlighter, Theme, ThemeSet,
@@ -173,8 +174,26 @@ pub enum HighlightError {
 
 /// A reusable syntax highlighter over the built-in syntaxes and a chosen theme.
 pub struct Highlighter {
-    syntaxes: SyntaxSet,
+    syntaxes: Arc<SyntaxSet>,
     theme: Theme,
+}
+
+/// A cheaply cloneable, thread-safe view of just the syntaxes, so a file can be
+/// parsed off the main thread without borrowing the whole [`Highlighter`]. It
+/// holds no theme: parsing is theme-independent, and coloring the result is
+/// left to whichever theme is current when it runs.
+#[derive(Clone)]
+pub struct Parser {
+    syntaxes: Arc<SyntaxSet>,
+}
+
+impl Parser {
+    /// Parse the known lines of `side` of `file` into their scope operations,
+    /// the same theme-independent work [`Highlighter::parse_side`] does, but
+    /// usable from a worker thread.
+    pub fn parse_side(&self, file: &FileDiff, side: Side) -> ParsedSide {
+        parse_side_with(&self.syntaxes, file, side)
+    }
 }
 
 impl Highlighter {
@@ -188,7 +207,7 @@ impl Highlighter {
                 name: name.to_string(),
             })?;
         Ok(Self {
-            syntaxes: SyntaxSet::load_defaults_newlines(),
+            syntaxes: Arc::new(SyntaxSet::load_defaults_newlines()),
             theme,
         })
     }
@@ -211,46 +230,25 @@ impl Highlighter {
 
     /// Highlight the known lines of `side` of `file`, keyed by line number.
     ///
-    /// The file's path selects the syntax; gaps in the reconstruction break the
-    /// highlighter's state, since the omitted lines could carry multi-line
-    /// constructs whose effect cannot be known.
+    /// The file's path selects the syntax.
     pub fn highlight_side(&self, file: &FileDiff, side: Side) -> BTreeMap<LineNo, HighlightedLine> {
         self.color_side(&self.parse_side(file, side))
     }
 
-    /// Parse the known lines of `side` of `file` into their scope operations,
-    /// the theme-independent, costly part of highlighting, so a later theme
-    /// change recolors without parsing again. The file's path selects the
-    /// syntax; a reconstruction gap ends the current run and restarts parsing,
-    /// since the omitted lines could carry multi-line constructs whose effect
-    /// cannot be known.
+    /// Parse the known lines of `side` of `file` into their scope operations:
+    /// the costly, theme-independent half of highlighting. The file's path
+    /// selects the syntax.
     pub fn parse_side(&self, file: &FileDiff, side: Side) -> ParsedSide {
-        let syntax = self.syntax_for(file.display_path());
-        let mut state = ParseState::new(syntax);
-        let mut runs = Vec::new();
-        let mut run = Vec::new();
-        for line in reconstitute(file, side) {
-            match line {
-                ReconLine::Known { lineno, text } => {
-                    // syntect's newline-aware syntaxes expect a trailing newline
-                    // to close line-scoped constructs; coloring later trims it
-                    // back off, so it never appears in the returned spans.
-                    let text = format!("{text}\n");
-                    let ops = state.parse_line(&text, &self.syntaxes).unwrap_or_default();
-                    run.push(ParsedLine { lineno, text, ops });
-                }
-                ReconLine::Gap { .. } => {
-                    if !run.is_empty() {
-                        runs.push(std::mem::take(&mut run));
-                    }
-                    state = ParseState::new(syntax);
-                }
-            }
+        parse_side_with(&self.syntaxes, file, side)
+    }
+
+    /// Return a [`Parser`] that shares this highlighter's syntaxes, for parsing
+    /// files off the main thread while the highlighter stays put to color the
+    /// results.
+    pub fn parser(&self) -> Parser {
+        Parser {
+            syntaxes: Arc::clone(&self.syntaxes),
         }
-        if !run.is_empty() {
-            runs.push(run);
-        }
-        ParsedSide { runs }
     }
 
     /// Color a `parsed` side with the current theme, keyed by line number. This
@@ -275,15 +273,50 @@ impl Highlighter {
         }
         out
     }
+}
 
-    /// The syntax for a file path, falling back to plain text when none matches.
-    fn syntax_for(&self, path: &str) -> &SyntaxReference {
-        std::path::Path::new(path)
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .and_then(|ext| self.syntaxes.find_syntax_by_extension(ext))
-            .unwrap_or_else(|| self.syntaxes.find_syntax_plain_text())
+/// Parse the known lines of `side` of `file` into their scope operations against
+/// `syntaxes`. The file's path selects the syntax.
+fn parse_side_with(syntaxes: &SyntaxSet, file: &FileDiff, side: Side) -> ParsedSide {
+    let syntax = syntax_for(syntaxes, file.display_path());
+    let mut state = ParseState::new(syntax);
+    let mut runs = Vec::new();
+    let mut run = Vec::new();
+    for line in reconstitute(file, side) {
+        match line {
+            ReconLine::Known { lineno, text } => {
+                // syntect's newline-aware syntaxes expect a trailing newline
+                // to close line-scoped constructs; coloring later trims it
+                // back off, so it never appears in the returned spans.
+                let text = format!("{text}\n");
+                let ops = state.parse_line(&text, syntaxes).unwrap_or_default();
+                run.push(ParsedLine { lineno, text, ops });
+            }
+            ReconLine::Gap { .. } => {
+                // A gap hides an unknown span of the file; a multi-line
+                // construct could open inside it, so end the current run and
+                // restart the parse state rather than color the next lines on
+                // state that assumes contiguous input.
+                if !run.is_empty() {
+                    runs.push(std::mem::take(&mut run));
+                }
+                state = ParseState::new(syntax);
+            }
+        }
     }
+    if !run.is_empty() {
+        runs.push(run);
+    }
+    ParsedSide { runs }
+}
+
+/// The syntax for a file path, falling back to plain text when none matches.
+fn syntax_for<'a>(syntaxes: &'a SyntaxSet, path: &str) -> &'a SyntaxReference {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .and_then(|ext| syntaxes.find_syntax_by_extension(ext))
+        .unwrap_or_else(|| syntaxes.find_syntax_plain_text())
 }
 
 /// Convert a syntect style into the backend-neutral [`Style`].

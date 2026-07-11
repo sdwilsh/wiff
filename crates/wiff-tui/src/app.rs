@@ -980,6 +980,34 @@ impl App {
         }
     }
 
+    /// Whether any background parse is still in progress.
+    pub fn highlighting(&self) -> bool {
+        self.review.as_ref().is_some_and(Review::highlighting)
+    }
+
+    /// Fold any arrived background parse results into the review and re-render.
+    /// Returns true when a newly colored file is on screen.
+    pub fn poll_highlights(&mut self) -> bool {
+        let Some(review) = self.review.as_mut() else {
+            return false;
+        };
+        let changed = review.poll_highlights();
+        if changed.is_empty() {
+            return false;
+        }
+        self.rerender();
+        self.any_file_visible(&changed)
+    }
+
+    /// Whether any of `files` has a row within the visible window.
+    fn any_file_visible(&self, files: &[usize]) -> bool {
+        let end = (self.top + self.height).min(self.view.len());
+        self.view[self.top..end].iter().any(|row| match row {
+            ViewRow::Row(row) => files.contains(&self.document.rows[*row].file),
+            ViewRow::Fold(_) => false,
+        })
+    }
+
     /// Re-render the document from the review after a buffered edit, preserving
     /// the fold and comment collapse state and keeping the cursor in view.
     fn rerender(&mut self) {
