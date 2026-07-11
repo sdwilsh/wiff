@@ -22,8 +22,9 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use tui_textarea::TextArea;
 use ulid::Ulid;
+use wiff_core::LineOrigin;
 use wiff_core::record::{CommentTarget, RecordBody};
-use wiff_diff::{LineNo, Rgb, Side};
+use wiff_diff::{Diff, LineNo, Rgb, Side};
 
 use crate::action::Action;
 use crate::compose::{Compose, ComposeKind};
@@ -1050,6 +1051,41 @@ impl App {
         Ok(())
     }
 
+    /// Present `diff` in place of the current one, placing comments by
+    /// `comparison` (the reference version and each file's before origin) so the
+    /// review shows the changes since that version. Passing `None` returns to
+    /// the latest version's own diff. Folds reset to collapsed since the diff's
+    /// structure has moved, comment collapse state survives by identity, and the
+    /// cursor returns to the same file and line, or the nearest surviving line.
+    /// Passes through silently when no review is attached.
+    pub fn show_comparison(
+        &mut self,
+        diff: Diff,
+        comparison: Option<(u32, HashMap<String, LineOrigin>)>,
+    ) {
+        if self.review.is_none() {
+            return;
+        }
+        let spot = self.cursor_spot();
+        let layout = self.layout();
+        let document = {
+            let review = self.review.as_mut().expect("review present");
+            review.show_diff(diff, comparison);
+            review.document(layout)
+        };
+        self.collapsed = vec![true; document.folds.len()];
+        self.reconcile_comment_collapse(&document);
+        self.document = document;
+        self.rebuild_view();
+        self.restore_spot(spot);
+    }
+
+    /// The reference version the review is comparing against, or `None` when it
+    /// shows the latest version's own diff, for the host to name in the status.
+    pub fn comparing_from(&self) -> Option<u32> {
+        self.review.as_ref().and_then(Review::comparing_from)
+    }
+
     /// Carry each comment's collapse state onto a freshly rendered `document`,
     /// matching by identity, so a re-render keeps what the reviewer had folded
     /// and gives a comment new to the document its rendered default.
@@ -2051,7 +2087,7 @@ fn wash(mut line: Line<'static>, bg: Rgb, width: usize, reference: Rgb) -> Line<
 #[cfg(test)]
 mod tests {
     use ulid::Ulid;
-    use wiff_core::record::{Author, AuthorKind, CommentTarget};
+    use wiff_core::record::{Author, AuthorKind, CommentTarget, RecordBody};
     use wiff_core::review::CommentState;
     use wiff_diff::{Diff, FileStatus, LineKind, Side};
 
@@ -3719,5 +3755,188 @@ second
 <#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->hello<-|#414a4a|->                       
 ";
         k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+    }
+
+    /// The plain text a reviewer sees on `app`'s screen at `width`: each visible
+    /// row's span contents joined with trailing padding trimmed.
+    fn plain(app: &App, width: usize) -> String {
+        let mut out = String::new();
+        for line in app.visible(width) {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            out.push_str(text.trim_end());
+            out.push('\n');
+        }
+        out
+    }
+
+    /// A comparison diff of one file: v1's after side (alpha/beta/gamma) on the
+    /// left, v2's after side (alpha/BETA/gamma/delta) on the right.
+    fn comparison_diff() -> Diff {
+        use wiff_diff::{DiffLine, FileDiff, Hunk};
+        Diff {
+            files: vec![FileDiff {
+                old_path: "f.txt".to_string(),
+                new_path: "f.txt".to_string(),
+                status: FileStatus::Modified,
+                hunks: vec![Hunk {
+                    old_start: 1,
+                    old_len: 3,
+                    new_start: 1,
+                    new_len: 4,
+                    section: None,
+                    lines: vec![
+                        DiffLine {
+                            kind: LineKind::Context,
+                            text: "alpha".to_string(),
+                            old_lineno: Some(ln(1)),
+                            new_lineno: Some(ln(1)),
+                        },
+                        DiffLine {
+                            kind: LineKind::Removed,
+                            text: "beta".to_string(),
+                            old_lineno: Some(ln(2)),
+                            new_lineno: None,
+                        },
+                        DiffLine {
+                            kind: LineKind::Added,
+                            text: "BETA".to_string(),
+                            old_lineno: None,
+                            new_lineno: Some(ln(2)),
+                        },
+                        DiffLine {
+                            kind: LineKind::Context,
+                            text: "gamma".to_string(),
+                            old_lineno: Some(ln(3)),
+                            new_lineno: Some(ln(3)),
+                        },
+                        DiffLine {
+                            kind: LineKind::Added,
+                            text: "delta".to_string(),
+                            old_lineno: None,
+                            new_lineno: Some(ln(4)),
+                        },
+                    ],
+                }],
+            }],
+        }
+    }
+
+    /// The before origin naming v1's after side as the source of f.txt's left
+    /// side in the comparison.
+    fn from_v1_before_origin() -> std::collections::HashMap<String, wiff_core::LineOrigin> {
+        [(
+            "f.txt".to_string(),
+            wiff_core::LineOrigin {
+                version: 1,
+                side: Side::After,
+            },
+        )]
+        .into_iter()
+        .collect()
+    }
+
+    #[test]
+    fn a_comparison_places_a_committed_after_comment_on_the_latest_line() {
+        // The review's latest version is v2, with an agent comment on the
+        // added delta line. Shown as the changes since v1, delta is still an
+        // after-side line, so the comment sits above it; beta's replacement by
+        // BETA shows the change since v1.
+        let committed = CommentState {
+            id: Ulid(9),
+            author: Author {
+                name: "opus".to_string(),
+                kind: AuthorKind::Agent,
+            },
+            target: CommentTarget::Lines {
+                file: "f.txt".to_string(),
+                side: Side::After,
+                start_line: ln(4),
+                end_line: ln(4),
+            },
+            version: 2,
+            anchor: None,
+            body: "why delta?".to_string(),
+            resolved: false,
+            resolved_by: None,
+            deleted: false,
+            deleted_by: None,
+            confidence: None,
+            created_seq: 0,
+            updated_seq: 0,
+        };
+        let review = Review::new(
+            DiffView::new(Theme::dark()).unwrap(),
+            comparison_diff(),
+            Author {
+                name: "wez".to_string(),
+                kind: AuthorKind::Human,
+            },
+            2,
+            vec![committed],
+        );
+        let mut app = App::reviewing(review, 16, &Theme::dark());
+        app.set_width(80);
+        app.show_comparison(comparison_diff(), Some((1, from_v1_before_origin())));
+
+        k9::assert_equal!(app.comparing_from(), Some(1));
+        let expected = "\
+Review [press c here to draft the review comment]
+modified  f.txt
+@@ -1,3 +1,4 @@
+   1    1   alpha
+   2      - beta
+        2 + BETA
+   3    3   gamma
+┌ opus (agent)  press e to edit  r to resolve  d to delete  tab to expand/collapse ┐
+│why delta?                                                                    │
+└──────────────────────────────────────────────────────────────────────────────┘
+        4 + delta
+";
+        k9::assert_equal!(plain(&app, 80), expected.to_string());
+    }
+
+    #[test]
+    fn authoring_on_a_comparison_before_line_anchors_against_the_reference_version() {
+        // Commenting on beta -- a left-side line that is v1's after content --
+        // anchors the draft against v1's after side, the version and side it
+        // truly belongs to, so it rebases forward when the review advances.
+        let mut review = Review::new(
+            DiffView::new(Theme::dark()).unwrap(),
+            comparison_diff(),
+            Author {
+                name: "wez".to_string(),
+                kind: AuthorKind::Human,
+            },
+            2,
+            Vec::new(),
+        );
+        review.show_diff(comparison_diff(), Some((1, from_v1_before_origin())));
+        review.add_comment(
+            CommentTarget::Lines {
+                file: "f.txt".to_string(),
+                side: Side::Before,
+                start_line: ln(2),
+                end_line: ln(2),
+            },
+            "why beta?".to_string(),
+        );
+
+        let anchored = match review.take_drafts().into_iter().next() {
+            Some(RecordBody::Comment(comment)) => (comment.version, comment.target, comment.body),
+            other => panic!("expected one drafted comment, got {other:?}"),
+        };
+        k9::assert_equal!(
+            anchored,
+            (
+                1,
+                CommentTarget::Lines {
+                    file: "f.txt".to_string(),
+                    side: Side::After,
+                    start_line: ln(2),
+                    end_line: ln(2),
+                },
+                "why beta?".to_string(),
+            )
+        );
     }
 }

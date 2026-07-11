@@ -12,12 +12,13 @@
 //! it, recovered by [`wiff_diff::SectionMatchers`] since the wide-context
 //! capture merges each file into one hunk with no per-change context header.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ulid::Ulid;
+use wiff_core::LineOrigin;
 use wiff_core::record::{Author, CommentTarget, Confidence};
 use wiff_core::review::CommentState;
 use wiff_diff::{
@@ -345,7 +346,17 @@ impl DiffView {
     /// Render every file of `diff` into one scrollable [`Document`], with no
     /// review overlay.
     pub fn render(&self, diff: &Diff) -> Document {
-        self.build(diff, &[], &[], false, None, ViewLayout::default())
+        self.build(
+            diff,
+            ReviewInputs {
+                comments: &[],
+                pending: &[],
+                origins: &CommentOrigins::Literal,
+            },
+            false,
+            None,
+            ViewLayout::default(),
+        )
     }
 
     /// Parse every file in `diff` into its scope operations, once, so a theme
@@ -398,7 +409,17 @@ impl DiffView {
         pending: &[Ulid],
         layout: ViewLayout,
     ) -> Document {
-        self.build(diff, comments, pending, true, None, layout)
+        self.build(
+            diff,
+            ReviewInputs {
+                comments,
+                pending,
+                origins: &CommentOrigins::Literal,
+            },
+            true,
+            None,
+            layout,
+        )
     }
 
     /// Render using `highlights` from an earlier [`recolor`](Self::recolor) of
@@ -412,7 +433,44 @@ impl DiffView {
         highlights: &[Option<FileHighlights>],
         layout: ViewLayout,
     ) -> Document {
-        self.build(diff, comments, pending, true, Some(highlights), layout)
+        self.build(
+            diff,
+            ReviewInputs {
+                comments,
+                pending,
+                origins: &CommentOrigins::Literal,
+            },
+            true,
+            Some(highlights),
+            layout,
+        )
+    }
+
+    /// Like [`render_review_cached`](Self::render_review_cached), but placing
+    /// each line comment by the version and side its content truly belongs to,
+    /// per `origins`. This is how a comparison view keeps a comment on the line
+    /// it was authored against even though the presented before side is an
+    /// earlier version's content rather than the latest version's before side.
+    pub(crate) fn render_review_origins(
+        &self,
+        diff: &Diff,
+        comments: &[CommentState],
+        pending: &[Ulid],
+        highlights: &[Option<FileHighlights>],
+        layout: ViewLayout,
+        origins: &CommentOrigins,
+    ) -> Document {
+        self.build(
+            diff,
+            ReviewInputs {
+                comments,
+                pending,
+                origins,
+            },
+            true,
+            Some(highlights),
+            layout,
+        )
     }
 
     /// The shared render path: build the document, optionally leading with the
@@ -420,12 +478,16 @@ impl DiffView {
     fn build(
         &self,
         diff: &Diff,
-        comments: &[CommentState],
-        pending: &[Ulid],
+        inputs: ReviewInputs,
         review_row: bool,
         highlights: Option<&[Option<FileHighlights>]>,
         layout: ViewLayout,
     ) -> Document {
+        let ReviewInputs {
+            comments,
+            pending,
+            origins,
+        } = inputs;
         let mut doc = Document {
             lines: Vec::new(),
             fills: Vec::new(),
@@ -439,7 +501,7 @@ impl DiffView {
                 .map(|f| f.display_path().to_string())
                 .collect(),
         };
-        let placement = Placement::new(diff, comments);
+        let placement = Placement::new(diff, comments, origins);
         if review_row {
             doc.push(
                 NO_FILE,
@@ -1104,6 +1166,66 @@ struct LineComment<'a> {
     comment: &'a CommentState,
 }
 
+/// The comment inputs to one render: the comments to weave in, which of them
+/// are uncommitted drafts, and how each maps onto the presented sides.
+struct ReviewInputs<'a> {
+    comments: &'a [CommentState],
+    pending: &'a [Ulid],
+    origins: &'a CommentOrigins,
+}
+
+/// How a comment's authored `(version, side)` maps onto the side it is presented
+/// on. In the ordinary review the mapping is the identity; a comparison view
+/// remaps because its before side shows an earlier version's content.
+pub(crate) enum CommentOrigins {
+    /// Present each comment on the side its target names, ignoring version.
+    Literal,
+    /// Present against a known after origin and a per-view before origin.
+    Origins {
+        /// The version and side the presented after side represents.
+        after: LineOrigin,
+        /// The version and side the presented before side represents.
+        before: BeforeOrigins,
+    },
+}
+
+/// What the presented before side represents: the latest version's before side
+/// for every file (the ordinary review) or, in a comparison, a per-file origin.
+pub(crate) enum BeforeOrigins {
+    /// Every file's before side is `(version, Before)`.
+    Baseline(u32),
+    /// Each file's before origin, keyed by display path; a file absent from the
+    /// map has no before side in this view.
+    PerFile(HashMap<String, LineOrigin>),
+}
+
+impl CommentOrigins {
+    /// The side to present `comment` on, or `None` when its content does not
+    /// belong to either presented side and it should float to the file header.
+    /// Only line comments map; other targets are placed by their kind.
+    fn present(&self, comment: &CommentState) -> Option<Side> {
+        let CommentTarget::Lines { file, side, .. } = &comment.target else {
+            return None;
+        };
+        match self {
+            CommentOrigins::Literal => Some(*side),
+            CommentOrigins::Origins { after, before } => {
+                if comment.version == after.version && *side == after.side {
+                    return Some(Side::After);
+                }
+                let before = match before {
+                    BeforeOrigins::Baseline(version) => LineOrigin {
+                        version: *version,
+                        side: Side::Before,
+                    },
+                    BeforeOrigins::PerFile(map) => *map.get(file)?,
+                };
+                (comment.version == before.version && *side == before.side).then_some(Side::Before)
+            }
+        }
+    }
+}
+
 /// Where each live comment attaches within one render.
 struct Placement<'a> {
     /// Review-level comments, shown under the summary row.
@@ -1126,7 +1248,7 @@ impl<'a> Placement<'a> {
     /// Sort `comments` into review, whole-file, and per-line placement. A line
     /// comment whose anchored line is no longer rendered floats to its file
     /// header. A comment naming an unknown file is skipped.
-    fn new(diff: &Diff, comments: &'a [CommentState]) -> Self {
+    fn new(diff: &Diff, comments: &'a [CommentState], origins: &CommentOrigins) -> Self {
         let mut files: Vec<FilePlacement<'a>> = (0..diff.files.len())
             .map(|_| FilePlacement::default())
             .collect();
@@ -1143,21 +1265,22 @@ impl<'a> Placement<'a> {
                 }
                 CommentTarget::Lines {
                     file,
-                    side,
                     start_line,
                     end_line,
+                    ..
                 } => {
                     let Some(i) = index_of(file) else { continue };
                     let (start, end) = (start_line.get(), end_line.get());
-                    if addressable[i].contains(&(*side, start)) {
-                        files[i].lines.push(LineComment {
-                            side: *side,
-                            start,
-                            end,
-                            comment,
-                        });
-                    } else {
-                        files[i].header.push(comment);
+                    match origins.present(comment) {
+                        Some(side) if addressable[i].contains(&(side, start)) => {
+                            files[i].lines.push(LineComment {
+                                side,
+                                start,
+                                end,
+                                comment,
+                            });
+                        }
+                        _ => files[i].header.push(comment),
                     }
                 }
             }

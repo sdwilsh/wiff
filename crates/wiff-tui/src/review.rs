@@ -11,13 +11,24 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use ulid::Ulid;
+use wiff_core::LineOrigin;
 use wiff_core::draft::{DraftBuffer, draft_record};
 use wiff_core::record::{Author, CommentTarget, RecordBody};
 use wiff_core::review::CommentState;
-use wiff_diff::Diff;
+use wiff_diff::{Diff, Side};
 
 use crate::highlight::BackgroundHighlighter;
-use crate::render::{DiffView, Document, FileHighlights, ParsedFile, ViewLayout};
+use crate::render::{
+    BeforeOrigins, CommentOrigins, DiffView, Document, FileHighlights, ParsedFile, ViewLayout,
+};
+
+/// A comparison against an earlier version: the reference version whose after
+/// content the presented before side shows, and, per file, the version and side
+/// that before content came from so a comment placed on it anchors correctly.
+struct Comparing {
+    from: u32,
+    before_origin: HashMap<String, LineOrigin>,
+}
 
 /// How a reload of committed comments differed from the set already shown, so a
 /// reviewer can be told what another actor changed while they were reading.
@@ -78,6 +89,9 @@ pub struct Review {
     committed: Vec<CommentState>,
     /// The buffered, uncommitted edits over the committed comments.
     drafts: DraftBuffer,
+    /// The active comparison against an earlier version, or `None` when the
+    /// review shows the latest version's own diff against its baseline.
+    comparing: Option<Comparing>,
 }
 
 impl Review {
@@ -102,6 +116,7 @@ impl Review {
             version,
             committed: comments,
             drafts: DraftBuffer::new(),
+            comparing: None,
         };
         review.highlight_eagerly();
         review
@@ -129,6 +144,7 @@ impl Review {
             version,
             committed: comments,
             drafts: DraftBuffer::new(),
+            comparing: None,
         };
         review.start_background();
         review
@@ -216,8 +232,30 @@ impl Review {
             .filter(|entry| entry.pending)
             .map(|entry| entry.comment.id)
             .collect();
-        self.view
-            .render_review_cached(&self.diff, &comments, &pending, &self.highlights, layout)
+        let origins = self.comment_origins();
+        self.view.render_review_origins(
+            &self.diff,
+            &comments,
+            &pending,
+            &self.highlights,
+            layout,
+            &origins,
+        )
+    }
+
+    /// How comments map onto the presented sides: the after side is always the
+    /// review's own version, and the before side is either that version's
+    /// baseline or, in a comparison, each file's recorded before origin.
+    fn comment_origins(&self) -> CommentOrigins {
+        let after = LineOrigin {
+            version: self.version,
+            side: Side::After,
+        };
+        let before = match &self.comparing {
+            None => BeforeOrigins::Baseline(self.version),
+            Some(comparing) => BeforeOrigins::PerFile(comparing.before_origin.clone()),
+        };
+        CommentOrigins::Origins { after, before }
     }
 
     /// Recolor the review to `theme`, replaying the parsed diff through the new
@@ -272,8 +310,62 @@ impl Review {
     /// version and attributed to its author; snippet capture is left for a
     /// later refresh.
     pub fn add_comment(&mut self, target: CommentTarget, body: String) -> Ulid {
-        let record = draft_record(self.author.clone(), target, self.version, None, body);
+        let (version, target) = self.anchor_target(target);
+        let record = draft_record(self.author.clone(), target, version, None, body);
         self.drafts.add(record)
+    }
+
+    /// The version and target a comment authored on `target` at the cursor is
+    /// anchored against. On the after side, and outside a comparison, that is the
+    /// review's own version. On a comparison's before side it is the version and
+    /// side that file's presented before content came from, so the comment
+    /// rebases forward from the version it truly belongs to.
+    fn anchor_target(&self, target: CommentTarget) -> (u32, CommentTarget) {
+        if let Some(comparing) = &self.comparing
+            && let CommentTarget::Lines {
+                file,
+                side: Side::Before,
+                start_line,
+                end_line,
+            } = &target
+            && let Some(origin) = comparing.before_origin.get(file)
+        {
+            return (
+                origin.version,
+                CommentTarget::Lines {
+                    file: file.clone(),
+                    side: origin.side,
+                    start_line: *start_line,
+                    end_line: *end_line,
+                },
+            );
+        }
+        (self.version, target)
+    }
+
+    /// Present `diff` with its comments placed by `before_origin`, the version
+    /// and side each file's before content came from, so the review shows the
+    /// changes since version `from` rather than the latest diff. Passing `None`
+    /// returns to the latest version's own diff. The review's own version, its
+    /// committed comments, and its drafts are untouched: only what is shown and
+    /// where comments attach change.
+    pub fn show_diff(
+        &mut self,
+        diff: Diff,
+        comparison: Option<(u32, HashMap<String, LineOrigin>)>,
+    ) {
+        self.diff = diff;
+        self.comparing = comparison.map(|(from, before_origin)| Comparing {
+            from,
+            before_origin,
+        });
+        self.rehighlight();
+    }
+
+    /// The reference version the review is comparing against, or `None` when it
+    /// shows the latest version's own diff.
+    pub fn comparing_from(&self) -> Option<u32> {
+        self.comparing.as_ref().map(|comparing| comparing.from)
     }
 
     /// Buffer a new `body` for comment `id`.
@@ -321,6 +413,8 @@ impl Review {
     ) -> wiff_core::Result<()> {
         self.drafts.rebase(version, &diff, old_diff)?;
         self.diff = diff;
+        // A refresh moves to the new latest diff, ending any active comparison.
+        self.comparing = None;
         self.rehighlight();
         self.committed = comments;
         self.version = version;

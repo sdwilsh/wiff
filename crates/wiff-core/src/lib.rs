@@ -4,6 +4,7 @@
 
 pub mod capture;
 pub mod comment;
+pub mod compare;
 pub mod config;
 pub mod draft;
 pub mod error;
@@ -18,6 +19,7 @@ pub mod source;
 
 pub use capture::{create_session, write_diff_version};
 pub use comment::{AddedComment, DraftComment, delete_comment, set_resolved};
+pub use compare::{Comparison, LineOrigin, compare_versions};
 pub use config::AuthorDefaults;
 pub use draft::{DraftBuffer, EffectiveComment, draft_record};
 pub use error::{Error, Result};
