@@ -51,16 +51,19 @@ wiff comment list
   first, with its status and location, when you want a terse pass without the
   bodies and snippets.
 
-When you finish addressing a comment, resolve it so the human sees it is done:
+When you finish addressing a comment, resolve it so the human sees it is done.
+Pass `--agent` here too, so the resolution is attributed to you rather than the
+human:
 
 ```bash
-wiff comment resolve 01J8ZC0FEXAMPLECOMMENT7
+wiff comment resolve --agent 01J8ZC0FEXAMPLECOMMENT7
 ```
 
 ## Leaving review comments
 
 Use these when asked to review a change and record your findings. Always pass
-`--agent` so your comments are attributed to you rather than the human.
+`--agent` on every command that writes to the review, so your comments,
+resolutions, and withdrawals are attributed to you rather than the human.
 
 ```bash
 wiff comment add --agent --file src/lib.rs --line 42 --body "This can overflow."
@@ -87,9 +90,9 @@ To revise your own comments:
 
 ```bash
 wiff comment list
-wiff comment resolve 01J8ZC0FEXAMPLECOMMENT7
-wiff comment resolve --reopen 01J8ZC0FEXAMPLECOMMENT7
-wiff comment rm 01J8ZC0FEXAMPLECOMMENT7
+wiff comment resolve --agent 01J8ZC0FEXAMPLECOMMENT7
+wiff comment resolve --agent --reopen 01J8ZC0FEXAMPLECOMMENT7
+wiff comment rm --agent 01J8ZC0FEXAMPLECOMMENT7
 ```
 
 - `wiff comment resolve <id>` marks a comment resolved; `--reopen` undoes that.
