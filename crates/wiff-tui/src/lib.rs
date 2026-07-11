@@ -8,6 +8,7 @@
 pub mod action;
 pub mod app;
 pub mod compose;
+mod editor_wrap;
 pub mod event;
 pub mod exit;
 pub mod highlight;

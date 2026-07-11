@@ -20,7 +20,7 @@ use std::ops::Range;
 
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use tui_textarea::TextArea;
+use ratatui::widgets::Block;
 use ulid::Ulid;
 use wiff_core::LineOrigin;
 use wiff_core::record::{CommentTarget, RecordBody};
@@ -47,13 +47,18 @@ pub enum Update {
 }
 
 /// The viewport split around the inline comment editor while composing: the
-/// document lines above the editor, the editor widget itself, and the lines
-/// below it, in draw order down the screen.
-pub struct ComposeView<'a> {
+/// document lines above the editor, the editor box itself, and the lines below
+/// it, in draw order down the screen.
+pub struct ComposeView {
     /// The document lines shown above the editor.
     pub above: Vec<Line<'static>>,
-    /// The live editor widget, rendered where its comment will appear.
-    pub editor: &'a TextArea<'static>,
+    /// The editor's border block, drawn around its rows.
+    pub editor_block: Block<'static>,
+    /// The editor's visible interior rows, wrapped and scrolled to fit the box.
+    pub editor_rows: Vec<Line<'static>>,
+    /// The cursor's (column, row) within `editor_rows`, for placing the terminal
+    /// cursor inside the box; `None` when the cursor has scrolled out of view.
+    pub editor_cursor: Option<(u16, u16)>,
     /// The document lines shown below the editor.
     pub below: Vec<Line<'static>>,
 }
@@ -728,7 +733,7 @@ impl App {
                     self.compose = None;
                 }
             }
-            _ => compose.input(press),
+            _ => compose.input(press, self.width.saturating_sub(2)),
         }
     }
 
@@ -762,12 +767,15 @@ impl App {
     /// keeping the anchored code just below it. Each document line fills its row
     /// to `width` so its tint reaches the edge as it does outside the editor.
     /// `None` when not composing.
-    pub fn compose_view(&self, width: usize) -> Option<ComposeView<'_>> {
+    pub fn compose_view(&self, width: usize) -> Option<ComposeView> {
         let compose = self.compose.as_ref()?;
         if self.height == 0 {
             return None;
         }
-        let editor_height = (compose.line_count() + 2).min(self.height.max(3));
+        // The border takes a column on each side; the body wraps into the rest.
+        let interior = width.saturating_sub(2);
+        let editor_height = (compose.visual_rows(interior) + 2).min(self.height.max(3));
+        let window = editor_height.saturating_sub(2);
         let doc_shown = self.height.saturating_sub(editor_height);
         let anchor = compose.anchor().min(self.view.len());
         // Leave the rows already above the anchor where they sit and let the
@@ -790,9 +798,12 @@ impl App {
         let below = (below_start..below_end)
             .map(|i| self.decorate(i, width))
             .collect();
+        let editor = compose.view(interior, window);
         Some(ComposeView {
             above,
-            editor: compose.editor(),
+            editor_block: compose.block(),
+            editor_rows: editor.rows,
+            editor_cursor: editor.cursor,
             below,
         })
     }
@@ -2369,12 +2380,17 @@ mod tests {
     }
 
     /// The editor body and the document lines above and below it, as a human
-    /// sees them stacked down the screen.
+    /// sees them stacked down the screen, with the cursor's column,row within
+    /// the editor named on the editor divider.
     fn dump_compose(view: &ComposeView) -> String {
+        let cursor = match view.editor_cursor {
+            Some((col, row)) => format!("cursor {col},{row}"),
+            None => "cursor off".to_string(),
+        };
         format!(
-            "{}--editor--\n{}\n--below--\n{}",
+            "{}--editor {cursor}--\n{}--below--\n{}",
             dump(&view.above),
-            view.editor.lines().join("\n"),
+            dump(&view.editor_rows),
             dump(&view.below),
         )
     }
@@ -2813,8 +2829,8 @@ mod tests {
 <#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,1 +1,1 @@
---editor--
-why?
+--editor cursor 4,0--
+<-|-|->why?
 --below--
 <#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> total = alpha plus beta<-|#414a4a|-> 
 <#9ea1a9|#414a4a|->            <#c0c5ce|#414a4a|->plus gamma;<-|#414a4a|->                 
@@ -3648,12 +3664,54 @@ why?
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
 <#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
---editor--
-why 2?
+--editor cursor 6,0--
+<-|-|->why 2?
 --below--
 <#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
         k9::assert_equal!(dump_compose(&view), expected.to_string());
+    }
+
+    #[test]
+    fn a_long_editor_body_soft_wraps_to_the_box_interior() {
+        // A body wider than the box interior wraps at a space onto a second
+        // interior row rather than scrolling sideways, and the cursor rests at
+        // the end of the last wrapped row.
+        let mut app = App::reviewing(plain_review(), 8, &Theme::dark());
+        for _ in 0..4 {
+            app.update(Action::LineDown);
+        }
+        app.update(Action::AddComment);
+        typed(&mut app, "the quick brown fox jumps over the lazy dog");
+        let view = app.compose_view(TEST_WIDTH).expect("composing");
+        // The cursor rests at the end of the last wrapped row (column 8 of
+        // "lazy dog" on row 1).
+        k9::assert_equal!(
+            dump(&view.editor_rows),
+            "<-|-|->the quick brown fox jumps over the \n<-|-|->lazy dog\n".to_string()
+        );
+        k9::assert_equal!(view.editor_cursor, Some((8, 1)));
+    }
+
+    #[test]
+    fn moving_up_in_the_editor_follows_the_wrapped_rows() {
+        // From the end of a wrapped body, Up moves onto the first visual row at
+        // the same column rather than leaving the editor, so the cursor sits on
+        // row 0 rather than row 1.
+        let mut app = App::reviewing(plain_review(), 8, &Theme::dark());
+        app.set_width(TEST_WIDTH);
+        for _ in 0..4 {
+            app.update(Action::LineDown);
+        }
+        app.update(Action::AddComment);
+        typed(&mut app, "the quick brown fox jumps over the lazy dog");
+        app.compose_key(KeyPress::new(Key::Up));
+        let view = app.compose_view(TEST_WIDTH).expect("composing");
+        k9::assert_equal!(
+            dump(&view.editor_rows),
+            "<-|-|->the quick brown fox jumps over the \n<-|-|->lazy dog\n".to_string()
+        );
+        k9::assert_equal!(view.editor_cursor, Some((8, 0)));
     }
 
     #[test]
@@ -3742,10 +3800,13 @@ why 2?
         app.update(Action::NextComment);
         app.update(Action::EditComment);
         let view = app.compose_view(TEST_WIDTH).expect("composing");
+        // The editor opens seeded with the current body and the cursor resting
+        // past its end, on column 8 of the second row.
         k9::assert_equal!(
-            view.editor.lines().join("\n"),
-            "why 2?\nsay more".to_string()
+            dump(&view.editor_rows),
+            "<-|-|->why 2?\n<-|-|->say more\n".to_string()
         );
+        k9::assert_equal!(view.editor_cursor, Some((8, 1)));
         drop(view);
         // Replace the body: clear the two seeded lines, then type a new one.
         for _ in 0..20 {
@@ -3786,9 +3847,9 @@ why 2?
 <#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐
 <#767b84|-|->└──────────────────────────────────────┘
 <#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
---editor--
-why 2?
-say more
+--editor cursor 8,1--
+<-|-|->why 2?
+<-|-|->say more
 --below--
 <#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
@@ -3813,8 +3874,8 @@ say more
 <#a3be8c|-|->┌ <#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#a3be8c|-|-> <#a3be8c|-|->┐
 <#a3be8c|-|->│<#c0c5ce|-|->first<-|-|->                                 <#a3be8c|-|->│
 <#a3be8c|-|->└──────────────────────────────────────┘
---editor--
-second
+--editor cursor 6,0--
+<-|-|->second
 --below--
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@

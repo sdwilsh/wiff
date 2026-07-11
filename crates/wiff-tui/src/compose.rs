@@ -6,16 +6,35 @@
 //! motion, word and line kills, undo); the app hands it every press except the
 //! two that leave it, submit and cancel. Cancelling after the body has changed
 //! asks for confirmation first so an accidental keystroke cannot discard work.
+//!
+//! The editor renders itself rather than leaning on tui-textarea's own widget:
+//! its logical lines soft-wrap to the box interior (see [`editor_wrap`]) and its
+//! cursor position is reported for the caller to place the terminal's hardware
+//! cursor, so a long body wraps instead of scrolling sideways, vertical motion
+//! follows the wrapped shape, and an input method's candidate window tracks the
+//! real edit point.
 
 use ratatui::style::Style;
+use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders};
 use tui_textarea::{CursorMove, Input, Key as EditorKey, TextArea};
 use ulid::Ulid;
 use wiff_core::record::CommentTarget;
 use wiff_diff::Rgb;
 
+use crate::editor_wrap::{CursorBias, WrapMap};
 use crate::key::{Key, KeyPress};
 use crate::render::color;
+
+/// The visible interior of the editor: its wrapped, scrolled rows and where the
+/// cursor sits within them.
+pub struct EditorView {
+    /// The rows drawn inside the editor box.
+    pub rows: Vec<Line<'static>>,
+    /// The cursor's (column, row) within `rows`, or `None` when it has scrolled
+    /// out of view.
+    pub cursor: Option<(u16, u16)>,
+}
 
 /// What a compose session produces when it is saved.
 pub enum ComposeKind {
@@ -42,6 +61,11 @@ pub struct Compose {
     border: Rgb,
     /// Whether a cancel with unsaved changes is awaiting a yes/no answer.
     confirming: bool,
+    /// How a cursor on a soft-wrap boundary resolves to a visual row.
+    bias: CursorBias,
+    /// The column a vertical move aims to keep, remembered across successive
+    /// up/down presses; cleared by any edit or horizontal move.
+    goal_col: Option<usize>,
 }
 
 impl Compose {
@@ -68,7 +92,7 @@ impl Compose {
         // Open with the cursor after the seeded text so an edit appends.
         textarea.move_cursor(CursorMove::Bottom);
         textarea.move_cursor(CursorMove::End);
-        let mut compose = Self {
+        Self {
             textarea,
             kind,
             anchor,
@@ -77,14 +101,101 @@ impl Compose {
             hint,
             border,
             confirming: false,
-        };
-        compose.apply_block();
-        compose
+            bias: CursorBias::Forward,
+            goal_col: None,
+        }
     }
 
-    /// Feed a key press to the text buffer.
-    pub fn input(&mut self, press: KeyPress) {
-        self.textarea.input(to_input(press));
+    /// Feed a key press to the editor, wrapping to `width` columns. Vertical
+    /// motion and the line-bound keys follow the wrapped shape; every other
+    /// press edits the text buffer directly.
+    pub fn input(&mut self, press: KeyPress, width: usize) {
+        match press.key {
+            Key::Up if plain(&press) => self.move_up(width),
+            Key::Down if plain(&press) => self.move_down(width),
+            Key::Home if plain(&press) => self.move_home(width),
+            Key::End if plain(&press) => self.move_end(width),
+            _ => {
+                self.textarea.input(to_input(press));
+                // An edit or horizontal move abandons the remembered goal column
+                // and reads a wrap boundary as the start of the following row.
+                self.goal_col = None;
+                self.bias = CursorBias::Forward;
+            }
+        }
+    }
+
+    /// Move up one visual row, keeping the remembered goal column. On the top
+    /// visual row this leaves the cursor where it is.
+    fn move_up(&mut self, width: usize) {
+        let map = self.wrap(width);
+        let (crow, ccol) = self.textarea.cursor();
+        let (cvrow, cvcol) = map.cursor_to_visual(crow, ccol, self.bias);
+        if cvrow == 0 {
+            return;
+        }
+        let goal = *self.goal_col.get_or_insert(cvcol);
+        let (row, col, bias) = map.vertical_target(cvrow - 1, goal);
+        self.jump(row, col);
+        self.bias = bias;
+    }
+
+    /// Move down one visual row, keeping the remembered goal column. On the
+    /// bottom visual row this leaves the cursor where it is.
+    fn move_down(&mut self, width: usize) {
+        let map = self.wrap(width);
+        let (crow, ccol) = self.textarea.cursor();
+        let (cvrow, cvcol) = map.cursor_to_visual(crow, ccol, self.bias);
+        if cvrow + 1 >= map.row_count() {
+            return;
+        }
+        let goal = *self.goal_col.get_or_insert(cvcol);
+        let (row, col, bias) = map.vertical_target(cvrow + 1, goal);
+        self.jump(row, col);
+        self.bias = bias;
+    }
+
+    /// Move the cursor to the start of its current visual row.
+    fn move_home(&mut self, width: usize) {
+        let map = self.wrap(width);
+        let (crow, ccol) = self.textarea.cursor();
+        let (cvrow, _) = map.cursor_to_visual(crow, ccol, self.bias);
+        let (row, col) = map.row_start_cursor(cvrow);
+        self.jump(row, col);
+        self.goal_col = None;
+        self.bias = CursorBias::Forward;
+    }
+
+    /// Move the cursor to the end of its current visual row.
+    fn move_end(&mut self, width: usize) {
+        let map = self.wrap(width);
+        let (crow, ccol) = self.textarea.cursor();
+        let (cvrow, _) = map.cursor_to_visual(crow, ccol, self.bias);
+        let (row, col) = map.row_end_cursor(cvrow);
+        self.jump(row, col);
+        self.goal_col = None;
+        // End on a hard-wrapped row (no trailing space to trim) reaches the
+        // boundary; bias it back onto this row rather than the next.
+        self.bias = CursorBias::Backward;
+    }
+
+    /// Move the logical cursor to visual (row, col).
+    fn jump(&mut self, row: usize, col: usize) {
+        self.textarea.move_cursor(CursorMove::Jump(
+            row.min(u16::MAX as usize) as u16,
+            col.min(u16::MAX as usize) as u16,
+        ));
+    }
+
+    /// The wrapped view of the editor's contents at `width` columns.
+    fn wrap(&self, width: usize) -> WrapMap {
+        WrapMap::build(self.textarea.lines(), width)
+    }
+
+    /// The number of visual rows the body occupies at `width` columns, for
+    /// sizing the editor box.
+    pub fn visual_rows(&self, width: usize) -> usize {
+        self.wrap(width).row_count()
     }
 
     /// The view row the editor renders above.
@@ -92,14 +203,42 @@ impl Compose {
         self.anchor
     }
 
-    /// The live editor widget.
-    pub fn editor(&self) -> &TextArea<'static> {
-        &self.textarea
+    /// The editor's border block, titled with the label and either the
+    /// submit/cancel hint or the discard confirmation.
+    pub fn block(&self) -> Block<'static> {
+        let title = if self.confirming {
+            format!(" {}  discard changes? y/n ", self.label)
+        } else {
+            format!(" {}  {} ", self.label, self.hint)
+        };
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(color(self.border)))
+            .title(title)
     }
 
-    /// The number of body lines, for sizing the editor box.
-    pub fn line_count(&self) -> usize {
-        self.textarea.lines().len()
+    /// The visible interior of the editor, wrapped to `width` columns and
+    /// scrolled so the cursor stays within a `window`-tall viewport, along with
+    /// the cursor's position within those rows for the caller to place the
+    /// terminal cursor.
+    pub fn view(&self, width: usize, window: usize) -> EditorView {
+        let window = window.max(1);
+        let map = self.wrap(width);
+        let (crow, ccol) = self.textarea.cursor();
+        let (cvrow, cvcol) = map.cursor_to_visual(crow, ccol, self.bias);
+        let total = map.row_count();
+        let scroll = scroll_top(cvrow, window, total);
+        let last = (scroll + window).min(total);
+        let rows = (scroll..last)
+            .map(|vrow| Line::from(map.row(vrow).text.clone()))
+            .collect();
+        let cursor = (scroll..last).contains(&cvrow).then(|| {
+            (
+                cvcol.min(u16::MAX as usize) as u16,
+                (cvrow - scroll).min(u16::MAX as usize) as u16,
+            )
+        });
+        EditorView { rows, cursor }
     }
 
     /// The current body text, trailing blank lines trimmed.
@@ -135,30 +274,29 @@ impl Compose {
     /// Begin confirming a cancel, updating the border to ask for an answer.
     pub fn begin_confirm(&mut self) {
         self.confirming = true;
-        self.apply_block();
     }
 
     /// Return to editing after a declined cancel, restoring the border.
     pub fn resume(&mut self) {
         self.confirming = false;
-        self.apply_block();
     }
+}
 
-    /// Set the editor's border and title from its current state: the label plus
-    /// either the submit/cancel hint or the discard confirmation.
-    fn apply_block(&mut self) {
-        let title = if self.confirming {
-            format!(" {}  discard changes? y/n ", self.label)
-        } else {
-            format!(" {}  {} ", self.label, self.hint)
-        };
-        self.textarea.set_block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(color(self.border)))
-                .title(title),
-        );
-    }
+/// The scroll offset that keeps visual row `cursor` inside a `window`-tall
+/// viewport over `total` rows, clamped so no blank strip trails the last row.
+fn scroll_top(cursor: usize, window: usize, total: usize) -> usize {
+    let scroll = if cursor < window {
+        0
+    } else {
+        cursor + 1 - window
+    };
+    scroll.min(total.saturating_sub(window))
+}
+
+/// Whether a press has no modifiers, so a motion key acts on the editor rather
+/// than being reserved for a modified binding.
+fn plain(press: &KeyPress) -> bool {
+    !press.ctrl && !press.alt && !press.shift
 }
 
 /// Translate a binding [`KeyPress`] into the editor's own input type, so the

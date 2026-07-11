@@ -169,8 +169,22 @@ fn render_compose(frame: &mut Frame, area: Rect, view: ComposeView) {
         ..area
     };
     frame.render_widget(Paragraph::new(view.above), above_area);
-    frame.render_widget(view.editor, editor_area);
+    let editor_cursor = view.editor_cursor;
+    frame.render_widget(
+        Paragraph::new(view.editor_rows).block(view.editor_block),
+        editor_area,
+    );
     frame.render_widget(Paragraph::new(view.below), below_area);
+    // Place the terminal's hardware cursor inside the border, past the box's
+    // top and left edge, keeping an input method's candidate window on the real
+    // edit point.
+    if let Some((col, row)) = editor_cursor {
+        let x = editor_area.x + 1 + col;
+        let y = editor_area.y + 1 + row;
+        if x < editor_area.right() && y < editor_area.bottom() {
+            frame.set_cursor_position((x, y));
+        }
+    }
 }
 
 /// Draw and handle events until a quit action ends the loop.
