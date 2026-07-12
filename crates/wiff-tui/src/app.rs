@@ -139,15 +139,31 @@ enum ViewRow {
     Fold(usize),
 }
 
-/// Where the cursor sat before a refresh, so it can return to the same code once
-/// the diff is recaptured: the file it was in and, on a content line, the side
-/// and number of that line.
+/// Where the cursor sat before the document was rebuilt, named the way the
+/// document's own rows are so it can return to the same place afterward. Built
+/// from the [`RowKind`] under the cursor, it survives a rebuild that renumbers
+/// rows.
 struct CursorSpot {
     /// The path of the file the cursor was in.
     file: String,
-    /// The side and number of the content line the cursor was on, absent when it
-    /// sat on a header, a fold marker, or a comment.
-    line: Option<(Side, LineNo)>,
+    /// The row within, or across, that file to return to.
+    place: SpotPlace,
+}
+
+/// The kind of row a [`CursorSpot`] returns the cursor to, one variant per
+/// family of row the cursor can rest on, mirroring the [`RowKind`] it was built
+/// from.
+#[derive(Clone, Copy)]
+enum SpotPlace {
+    /// A content line, returned to by side and number, or the nearest surviving
+    /// line on that side when the exact line is gone.
+    Line(Side, LineNo),
+    /// A comment box, returned to by identity wherever its header now renders,
+    /// or the file's header when the comment is gone.
+    Comment(Ulid),
+    /// A structural row -- a file or hunk header, or the review summary -- with
+    /// no finer anchor than the file header.
+    Header,
 }
 
 /// What the review's left side should show: an earlier version's after-content
@@ -1898,31 +1914,50 @@ impl App {
         }
     }
 
-    /// The file and line the cursor is on, to return to after a refresh rebuilds
-    /// the document. Absent when the cursor is on no file.
+    /// Where the cursor is, to return to after the document is rebuilt. Absent
+    /// when the cursor is on no file.
     fn cursor_spot(&self) -> Option<CursorSpot> {
         let file = self.document.files.get(self.cursor_file()?)?.clone();
-        let line = match self.kind_at(self.cursor) {
+        let place = match self.kind_at(self.cursor) {
             Some(RowKind::Content {
                 side,
                 lineno: Some(lineno),
-            }) => Some((*side, *lineno)),
-            _ => None,
+            }) => SpotPlace::Line(*side, *lineno),
+            Some(
+                RowKind::CommentHeader { id }
+                | RowKind::CommentBody { id }
+                | RowKind::CommentBottom { id },
+            ) => SpotPlace::Comment(*id),
+            _ => SpotPlace::Header,
         };
-        Some(CursorSpot { file, line })
+        Some(CursorSpot { file, place })
     }
 
-    /// Return the cursor to `spot` after a rebuild: the same line when it
-    /// survived, else the nearest surviving line in that file, else the file's
-    /// header, else the top of the document.
+    /// Return the cursor to `spot` after a rebuild, else the top of the document
+    /// when neither it nor its file survived.
     fn restore_spot(&mut self, spot: Option<CursorSpot>) {
         let target = spot
-            .and_then(|spot| {
-                let file = self.document.files.iter().position(|f| *f == spot.file)?;
-                self.best_row_in_file(file, spot.line)
-            })
+            .and_then(|spot| self.spot_row(&spot))
             .and_then(|row| self.locate_document_row(row));
         self.move_to(target.unwrap_or(0));
+    }
+
+    /// The document row that best returns the cursor to `spot`: a surviving
+    /// comment by its header wherever it now renders, a content line exactly or
+    /// by its nearest surviving neighbor, else the file's header. `None` when the
+    /// file itself is gone.
+    fn spot_row(&self, spot: &CursorSpot) -> Option<usize> {
+        if let SpotPlace::Comment(id) = spot.place
+            && let Some(row) = self.comment_header_row(id)
+        {
+            return Some(row);
+        }
+        let file = self.document.files.iter().position(|f| *f == spot.file)?;
+        let line = match spot.place {
+            SpotPlace::Line(side, lineno) => Some((side, lineno)),
+            _ => None,
+        };
+        self.best_row_in_file(file, line)
     }
 
     /// The best document row to land on within file `file` for a cursor that was
@@ -5207,5 +5242,25 @@ modified  f.txt
                 "why beta?".to_string(),
             )
         );
+    }
+
+    #[test]
+    fn reloading_committed_comments_returns_the_cursor_to_the_comment() {
+        // Saving commits the drafts and reloads the committed comments in place.
+        // With the cursor resting on a comment box, the reload must return it to
+        // that same comment rather than dropping it on the file header.
+        let (_, comments) = commented_diff();
+        let mut app = App::reviewing(commented_review(), 14, &Theme::dark());
+        app.set_width(TEST_WIDTH);
+        // Move the cursor onto the second, unresolved comment's box.
+        app.update(Action::NextComment);
+        app.update(Action::NextComment);
+        let before_cursor = app.cursor();
+        let before = dump(&app.visible(TEST_WIDTH));
+
+        app.reload_comments(comments);
+
+        k9::assert_equal!(app.cursor(), before_cursor);
+        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), before);
     }
 }
