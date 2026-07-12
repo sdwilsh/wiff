@@ -533,6 +533,22 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// The append events that would persist the pending drafts, without emptying
+    /// the buffer. Empty when no review is attached.
+    pub fn draft_records(&self) -> Vec<RecordBody> {
+        self.review
+            .as_ref()
+            .map(Review::draft_records)
+            .unwrap_or_default()
+    }
+
+    /// Empty the draft buffer after its records were committed to the log.
+    pub fn clear_drafts(&mut self) {
+        if let Some(review) = self.review.as_mut() {
+            review.clear_drafts();
+        }
+    }
+
     /// The view row the cursor is on.
     pub fn cursor(&self) -> usize {
         self.cursor

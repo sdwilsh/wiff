@@ -102,6 +102,59 @@ fn appending_from_a_stale_handle_diverges() {
 }
 
 #[test]
+fn a_locked_batch_appends_every_record_in_order() {
+    let base = tempfile::tempdir().unwrap();
+    let (log, lock) = SessionLog::create(base.path(), "demo", header).unwrap();
+    let path = log.path().to_path_buf();
+    drop(lock);
+
+    let mut reopened = SessionLog::open(&path).unwrap();
+    let seqs = reopened
+        .append_all_locked(vec![comment(), comment()])
+        .unwrap();
+    k9::assert_equal!(seqs, vec![1, 2]);
+    let got: Vec<(u64, RecordBody)> = read_records(&path)
+        .unwrap()
+        .into_iter()
+        .map(|record| (record.seq, record.body))
+        .collect();
+    k9::assert_equal!(
+        got,
+        vec![(0, header(reopened.ulid())), (1, comment()), (2, comment()),]
+    );
+}
+
+#[test]
+fn a_diverged_batch_writes_none_of_its_records() {
+    // A stale handle whose position the file has moved past must reject the
+    // whole batch without writing any of it, so a retry cannot duplicate a
+    // partially written prefix.
+    let base = tempfile::tempdir().unwrap();
+    let (mut writer, mut lock) = SessionLog::create(base.path(), "demo", header).unwrap();
+    let mut stale = SessionLog::open(writer.path()).unwrap();
+    writer.append(&mut lock, comment()).unwrap();
+    drop(lock);
+
+    let outcome = match stale.append_all_locked(vec![comment(), comment()]) {
+        Ok(seqs) => format!("wrote {seqs:?}"),
+        Err(err) => format!("{err}"),
+    };
+    k9::assert_equal!(
+        outcome,
+        format!(
+            "session {} diverged from our position",
+            writer.path().display()
+        )
+    );
+    let got: Vec<(u64, RecordBody)> = read_records(writer.path())
+        .unwrap()
+        .into_iter()
+        .map(|record| (record.seq, record.body))
+        .collect();
+    k9::assert_equal!(got, vec![(0, header(writer.ulid())), (1, comment())]);
+}
+
+#[test]
 fn discovery_lists_projects_sessions_and_the_active_one() {
     let base = tempfile::tempdir().unwrap();
     let (first, first_lock) = SessionLog::create(base.path(), "demo", header).unwrap();

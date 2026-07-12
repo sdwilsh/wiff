@@ -439,9 +439,20 @@ impl Review {
         std::mem::take(&mut self.drafts).into_records()
     }
 
+    /// The append events that would persist the buffered drafts, without
+    /// emptying the buffer.
+    pub fn draft_records(&self) -> Vec<RecordBody> {
+        self.drafts.clone().into_records()
+    }
+
+    /// Empty the draft buffer (called once its records are durably committed).
+    pub fn clear_drafts(&mut self) {
+        self.drafts = DraftBuffer::new();
+    }
+
     /// Replace the committed comments with `comments`, the freshly folded live
     /// set after the pending drafts were persisted. The caller has already
-    /// taken the drafts, so the review now reflects them as committed.
+    /// cleared the drafts, so the review now reflects them as committed.
     pub fn set_committed(&mut self, comments: Vec<CommentState>) -> CommentSync {
         let sync = CommentSync::between(&self.committed, &comments);
         self.committed = comments;

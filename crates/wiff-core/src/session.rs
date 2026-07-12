@@ -198,6 +198,28 @@ impl SessionLog {
         }
     }
 
+    /// Append `bodies` in order under a single lock acquisition, returning the
+    /// assigned sequence numbers. The lock and the divergence check are taken
+    /// once up front, so a contended or diverged file fails without writing any
+    /// of the batch; a caller can then retry the whole batch without the risk
+    /// that a partially written prefix duplicates on the next attempt.
+    pub fn append_all_locked(&mut self, bodies: Vec<RecordBody>) -> Result<Vec<u64>> {
+        match self.lock()? {
+            LockAttempt::Acquired {
+                mut lock,
+                sync: SyncState::Synced,
+            } => bodies
+                .into_iter()
+                .map(|body| self.append(&mut lock, body))
+                .collect(),
+            LockAttempt::Acquired {
+                sync: SyncState::Diverged { .. },
+                ..
+            } => Err(Error::Diverged(self.path.clone())),
+            LockAttempt::Contended => Err(Error::Locked(self.path.clone())),
+        }
+    }
+
     /// Take the file's exclusive lock without blocking, reporting whether it was
     /// acquired and, if so, whether our position still matches the file. The
     /// sync check reads the file after the lock is held, so its snapshot is
@@ -243,8 +265,20 @@ pub fn read_records(path: &Path) -> Result<Vec<Record>> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(source) => return Err(Error::io(path, source)),
     };
+    // A lock-free reader can catch an appender mid-write and see a final line
+    // that is not yet newline-terminated. Every complete record ends in a
+    // newline, so parse only through the last one and hold back any unterminated
+    // remainder; a later read picks it up once the append finishes. A malformed
+    // line that is newline-terminated is genuine corruption and still errors.
+    // This relies on a serialized record never containing a raw newline of its
+    // own: serde_json escapes newlines within strings, so the sole newline in a
+    // record line is its terminator.
+    let complete = match text.rfind('\n') {
+        Some(last) => &text[..=last],
+        None => "",
+    };
     let mut records = Vec::new();
-    for line in text.lines() {
+    for line in complete.lines() {
         if line.trim().is_empty() {
             continue;
         }
@@ -399,7 +433,84 @@ pub fn remove_session(path: &Path) -> Result<()> {
 mod tests {
     use std::io::Write;
 
-    use super::SessionWatcher;
+    use time::OffsetDateTime;
+    use ulid::Ulid;
+
+    use super::{SessionWatcher, read_records};
+    use crate::error::Error;
+    use crate::record::{Author, AuthorKind, CommentDelete, Record, RecordBody};
+
+    /// A minimal well-formed record whose serialized line seeds the torn-read
+    /// tests.
+    fn sample_record() -> Record {
+        Record {
+            seq: 0,
+            at: OffsetDateTime::from_unix_timestamp(0).expect("epoch"),
+            body: RecordBody::CommentDelete(CommentDelete {
+                id: Ulid::from_string("00000000000000000000000000").expect("ulid"),
+                author: Author {
+                    name: "reviewer".to_string(),
+                    kind: AuthorKind::Human,
+                },
+            }),
+        }
+    }
+
+    #[test]
+    fn a_torn_final_line_is_held_back_until_the_append_completes() {
+        // A complete newline-terminated record followed by a fragment of a
+        // second, still-being-written line reads back as just the whole record;
+        // the fragment is ignored until its newline arrives.
+        let record = sample_record();
+        let mut line = serde_json::to_string(&record).expect("serialize");
+        line.push('\n');
+        let mut file = tempfile::NamedTempFile::new().expect("temp file");
+        file.write_all(line.as_bytes()).expect("whole record");
+        file.write_all(br#"{"seq":1,"at":"2024"#)
+            .expect("torn fragment");
+        file.flush().expect("flush");
+
+        let records = read_records(file.path()).expect("read");
+        k9::assert_equal!(records, vec![record]);
+    }
+
+    #[test]
+    fn a_malformed_interior_line_is_rejected_as_corruption() {
+        // A garbage line that is newline-terminated, sitting between two whole
+        // records, is not a torn tail; it is treated as corruption rather than
+        // silently skipped.
+        let record = sample_record();
+        let mut line = serde_json::to_string(&record).expect("serialize");
+        line.push('\n');
+        let mut file = tempfile::NamedTempFile::new().expect("temp file");
+        file.write_all(line.as_bytes()).expect("first record");
+        file.write_all(b"not a record\n").expect("garbage line");
+        file.write_all(line.as_bytes()).expect("second record");
+        file.flush().expect("flush");
+
+        let outcome = match read_records(file.path()) {
+            Ok(records) => format!("ok with {} records", records.len()),
+            Err(Error::Decode(_)) => "decode error".to_string(),
+            Err(other) => format!("other error: {other}"),
+        };
+        k9::assert_equal!(outcome, "decode error".to_string());
+    }
+
+    #[test]
+    fn an_empty_file_and_a_blank_only_file_both_read_as_no_records() {
+        // An empty log and one holding only blank lines have no records; the
+        // blank lines are skipped rather than parsed.
+        let empty = tempfile::NamedTempFile::new().expect("temp file");
+        empty.as_file().sync_all().expect("flush");
+
+        let mut blank = tempfile::NamedTempFile::new().expect("temp file");
+        blank.write_all(b"\n   \n\n").expect("blank lines");
+        blank.flush().expect("flush");
+
+        let empty_records = read_records(empty.path()).expect("read empty");
+        let blank_records = read_records(blank.path()).expect("read blank");
+        k9::assert_equal!((empty_records, blank_records), (Vec::new(), Vec::new()));
+    }
 
     #[test]
     fn a_watcher_registers_an_append_once_until_it_is_acknowledged() {

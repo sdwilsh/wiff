@@ -216,18 +216,25 @@ fn last_commented_version(
 /// review's committed comments over them, keeping the review open. Reports the
 /// tally in the status line; a no-op when nothing is pending.
 fn save_in_place(session_path: &Path, app: &mut App) -> anyhow::Result<()> {
-    let drafts = app.take_drafts();
+    // Keep the drafts in the buffer until the commit is durable. A contended or
+    // diverged log, or a torn read of the position check, fails the commit; the
+    // buffer is then untouched and the reviewer can retry rather than lose work.
+    let drafts = app.draft_records();
     if drafts.is_empty() {
         app.set_message("nothing to save".to_string());
         return Ok(());
     }
     let count = drafts.len();
     commit_drafts(session_path, drafts)?;
-    reload_committed(session_path, app)?;
-    app.set_message(format!(
-        "committed {count} change{}",
-        if count == 1 { "" } else { "s" }
-    ));
+    app.clear_drafts();
+    let changes = format!("{count} change{}", if count == 1 { "" } else { "s" });
+    // The commit is durable once it returns; a reload failure here only leaves
+    // the view stale until the next sync tick, so report the commit as done
+    // rather than as a failed save that discarded nothing.
+    match reload_committed(session_path, app) {
+        Ok(_) => app.set_message(format!("committed {changes}")),
+        Err(err) => app.set_message(format!("committed {changes}; view refresh failed: {err}")),
+    }
     Ok(())
 }
 
@@ -333,16 +340,16 @@ fn resolve_exit(exit: Exit, session_path: &Path, drafts: Vec<RecordBody>) -> any
     Ok(())
 }
 
-/// Append the reviewer's buffered draft edits to the session log in order, each
-/// taking the file lock transiently. Does nothing when there are no drafts.
+/// Append the reviewer's buffered draft edits to the session log in order under
+/// a single lock acquisition, so a contended or diverged file writes none of
+/// them and the caller can retry the whole batch without duplicating a prefix.
+/// Does nothing when there are no drafts.
 fn commit_drafts(session_path: &Path, drafts: Vec<RecordBody>) -> anyhow::Result<()> {
     if drafts.is_empty() {
         return Ok(());
     }
     let mut log = SessionLog::open(session_path)?;
-    for body in drafts {
-        log.append_locked(body)?;
-    }
+    log.append_all_locked(drafts)?;
     Ok(())
 }
 
