@@ -74,16 +74,16 @@ enum DetachFocus {
     Outside,
 }
 
-/// A single vertical step's direction, deciding which way a nudge moves the
-/// diff.
+/// The direction of an arrow key that nudges focus out of the floating editor
+/// and back onto the diff.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Nudge {
     Up,
     Down,
 }
 
-/// What the caller needs to draw the detached editor floating over the diff,
-/// once the ordinary document has been drawn behind it.
+/// A frame of the detached editor, overlaid on the diff once the ordinary
+/// document has been drawn behind it.
 pub struct FloatView {
     /// The document row the box's top border sits on. It tracks the anchor as
     /// the diff scrolls, then comes to rest against the top or bottom edge once
@@ -862,10 +862,10 @@ impl App {
         }
     }
 
-    /// Whether `press` is an arrow or page key that would step past the editor's
-    /// top or bottom row, returning the direction it detaches in. `None` when
-    /// nudging is disabled, the press is not a vertical step, or the step stays
-    /// within the editor.
+    /// Whether `press` is an arrow key that would step past the editor's top or
+    /// bottom row, returning the direction it detaches in. `None` when nudging
+    /// is disabled, the press is not a vertical step, or the step stays within
+    /// the editor.
     fn nudge_out_of_editor(&self, press: &KeyPress, width: usize) -> Option<Nudge> {
         if !self.nudge_to_detach {
             return None;
@@ -3064,12 +3064,12 @@ mod tests {
         }
         k9::assert_equal!(
             dump(&[app.status(28)]),
-            "<#c0c5ce|#3a3f4a|->src/lib.rs       1 open  30%\n".to_string()
+            "<#c0c5ce|#3a3f4a|->src/lib.rs       1 open  33%\n".to_string()
         );
         app.update(Action::ResolveComment);
         k9::assert_equal!(
             dump(&[app.status(28)]),
-            "<#c0c5ce|#3a3f4a|->src/lib.rs     * 2 open  30%\n".to_string()
+            "<#c0c5ce|#3a3f4a|->src/lib.rs     * 2 open  33%\n".to_string()
         );
     }
 
@@ -3090,7 +3090,7 @@ mod tests {
         app.update(Action::HideComments);
         k9::assert_equal!(
             dump(&[app.status(60)]),
-            "<#c0c5ce|#3a3f4a|->src/lib.rs                                       1 open  50%\n"
+            "<#c0c5ce|#3a3f4a|->src/lib.rs                                       1 open  55%\n"
                 .to_string()
         );
     }
@@ -3316,7 +3316,7 @@ mod tests {
         k9::assert_equal!(app.picking(), true);
         let expected = "\
 <#c0c5ce|#4f5b66|->> src/lib.rs  ok                        
-<#c0c5ce|#2b303b|->  src/lib.rs  why 2?                    
+<#c0c5ce|#2b303b|->  src/lib.rs  why 2? say more           
 <-|#2b303b|->                                        
 <#767b84|#2b303b|->  up/down move  enter select  esc cancel
 ";
@@ -3768,8 +3768,7 @@ mod tests {
 <#767b84|-|->└──────────────────────────────────────┘
 <#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
 <#767b84|-|->┌ <#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐
-<#767b84|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#767b84|-|->│
-<#767b84|-|->│<#c0c5ce|-|->say more<-|-|->                              <#767b84|-|->│
+<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│
 <#767b84|-|->└──────────────────────────────────────┘
 <#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
@@ -3848,8 +3847,7 @@ mod tests {
 <#767b84|-|->└──────────────────────────────────────┘
 <#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
 <#adb0b5|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#adb0b5|#4f5b66|-> <#adb0b5|#4f5b66|->┐
-<#767b84|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#767b84|-|->│
-<#767b84|-|->│<#c0c5ce|-|->say more<-|-|->                              <#767b84|-|->│
+<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│
 <#767b84|-|->└──────────────────────────────────────┘
 <#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
@@ -3892,7 +3890,7 @@ mod tests {
                 Action::HideComments,
             ],
         );
-        k9::assert_equal!(cursor, 10);
+        k9::assert_equal!(cursor, 9);
         let restored = "\
 <#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
@@ -3901,8 +3899,7 @@ mod tests {
 <#767b84|-|->└──────────────────────────────────────┘
 <#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
 <#767b84|-|->┌ <#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐
-<#767b84|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#767b84|-|->│
-<#767b84|-|->│<#c0c5ce|-|->say more<-|-|->                              <#767b84|-|->│
+<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│
 <#767b84|-|->└──────────────────────────────────────┘
 <#cfd0d4|#4f5b66|->        2 + <#ddccda|#4f5b66|->let<#cdd1d8|#4f5b66|-> y <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#ebcdc3|#4f5b66|->2<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  
 ";
@@ -3932,8 +3929,7 @@ mod tests {
 <#767b84|-|->└──────────────────────────────────────┘
 <#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
 <#c8d8ba|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#c8d8ba|#4f5b66|-> [draft]<#adb0b5|#4f5b66|-> [resolved by wez]<#adb0b5|#4f5b66|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#c8d8ba|#4f5b66|-> <#c8d8ba|#4f5b66|->┐
-<#a3be8c|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#a3be8c|-|->│
-<#a3be8c|-|->│<#c0c5ce|-|->say more<-|-|->                              <#a3be8c|-|->│
+<#a3be8c|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#a3be8c|-|->│
 <#a3be8c|-|->└──────────────────────────────────────┘
 <#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
@@ -3995,8 +3991,7 @@ mod tests {
 <#767b84|-|->└──────────────────────────────────────┘
 <#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
 <#adb0b5|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#adb0b5|#4f5b66|-> <#adb0b5|#4f5b66|->┐
-<#767b84|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#767b84|-|->│
-<#767b84|-|->│<#c0c5ce|-|->say more<-|-|->                              <#767b84|-|->│
+<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│
 <#767b84|-|->└──────────────────────────────────────┘
 <#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
@@ -4950,8 +4945,7 @@ mod tests {
 <#767b84|-|->└──────────────────────────────────────┘
 <#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
 <#767b84|-|->┌ <#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐
-<#767b84|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#767b84|-|->│
-<#767b84|-|->│<#c0c5ce|-|->say more<-|-|->                              <#767b84|-|->│
+<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│
 <#767b84|-|->└──────────────────────────────────────┘
 <#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";

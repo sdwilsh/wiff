@@ -29,6 +29,7 @@ use wiff_diff::{
 
 use crate::action::Action;
 use crate::keymap::Keymap;
+use crate::markdown::{self, MarkdownColors};
 use crate::theme::{Theme, legible_over};
 use crate::wrap::wrap_line;
 
@@ -716,19 +717,23 @@ impl DiffView {
         );
         let body_start = doc.rows.len();
         // Compensate for the border drawn around the comment box: its two
-        // columns leave the body this much room to wrap into.
+        // columns leave the body this much room to render into.
         let interior = width.saturating_sub(2);
-        for text in comment.body.trim_end().split('\n') {
-            for line in wrap_line(&self.comment_body(text), interior) {
-                let plain: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-                doc.push(
-                    file,
-                    RowKind::CommentBody { id: comment.id },
-                    Some(border),
-                    plain,
-                    line,
-                );
-            }
+        let colors = MarkdownColors::from_theme(&self.theme);
+        for line in markdown::render(
+            comment.body.trim_end(),
+            interior,
+            &colors,
+            &self.highlighter,
+        ) {
+            let plain: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            doc.push(
+                file,
+                RowKind::CommentBody { id: comment.id },
+                Some(border),
+                plain,
+                line,
+            );
         }
         let body_end = doc.rows.len();
         doc.push(
@@ -797,14 +802,6 @@ impl DiffView {
             Style::default().fg(color(self.theme.fold_fg)),
         ));
         Line::from(spans)
-    }
-
-    /// One line of a comment's body, shown inside the box.
-    fn comment_body(&self, text: &str) -> Line<'static> {
-        Line::from(Span::styled(
-            text.to_string(),
-            Style::default().fg(color(self.theme.comment_fg)),
-        ))
     }
 
     /// The line shown in place of `hidden` collapsed rows, indented to align

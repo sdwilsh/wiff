@@ -257,6 +257,34 @@ impl Highlighter {
         LiveHighlighter::new(Arc::clone(&self.syntaxes), self.theme.clone(), token)
     }
 
+    /// Highlight a standalone block of `code` as `token`'s language, returning
+    /// one entry of colored spans per source line. Returns `None` when `token`
+    /// names no known syntax, so a caller can fall back to plain rendering.
+    pub fn highlight_code(&self, token: &str, code: &str) -> Option<Vec<HighlightedLine>> {
+        let syntax = self.syntaxes.find_syntax_by_token(token)?;
+        let highlighter = ThemeHighlighter::new(&self.theme);
+        let mut parse = ParseState::new(syntax);
+        let mut state = HighlightState::new(&highlighter, ScopeStack::new());
+        let mut out = Vec::new();
+        // A trailing newline would otherwise split into a spurious empty final
+        // line; the block's lines are the text between the newlines.
+        for line in code.strip_suffix('\n').unwrap_or(code).split('\n') {
+            // syntect's newline-aware syntaxes expect a trailing newline to
+            // close line-scoped constructs; coloring trims it back off.
+            let text = format!("{line}\n");
+            let ops = parse.parse_line(&text, &self.syntaxes).unwrap_or_default();
+            let spans = HighlightIterator::new(&mut state, &ops, &text, &highlighter)
+                .map(|(style, piece)| StyledSpan {
+                    text: piece.trim_end_matches('\n').to_string(),
+                    style: convert_style(style),
+                })
+                .filter(|span| !span.text.is_empty())
+                .collect();
+            out.push(spans);
+        }
+        Some(out)
+    }
+
     /// Color a `parsed` side with the current theme, keyed by line number. This
     /// is the cheap part of highlighting: a theme change only replays the cached
     /// scope operations through the new theme. Each run restarts the scope state
@@ -559,6 +587,32 @@ mod tests {
         .into_iter()
         .collect();
         k9::assert_equal!(highlighter.highlight_side(&file, Side::After), expected);
+    }
+
+    #[test]
+    fn highlight_code_colors_a_standalone_block_by_language() {
+        let highlighter = Highlighter::with_theme(TEST_THEME).unwrap();
+        let expected = vec![
+            vec![
+                span("let", "#b48ead"),
+                span(" x ", "#c0c5ce"),
+                span("=", "#c0c5ce"),
+                span(" ", "#c0c5ce"),
+                span("1", "#d08770"),
+                span(";", "#c0c5ce"),
+            ],
+            vec![span("//", "#65737e"), span(" note", "#65737e")],
+        ];
+        k9::assert_equal!(
+            highlighter.highlight_code("rust", "let x = 1;\n// note"),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn highlight_code_returns_none_for_an_unknown_language() {
+        let highlighter = Highlighter::with_theme(TEST_THEME).unwrap();
+        k9::assert_equal!(highlighter.highlight_code("nonesuch", "fn main() {}"), None);
     }
 
     #[test]
