@@ -19,6 +19,23 @@ use crate::source::{CapturedDiff, DiffSource};
 /// with while the diff stays the single artifact.
 const GIT_CONTEXT_LINES: u32 = 3000;
 
+/// The environment for a git subcommand: an alternate index file, and a
+/// writable scratch object directory paired with the repo's real objects as an
+/// alternate. The scratch directory lets a capture that must write objects (an
+/// intent-to-add of untracked files) run against a `.git` mounted read-only,
+/// with the redirected writes discarded when the capture completes.
+#[derive(Default, Clone, Copy)]
+struct GitEnv<'a> {
+    /// The `GIT_INDEX_FILE` git operates against, replacing the repo's real one.
+    index: Option<&'a Path>,
+    /// The `GIT_OBJECT_DIRECTORY` git writes new objects into.
+    scratch_objects: Option<&'a Path>,
+    /// The repo's real object directory, offered via
+    /// `GIT_ALTERNATE_OBJECT_DIRECTORIES` so reads still find existing objects
+    /// when writes are redirected to [`Self::scratch_objects`].
+    real_objects: Option<&'a Path>,
+}
+
 /// Which slice of the repository a [`GitSource`] captures.
 #[derive(Debug, Clone)]
 enum Mode {
@@ -79,8 +96,23 @@ impl GitSource {
     /// never staged into the throwaway.
     async fn capture_worktree(&self) -> Result<String> {
         let index = self.seed_temp_index().await?;
-        self.add_untracked_files_to_temp_index(index.path()).await?;
-        self.run_diff(Some(index.path())).await
+        // git add --intent-to-add writes an empty blob into the object database,
+        // which fails when .git is mounted read-only. Redirect object writes to a
+        // throwaway directory, keeping the repo's real objects readable as an
+        // alternate, so an untracked file still shows without touching the repo.
+        let scratch = tempfile::tempdir().map_err(|source| {
+            Error::Source(format!(
+                "could not create a temporary object directory: {source}"
+            ))
+        })?;
+        let real_objects = self.real_objects_path().await?;
+        let env = GitEnv {
+            index: Some(index.path()),
+            scratch_objects: Some(scratch.path()),
+            real_objects: Some(&real_objects),
+        };
+        self.add_untracked_files_to_temp_index(env).await?;
+        self.run_diff(env).await
     }
 
     /// Copy the repo's real index into a temporary file. A repository without an
@@ -116,7 +148,19 @@ impl GitSource {
 
     /// The path to the repo's real index file.
     async fn real_index_path(&self) -> Result<PathBuf> {
-        let output = self.git(["rev-parse", "--git-path", "index"], None).await?;
+        self.git_path("index").await
+    }
+
+    /// The path to the repo's real object directory.
+    async fn real_objects_path(&self) -> Result<PathBuf> {
+        self.git_path("objects").await
+    }
+
+    /// Resolve `name` under the repo's git directory to an absolute path.
+    async fn git_path(&self, name: &str) -> Result<PathBuf> {
+        let output = self
+            .git(["rev-parse", "--git-path", name], GitEnv::default())
+            .await?;
         let text = String::from_utf8(output.stdout).map_err(|source| {
             Error::Source(format!("git rev-parse was not valid UTF-8: {source}"))
         })?;
@@ -130,9 +174,12 @@ impl GitSource {
 
     /// Record every untracked, non-ignored file as intent-to-add in `index`, so
     /// it appears in the diff as a new file with its full content.
-    async fn add_untracked_files_to_temp_index(&self, index: &Path) -> Result<()> {
+    async fn add_untracked_files_to_temp_index(&self, env: GitEnv<'_>) -> Result<()> {
         let output = self
-            .git(["ls-files", "--others", "--exclude-standard", "-z"], None)
+            .git(
+                ["ls-files", "--others", "--exclude-standard", "-z"],
+                GitEnv::default(),
+            )
             .await?;
         let untracked: Vec<OsString> = output
             .stdout
@@ -145,13 +192,13 @@ impl GitSource {
         }
         let mut args: Vec<OsString> = vec!["add".into(), "--intent-to-add".into(), "--".into()];
         args.extend(untracked);
-        self.git(args, Some(index)).await?;
+        self.git(args, env).await?;
         Ok(())
     }
 
     /// Run `git diff` with expanded context, optionally against an alternate
     /// index, returning its text.
-    async fn run_diff(&self, index: Option<&Path>) -> Result<String> {
+    async fn run_diff(&self, env: GitEnv<'_>) -> Result<String> {
         let mut args: Vec<OsString> = vec![
             "diff".into(),
             format!("--unified={GIT_CONTEXT_LINES}").into(),
@@ -159,7 +206,7 @@ impl GitSource {
         if matches!(self.mode, Mode::Index) {
             args.push("--cached".into());
         }
-        let output = self.git(args, index).await?;
+        let output = self.git(args, env).await?;
         String::from_utf8(output.stdout)
             .map_err(|source| Error::Source(format!("git diff was not valid UTF-8: {source}")))
     }
@@ -174,14 +221,14 @@ impl GitSource {
             format!("--unified={GIT_CONTEXT_LINES}").into(),
             rev.into(),
         ];
-        let output = self.git(args, None).await?;
+        let output = self.git(args, GitEnv::default()).await?;
         String::from_utf8(output.stdout)
             .map_err(|source| Error::Source(format!("git show was not valid UTF-8: {source}")))
     }
 
     /// Run a git subcommand under the repo and return its output on success.
-    /// When `index` is set, git operates against that index file instead of the
-    /// repo's real one.
+    /// `env` redirects git's index and object storage away from the repo's real
+    /// ones when set.
     ///
     /// git is started in a fresh session so it has no controlling terminal.
     /// stdin on /dev/null is not enough on its own: git opens /dev/tty directly
@@ -189,7 +236,7 @@ impl GitSource {
     /// terminal). Without a controlling terminal that open fails, so a diff
     /// needing credentials fails cleanly instead. setsid(2) is async-signal-safe,
     /// so it is safe to call in pre_exec.
-    async fn git<I, S>(&self, args: I, index: Option<&Path>) -> Result<Output>
+    async fn git<I, S>(&self, args: I, env: GitEnv<'_>) -> Result<Output>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
@@ -205,8 +252,14 @@ impl GitSource {
         let mut command = Command::new("git");
         command.arg("-C").arg(&self.repo_root).args(&args);
         command.stdin(Stdio::null());
-        if let Some(index) = index {
+        if let Some(index) = env.index {
             command.env("GIT_INDEX_FILE", index);
+        }
+        if let Some(objects) = env.scratch_objects {
+            command.env("GIT_OBJECT_DIRECTORY", objects);
+        }
+        if let Some(alternate) = env.real_objects {
+            command.env("GIT_ALTERNATE_OBJECT_DIRECTORIES", alternate);
         }
         unsafe {
             command.pre_exec(|| {
@@ -237,7 +290,7 @@ impl DiffSource for GitSource {
     async fn capture(&self) -> Result<CapturedDiff> {
         let text = match &self.mode {
             Mode::Worktree => self.capture_worktree().await?,
-            Mode::Index => self.run_diff(None).await?,
+            Mode::Index => self.run_diff(GitEnv::default()).await?,
             Mode::Rev(rev) => self.capture_rev(rev).await?,
         };
         Ok(CapturedDiff {
@@ -324,5 +377,67 @@ index HASHES
                 rev: "HEAD".to_string()
             }
         );
+    }
+
+    #[tokio::test]
+    async fn a_worktree_source_captures_untracked_files_with_a_read_only_git() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        git(repo.path(), home.path(), &["init", "-q"]);
+        std::fs::write(repo.path().join("tracked.txt"), "one\n").expect("write");
+        git(repo.path(), home.path(), &["add", "tracked.txt"]);
+        git(
+            repo.path(),
+            home.path(),
+            &["commit", "-q", "-m", "add tracked"],
+        );
+
+        // A modification to a tracked file and a brand-new untracked file. The
+        // untracked file is what forces the intent-to-add object write.
+        std::fs::write(repo.path().join("tracked.txt"), "one\ntwo\n").expect("write");
+        std::fs::write(repo.path().join("fresh.txt"), "new\n").expect("write");
+
+        // Strip every write bit from .git to mimic a read-only mount, capture,
+        // then restore so the tempdir can be cleaned up.
+        let git_dir = repo.path().join(".git");
+        set_readonly_recursively(&git_dir, true);
+        let result = GitSource::worktree(repo.path()).capture().await;
+        set_readonly_recursively(&git_dir, false);
+        let captured = result.expect("capture");
+
+        let expected = "\
+diff --git a/fresh.txt b/fresh.txt
+new file mode 100644
+index HASHES
+--- /dev/null
++++ b/fresh.txt
+@@ -0,0 +1 @@
++new
+diff --git a/tracked.txt b/tracked.txt
+index HASHES
+--- a/tracked.txt
++++ b/tracked.txt
+@@ -1 +1,2 @@
+ one
++two";
+        k9::assert_equal!(stable(&captured.text), expected.to_string());
+        k9::assert_equal!(captured.source, SourceKind::GitWorktree);
+    }
+
+    /// Toggle the read-only bit on every file and directory under `root`
+    /// (including `root` itself), mimicking a read-only mount closely enough to
+    /// reject object writes into `.git`.
+    fn set_readonly_recursively(root: &Path, readonly: bool) {
+        fn set(path: &Path, readonly: bool) {
+            if path.is_dir() {
+                for entry in std::fs::read_dir(path).expect("read_dir") {
+                    set(&entry.expect("entry").path(), readonly);
+                }
+            }
+            let mut perms = std::fs::metadata(path).expect("metadata").permissions();
+            perms.set_readonly(readonly);
+            std::fs::set_permissions(path, perms).expect("set_permissions");
+        }
+        set(root, readonly);
     }
 }
