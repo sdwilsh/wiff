@@ -52,10 +52,10 @@ const HIGHLIGHT_POLL_INTERVAL: Duration = Duration::from_millis(30);
 /// `save`, which commits the pending drafts and keeps the review open; both
 /// report their own outcome through the app's status line. When the reviewer
 /// chooses a version to compare against, `compare` reconstructs that diff and
-/// shows it in place. While the review sits idle the loop periodically calls
-/// `sync`, which picks up another actor's updates to the session and folds them
-/// into the app, returning whether it changed anything so the loop repaints only
-/// when it did. The terminal is put into raw mode on an alternate screen for the
+/// shows it in place. After each key and whenever the review sits idle the loop
+/// calls `sync`, which picks up another actor's updates to the session and folds
+/// them into the app, returning whether it changed anything so the loop repaints
+/// only when it did. The terminal is put into raw mode on an alternate screen for the
 /// duration and restored before returning. Returns how the reviewer chose to
 /// leave together with any buffered draft edits still to commit.
 pub fn run(
@@ -397,6 +397,17 @@ fn event_loop<B: Backend>(
         // A quit action or a confirmed picker choice settles how to leave.
         if let Some(exit) = app.pending_exit() {
             return Ok((exit, app.take_drafts()));
+        }
+        // Fold in another actor's committed changes after handling a key, not
+        // only when the loop next goes idle, so a reviewer navigating steadily
+        // (keys arriving faster than the poll interval) still sees updates
+        // without pausing. The modal state is recomputed here because the key
+        // just handled may have opened or closed one; a fold is skipped while a
+        // modal owns a spot or buffer it would disturb, and the watcher holds
+        // the change until the modal closes. The change gate is a cheap stat, so
+        // syncing per key costs almost nothing when the file is untouched.
+        if !(app.composing() || app.searching() || app.picking()) {
+            sync(&mut app);
         }
     }
 }
