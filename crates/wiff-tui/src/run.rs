@@ -530,13 +530,14 @@ mod tests {
         // A 30x4 screen shows the three rendered rows over the top three lines
         // and the status line filling the last, each padded to 30 columns. The
         // cursor opens centered, halfway through the three-row view.
-        let expected = concat!(
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            screen(30, 4, app),
             "modified  src/lib.rs          \n",
             "@@ -1,1 +1,1 @@               \n",
             "   1    1   let x = 1;        \n",
             "src/lib.rs         0 open  50%\n",
         );
-        k9::assert_equal!(screen(30, 4, app), expected.to_string());
     }
 
     #[test]
@@ -572,7 +573,9 @@ mod tests {
 
         // The editor renders as a bordered box titled with the target and the
         // save/cancel hint, sitting just above the added line it anchors.
-        let expected = concat!(
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            screen(30, 9, app),
             "Review [press c here to draft \n",
             "modified  src/lib.rs          \n",
             "@@ -1,2 +1,2 @@               \n",
@@ -583,7 +586,6 @@ mod tests {
             "        2 + let y = 2;        \n",
             "src/lib.rs        0 open  100%\n",
         );
-        k9::assert_equal!(screen(30, 9, app), expected.to_string());
     }
 
     /// The screen after drawing `app`, each row shown as its symbols and then a
@@ -660,7 +662,9 @@ mod tests {
         // border sits over, so the whole top rule shows the cursor tint.
         app.compose_key(KeyPress::with_modifiers(Key::Char('o'), true, false, false));
 
-        let expected = concat!(
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            screen_tinted(30, 12, &mut app),
             "Review [press c here to draft   ..............................\n",
             "modified  src/lib.rs            ..............................\n",
             "@@ -1,6 +1,6 @@                 ..............................\n",
@@ -674,7 +678,6 @@ mod tests {
             "                                ..............................\n",
             "src/lib.rs         0 open  50%  ..............................\n",
         );
-        k9::assert_equal!(screen_tinted(30, 12, &mut app), expected.to_string());
     }
 
     #[test]
@@ -696,7 +699,9 @@ mod tests {
         app.compose_key(KeyPress::with_modifiers(Key::Char('o'), true, false, false));
         app.compose_key(KeyPress::new(Key::Char('j')));
 
-        let expected = concat!(
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            screen_tinted(30, 12, &mut app),
             "Review [press c here to draft   ..............................\n",
             "modified  src/lib.rs            ..............................\n",
             "@@ -1,6 +1,6 @@                 ..............................\n",
@@ -710,7 +715,6 @@ mod tests {
             "                                ..............................\n",
             "src/lib.rs         0 open  62%  ..............................\n",
         );
-        k9::assert_equal!(screen_tinted(30, 12, &mut app), expected.to_string());
     }
 
     #[test]
@@ -732,7 +736,9 @@ mod tests {
         // key.
         app.compose_key(KeyPress::with_modifiers(Key::Char('o'), true, false, false));
 
-        let expected = concat!(
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            screen(80, 10, app),
             "Review [press c here to draft the review comment]                               \n",
             "modified  src/lib.rs                                                            \n",
             "@@ -1,6 +1,6 @@                                                                 \n",
@@ -744,7 +750,6 @@ mod tests {
             "        6 + let v6 = 6;                                                         \n",
             "src/lib.rs                                                           0 open  50%\n",
         );
-        k9::assert_equal!(screen(80, 10, app), expected.to_string());
     }
 
     #[test]
@@ -794,7 +799,9 @@ mod tests {
         // lines show, a scrollbar runs down the right border with its thumb near
         // the bottom where the cursor rests, and the leftover rows fall to the
         // blank document area below the box.
-        let expected = concat!(
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            screen(30, 22, app),
             "Review [press c here to draft \n",
             "modified  src/lib.rs          \n",
             "@@ -1,2 +1,2 @@               \n",
@@ -818,7 +825,6 @@ mod tests {
             "                              \n",
             "src/lib.rs        0 open  100%\n",
         );
-        k9::assert_equal!(screen(30, 22, app), expected.to_string());
     }
 
     #[test]
@@ -864,7 +870,9 @@ mod tests {
         // The box shows 4 of the body's 5 rows, off by a single row, so the
         // thumb nearly fills the track (3 of its 4 cells) rather than sitting at
         // half height.
-        let expected = concat!(
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            screen(30, 22, app),
             "Review [press c here to draft \n",
             "modified  src/lib.rs          \n",
             "@@ -1,2 +1,2 @@               \n",
@@ -888,7 +896,6 @@ mod tests {
             "                              \n",
             "src/lib.rs        0 open  100%\n",
         );
-        k9::assert_equal!(screen(30, 22, app), expected.to_string());
     }
 
     #[test]
@@ -907,7 +914,9 @@ mod tests {
         // choice highlighted with its marker and the key hint along the bottom.
         // It clears the cells behind it, so the underlying diff shows only where
         // the box does not cover it.
-        let expected = concat!(
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            screen(50, 11, app),
             "Review [press c here to draft the review comment] \n",
             "┌ we┌You have uncommitted comments───────────┐esol\n",
             "│why│> Commit review                         │   │\n",
@@ -920,6 +929,5 @@ mod tests {
             "                                                  \n",
             "src/lib.rs                           * 1 open  83%\n",
         );
-        k9::assert_equal!(screen(50, 11, app), expected.to_string());
     }
 }

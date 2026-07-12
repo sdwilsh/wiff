@@ -1500,13 +1500,14 @@ mod tests {
         };
         let view = DiffView::new(Theme::dark()).unwrap();
 
-        let expected = "\
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,2 +1,2 @@
-<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;
-";
-        k9::assert_equal!(dump(&view.render(&diff).lines), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&view.render(&diff).lines),
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;\n",
+        );
     }
 
     #[test]
@@ -1526,13 +1527,14 @@ mod tests {
         // "fred"/"pete" (bytes 12..16) get the stronger emphasis background; the
         // unchanged run keeps the plain role tint. The .txt content has no
         // syntax, so it is one neutral color.
-        let expected = "\
-<#c0c5ce|-|b>modified  greeting.txt
-<#96b5b4|-|->@@ -1,2 +1,2 @@
-<#91959d|#463943|->   1      - <#c0c5ce|#463943|->hello there <#c0c5ce|#66444e|->fred
-<#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->hello there <#e3e5e9|#5b695b|->pete
-";
-        k9::assert_equal!(dump(&view.render(&diff).lines), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&view.render(&diff).lines),
+            "<#c0c5ce|-|b>modified  greeting.txt\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#91959d|#463943|->   1      - <#c0c5ce|#463943|->hello there <#c0c5ce|#66444e|->fred\n",
+            "<#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->hello there <#e3e5e9|#5b695b|->pete\n",
+        );
     }
 
     #[test]
@@ -1551,13 +1553,14 @@ mod tests {
             )],
         };
         let view = DiffView::new(Theme::dark()).unwrap();
-        let expected = "\
-<#c0c5ce|-|b>modified  notes.txt
-<#96b5b4|-|->@@ -1,2 +1,2 @@
-<#91959d|#463943|->   1      - <#c0c5ce|#463943|->old 
-<#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->new<#c0c5ce|#7c4b55|->  
-";
-        k9::assert_equal!(dump(&view.render(&diff).lines), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&view.render(&diff).lines),
+            "<#c0c5ce|-|b>modified  notes.txt\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#91959d|#463943|->   1      - <#c0c5ce|#463943|->old \n",
+            "<#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->new<#c0c5ce|#7c4b55|->  \n",
+        );
     }
 
     #[test]
@@ -1578,10 +1581,10 @@ mod tests {
         };
         let doc = DiffView::new(Theme::dark()).unwrap().render(&diff);
         let markers: Vec<Line<'static>> = doc.folds.iter().map(|f| f.marker.clone()).collect();
-        let expected = "\
-<#767b84|#3a3f4a|->            [3 unchanged lines]  fn draw() {
-";
-        k9::assert_equal!(dump(&markers), expected.to_string());
+        wince::snapshot_str!(
+            dump(&markers),
+            "<#767b84|#3a3f4a|->            [3 unchanged lines]  fn draw() {\n"
+        );
     }
 
     #[test]
@@ -1626,21 +1629,24 @@ mod tests {
             &[],
             ViewLayout::default(),
         );
-        let lines = "\
-<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,2 +1,2 @@
-<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse
-<#c0c5ce|-|->why 2?
-
-<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;
-";
-        k9::assert_equal!(dump(&doc.lines), lines.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&doc.lines),
+            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse\n",
+            "<#c0c5ce|-|->why 2?\n",
+            "\n",
+            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;\n",
+        );
         // The header row precedes the single body row, which is the collapsible
         // range; an unresolved comment starts expanded.
-        let expected_regions = "1: header 4 body 5..6 collapsed=false\n";
-        k9::assert_equal!(regions(&doc.comments), expected_regions.to_string());
+        wince::snapshot_str!(
+            regions(&doc.comments),
+            "1: header 4 body 5..6 collapsed=false\n"
+        );
 
         // The cached render, reusing a prior highlight of the same diff, must
         // produce the identical lines; caching is a speed-up, not a change.
@@ -1652,7 +1658,18 @@ mod tests {
             .collect();
         let cached =
             view.render_review_cached(&diff, &comments, &[], &highlights, ViewLayout::default());
-        k9::assert_equal!(dump(&cached.lines), lines.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&cached.lines),
+            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse\n",
+            "<#c0c5ce|-|->why 2?\n",
+            "\n",
+            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;\n",
+        );
     }
 
     #[test]
@@ -1676,16 +1693,17 @@ mod tests {
             &[Ulid(1)],
             ViewLayout::default(),
         );
-        let lines = "\
-<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,1 +1,1 @@
-<#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse
-<#c0c5ce|-|->why 2?
-
-<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;
-";
-        k9::assert_equal!(dump(&doc.lines), lines.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&doc.lines),
+            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
+            "<#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse\n",
+            "<#c0c5ce|-|->why 2?\n",
+            "\n",
+            "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;\n",
+        );
     }
 
     #[test]
@@ -1710,18 +1728,21 @@ mod tests {
             &[],
             ViewLayout::default(),
         );
-        let lines = "\
-<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,1 +1,1 @@
-<#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse
-<#c0c5ce|-|->done
-
-<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;
-";
-        k9::assert_equal!(dump(&doc.lines), lines.to_string());
-        let expected_regions = "7: header 3 body 4..5 collapsed=true\n";
-        k9::assert_equal!(regions(&doc.comments), expected_regions.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&doc.lines),
+            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
+            "<#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse\n",
+            "<#c0c5ce|-|->done\n",
+            "\n",
+            "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;\n",
+        );
+        wince::snapshot_str!(
+            regions(&doc.comments),
+            "7: header 3 body 4..5 collapsed=true\n"
+        );
     }
 
     #[test]
@@ -1745,16 +1766,17 @@ mod tests {
             &[],
             ViewLayout::default(),
         );
-        let lines = "\
-<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
-<#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse
-<#c0c5ce|-|->looks good overall
-
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,1 +1,1 @@
-<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;
-";
-        k9::assert_equal!(dump(&doc.lines), lines.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&doc.lines),
+            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse\n",
+            "<#c0c5ce|-|->looks good overall\n",
+            "\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
+            "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;\n",
+        );
     }
 
     #[test]
@@ -1784,11 +1806,12 @@ mod tests {
             ViewLayout::default(),
         );
         let markers: Vec<Line<'static>> = doc.folds.iter().map(|f| f.marker.clone()).collect();
-        let expected = "\
-<#767b84|#3a3f4a|->            [2 unchanged lines]  ctx02
-<#767b84|#3a3f4a|->            [7 unchanged lines]  ctx16
-";
-        k9::assert_equal!(dump(&markers), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&markers),
+            "<#767b84|#3a3f4a|->            [2 unchanged lines]  ctx02\n",
+            "<#767b84|#3a3f4a|->            [7 unchanged lines]  ctx16\n",
+        );
     }
 
     #[test]
@@ -1814,15 +1837,16 @@ mod tests {
             &[],
             ViewLayout::default(),
         );
-        let lines = "\
-<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
-<#c0c5ce|-|b>modified  src/lib.rs
-<#8fa1b3|-|->dev (human)<#d08770|-|-> [outdated]<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse
-<#c0c5ce|-|->stale
-
-<#96b5b4|-|->@@ -1,1 +1,1 @@
-<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;
-";
-        k9::assert_equal!(dump(&doc.lines), lines.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&doc.lines),
+            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#8fa1b3|-|->dev (human)<#d08770|-|-> [outdated]<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse\n",
+            "<#c0c5ce|-|->stale\n",
+            "\n",
+            "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
+            "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;\n",
+        );
     }
 }

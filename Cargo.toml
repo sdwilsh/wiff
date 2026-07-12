@@ -38,3 +38,4 @@ wiff-config = { path = "crates/wiff-config" }
 wiff-core = { path = "crates/wiff-core" }
 wiff-diff = { path = "crates/wiff-diff" }
 wiff-tui = { path = "crates/wiff-tui" }
+wince = { path = "../wince" }
