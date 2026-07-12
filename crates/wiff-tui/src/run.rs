@@ -15,9 +15,11 @@ use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use ratatui::layout::Rect;
+use ratatui::layout::{Margin, Rect};
 use ratatui::style::Style;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{
+    Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+};
 use ratatui::{Frame, Terminal};
 
 use wiff_core::record::RecordBody;
@@ -152,8 +154,11 @@ fn render_picker(frame: &mut Frame, area: Rect, app: &mut App) {
 /// editor box, and the lines below, stacked to fill the document area.
 fn render_compose(frame: &mut Frame, area: Rect, view: ComposeView) {
     let above_height = view.above.len() as u16;
-    let below_height = view.below.len() as u16;
-    let editor_height = area.height.saturating_sub(above_height + below_height);
+    // Size the box to exactly its shown rows plus the border. On a short
+    // document the leftover rows fall to the area below the editor rather than
+    // padding the box, so the editor never grows past what it is showing.
+    let editor_height =
+        (view.editor_rows.len() as u16 + 2).min(area.height.saturating_sub(above_height));
     let above_area = Rect {
         height: above_height,
         ..area
@@ -163,9 +168,10 @@ fn render_compose(frame: &mut Frame, area: Rect, view: ComposeView) {
         height: editor_height,
         ..area
     };
+    let below_y = area.y + above_height + editor_height;
     let below_area = Rect {
-        y: area.y + above_height + editor_height,
-        height: below_height,
+        y: below_y,
+        height: area.bottom().saturating_sub(below_y),
         ..area
     };
     frame.render_widget(Paragraph::new(view.above), above_area);
@@ -175,6 +181,29 @@ fn render_compose(frame: &mut Frame, area: Rect, view: ComposeView) {
         editor_area,
     );
     frame.render_widget(Paragraph::new(view.below), below_area);
+    // A body taller than the box draws a scrollbar down the right border so the
+    // reviewer can see how much is off-screen.
+    if let Some(scroll) = view.editor_scroll {
+        let visible = editor_height.saturating_sub(2) as usize;
+        // ratatui sizes the thumb from the scrollable range, not the total, so
+        // pass total - visible (the number of scroll steps) as the content
+        // length. The extra step keeps the thumb just short of the full track
+        // when a single row is off-screen instead of filling it outright.
+        let mut state = ScrollbarState::new(scroll.total.saturating_sub(visible) + 1)
+            .position(scroll.offset)
+            .viewport_content_length(visible);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None);
+        frame.render_stateful_widget(
+            scrollbar,
+            editor_area.inner(Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut state,
+        );
+    }
     // Place the terminal's hardware cursor inside the border, past the box's
     // top and left edge, keeping an input method's candidate window on the real
     // edit point.
@@ -435,6 +464,150 @@ mod tests {
             "src/lib.rs        0 open  100%\n",
         );
         k9::assert_equal!(screen(30, 9, app), expected.to_string());
+    }
+
+    #[test]
+    fn draws_a_scrollbar_when_the_editor_body_overflows_the_box() {
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[
+                    (LineKind::Context, "let x = 1;", 1),
+                    (LineKind::Added, "let y = 2;", 2),
+                ],
+            )],
+        };
+        let author = Author {
+            name: "wez".to_string(),
+            kind: AuthorKind::Human,
+        };
+        let mut app = App::reviewing(
+            Review::new(
+                DiffView::new(Theme::dark()).expect("view"),
+                diff,
+                author,
+                0,
+                Vec::new(),
+            ),
+            0,
+            &Theme::dark(),
+        );
+        // Open the editor on the added line and type more lines than the capped
+        // box can show.
+        for _ in 0..4 {
+            app.update(Action::LineDown);
+        }
+        app.update(Action::AddComment);
+        for i in 1..=8 {
+            for c in format!("line {i}").chars() {
+                app.compose_key(KeyPress::new(Key::Char(c)));
+            }
+            if i < 8 {
+                app.compose_key(KeyPress::new(Key::Enter));
+            }
+        }
+
+        // A 22-row screen leaves a 20-row document area, capping the editor
+        // interior at 4 rows, so the eight-line body overflows: the last four
+        // lines show, a scrollbar runs down the right border with its thumb near
+        // the bottom where the cursor rests, and the leftover rows fall to the
+        // blank document area below the box.
+        let expected = concat!(
+            "Review [press c here to draft \n",
+            "modified  src/lib.rs          \n",
+            "@@ -1,2 +1,2 @@               \n",
+            "   1    1   let x = 1;        \n",
+            "┌ new comment  src/lib.rs:2  ┐\n",
+            "│line 5                      ║\n",
+            "│line 6                      ║\n",
+            "│line 7                      █\n",
+            "│line 8                      █\n",
+            "└────────────────────────────┘\n",
+            "        2 + let y = 2;        \n",
+            "                              \n",
+            "                              \n",
+            "                              \n",
+            "                              \n",
+            "                              \n",
+            "                              \n",
+            "                              \n",
+            "                              \n",
+            "                              \n",
+            "                              \n",
+            "src/lib.rs        0 open  100%\n",
+        );
+        k9::assert_equal!(screen(30, 22, app), expected.to_string());
+    }
+
+    #[test]
+    fn a_body_over_the_box_by_one_row_draws_a_nearly_full_thumb() {
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[
+                    (LineKind::Context, "let x = 1;", 1),
+                    (LineKind::Added, "let y = 2;", 2),
+                ],
+            )],
+        };
+        let author = Author {
+            name: "wez".to_string(),
+            kind: AuthorKind::Human,
+        };
+        let mut app = App::reviewing(
+            Review::new(
+                DiffView::new(Theme::dark()).expect("view"),
+                diff,
+                author,
+                0,
+                Vec::new(),
+            ),
+            0,
+            &Theme::dark(),
+        );
+        for _ in 0..4 {
+            app.update(Action::LineDown);
+        }
+        app.update(Action::AddComment);
+        for i in 1..=5 {
+            for c in format!("line {i}").chars() {
+                app.compose_key(KeyPress::new(Key::Char(c)));
+            }
+            if i < 5 {
+                app.compose_key(KeyPress::new(Key::Enter));
+            }
+        }
+
+        // The box shows 4 of the body's 5 rows, off by a single row, so the
+        // thumb nearly fills the track (3 of its 4 cells) rather than sitting at
+        // half height.
+        let expected = concat!(
+            "Review [press c here to draft \n",
+            "modified  src/lib.rs          \n",
+            "@@ -1,2 +1,2 @@               \n",
+            "   1    1   let x = 1;        \n",
+            "┌ new comment  src/lib.rs:2  ┐\n",
+            "│line 2                      ║\n",
+            "│line 3                      █\n",
+            "│line 4                      █\n",
+            "│line 5                      █\n",
+            "└────────────────────────────┘\n",
+            "        2 + let y = 2;        \n",
+            "                              \n",
+            "                              \n",
+            "                              \n",
+            "                              \n",
+            "                              \n",
+            "                              \n",
+            "                              \n",
+            "                              \n",
+            "                              \n",
+            "                              \n",
+            "src/lib.rs        0 open  100%\n",
+        );
+        k9::assert_equal!(screen(30, 22, app), expected.to_string());
     }
 
     #[test]

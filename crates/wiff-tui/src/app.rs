@@ -27,7 +27,7 @@ use wiff_core::record::{CommentTarget, RecordBody};
 use wiff_diff::{Diff, LineNo, Rgb, Side};
 
 use crate::action::Action;
-use crate::compose::{Compose, ComposeKind};
+use crate::compose::{Compose, ComposeKind, Scroll};
 use crate::exit::{Exit, ExitDefault, ExitPlan, plan_exit};
 use crate::key::{Key, KeyPress};
 use crate::keymap::{Keymap, Resolution};
@@ -59,6 +59,9 @@ pub struct ComposeView {
     /// The cursor's (column, row) within `editor_rows`, for placing the terminal
     /// cursor inside the box; `None` when the cursor has scrolled out of view.
     pub editor_cursor: Option<(u16, u16)>,
+    /// Where the shown rows sit within the whole body, for drawing a scrollbar;
+    /// `None` when the body fits the box.
+    pub editor_scroll: Option<Scroll>,
     /// The document lines shown below the editor.
     pub below: Vec<Line<'static>>,
 }
@@ -774,8 +777,11 @@ impl App {
         }
         // The border takes a column on each side; the body wraps into the rest.
         let interior = width.saturating_sub(2);
-        let editor_height = (compose.visual_rows(interior) + 2).min(self.height.max(3));
-        let window = editor_height.saturating_sub(2);
+        // Cap the editor at about a third of the viewport so a long body does
+        // not crowd out the diff; a short body still shrinks to fit its content.
+        let max_interior = (self.height * 3 / 10).max(3).saturating_sub(2).max(1);
+        let editor = compose.layout(interior, max_interior);
+        let editor_height = editor.rows.len() + 2;
         let doc_shown = self.height.saturating_sub(editor_height);
         let anchor = compose.anchor().min(self.view.len());
         // Leave the rows already above the anchor where they sit and let the
@@ -798,12 +804,12 @@ impl App {
         let below = (below_start..below_end)
             .map(|i| self.decorate(i, width))
             .collect();
-        let editor = compose.view(interior, window);
         Some(ComposeView {
             above,
             editor_block: compose.block(),
             editor_rows: editor.rows,
             editor_cursor: editor.cursor,
+            editor_scroll: editor.scroll,
             below,
         })
     }
@@ -3677,7 +3683,7 @@ mod tests {
         // A body wider than the box interior wraps at a space onto a second
         // interior row rather than scrolling sideways, and the cursor rests at
         // the end of the last wrapped row.
-        let mut app = App::reviewing(plain_review(), 8, &Theme::dark());
+        let mut app = App::reviewing(plain_review(), 14, &Theme::dark());
         for _ in 0..4 {
             app.update(Action::LineDown);
         }
@@ -3698,7 +3704,7 @@ mod tests {
         // From the end of a wrapped body, Up moves onto the first visual row at
         // the same column rather than leaving the editor, so the cursor sits on
         // row 0 rather than row 1.
-        let mut app = App::reviewing(plain_review(), 8, &Theme::dark());
+        let mut app = App::reviewing(plain_review(), 14, &Theme::dark());
         app.set_width(TEST_WIDTH);
         for _ in 0..4 {
             app.update(Action::LineDown);
@@ -3712,6 +3718,36 @@ mod tests {
             "<-|-|->the quick brown fox jumps over the \n<-|-|->lazy dog\n".to_string()
         );
         k9::assert_equal!(view.editor_cursor, Some((8, 0)));
+    }
+
+    #[test]
+    fn a_tall_editor_body_is_capped_and_scrolls() {
+        // A body taller than the cap is clamped and scrolled to keep the cursor
+        // (at the end) in view, reporting the scroll extent so a scrollbar can
+        // be drawn. Height 20 caps the interior at 4 rows; the eight-line body
+        // shows its last four.
+        let mut app = App::reviewing(plain_review(), 20, &Theme::dark());
+        app.set_width(TEST_WIDTH);
+        for _ in 0..4 {
+            app.update(Action::LineDown);
+        }
+        app.update(Action::AddComment);
+        for i in 1..=8 {
+            typed(&mut app, &format!("line {i}"));
+            if i < 8 {
+                app.compose_key(KeyPress::new(Key::Enter));
+            }
+        }
+        let view = app.compose_view(TEST_WIDTH).expect("composing");
+        k9::assert_equal!(
+            dump(&view.editor_rows),
+            "<-|-|->line 5\n<-|-|->line 6\n<-|-|->line 7\n<-|-|->line 8\n".to_string()
+        );
+        k9::assert_equal!(view.editor_cursor, Some((6, 3)));
+        k9::assert_equal!(
+            view.editor_scroll.map(|s| (s.offset, s.total)),
+            Some((4, 8))
+        );
     }
 
     #[test]
@@ -3795,7 +3831,7 @@ mod tests {
     fn editing_a_comment_seeds_the_editor_and_rewrites_the_body() {
         // Land on the unresolved comment and edit it: the editor opens with its
         // current body, and saving a new body rewrites it, badged as a draft.
-        let mut app = App::reviewing(commented_review(), 12, &Theme::dark());
+        let mut app = App::reviewing(commented_review(), 14, &Theme::dark());
         app.update(Action::NextComment);
         app.update(Action::NextComment);
         app.update(Action::EditComment);
@@ -3835,7 +3871,7 @@ mod tests {
         // Editing the unresolved comment drops its rendered box from the split:
         // the editor stands where the box was, the resolved comment above it
         // stays, and the anchored code sits just below the editor.
-        let mut app = App::reviewing(commented_review(), 12, &Theme::dark());
+        let mut app = App::reviewing(commented_review(), 14, &Theme::dark());
         app.update(Action::NextComment);
         app.update(Action::NextComment);
         app.update(Action::EditComment);

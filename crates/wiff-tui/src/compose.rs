@@ -26,14 +26,26 @@ use crate::editor_wrap::{CursorBias, WrapMap};
 use crate::key::{Key, KeyPress};
 use crate::render::color;
 
-/// The visible interior of the editor: its wrapped, scrolled rows and where the
-/// cursor sits within them.
+/// What the caller needs to draw one frame of the editor box: the rows to paint
+/// inside it, where to put the terminal cursor, and whether to show a scrollbar.
 pub struct EditorView {
     /// The rows drawn inside the editor box.
     pub rows: Vec<Line<'static>>,
     /// The cursor's (column, row) within `rows`, or `None` when it has scrolled
     /// out of view.
     pub cursor: Option<(u16, u16)>,
+    /// Where the shown rows sit within the whole body, present only when the
+    /// body is taller than the box so a scrollbar is warranted.
+    pub scroll: Option<Scroll>,
+}
+
+/// How far a body taller than the editor box is scrolled, for drawing a
+/// scrollbar.
+pub struct Scroll {
+    /// The offset of the first shown row within the whole body.
+    pub offset: usize,
+    /// The body's total wrapped row count.
+    pub total: usize,
 }
 
 /// What a compose session produces when it is saved.
@@ -192,12 +204,6 @@ impl Compose {
         WrapMap::build(self.textarea.lines(), width)
     }
 
-    /// The number of visual rows the body occupies at `width` columns, for
-    /// sizing the editor box.
-    pub fn visual_rows(&self, width: usize) -> usize {
-        self.wrap(width).row_count()
-    }
-
     /// The view row the editor renders above.
     pub fn anchor(&self) -> usize {
         self.anchor
@@ -217,28 +223,32 @@ impl Compose {
             .title(title)
     }
 
-    /// The visible interior of the editor, wrapped to `width` columns and
-    /// scrolled so the cursor stays within a `window`-tall viewport, along with
-    /// the cursor's position within those rows for the caller to place the
-    /// terminal cursor.
-    pub fn view(&self, width: usize, window: usize) -> EditorView {
-        let window = window.max(1);
+    /// The visible interior of the editor, wrapped to `width` columns and shown
+    /// at most `max_interior` rows tall, scrolled to keep the cursor in view.
+    pub fn layout(&self, width: usize, max_interior: usize) -> EditorView {
         let map = self.wrap(width);
+        let total = map.row_count();
+        // Show no more rows than fit the cap, and never more than the body has.
+        let window = max_interior.min(total).max(1);
         let (crow, ccol) = self.textarea.cursor();
         let (cvrow, cvcol) = map.cursor_to_visual(crow, ccol, self.bias);
-        let total = map.row_count();
-        let scroll = scroll_top(cvrow, window, total);
-        let last = (scroll + window).min(total);
-        let rows = (scroll..last)
+        let offset = scroll_top(cvrow, window, total);
+        let last = (offset + window).min(total);
+        let rows = (offset..last)
             .map(|vrow| Line::from(map.row(vrow).text.clone()))
             .collect();
-        let cursor = (scroll..last).contains(&cvrow).then(|| {
+        let cursor = (offset..last).contains(&cvrow).then(|| {
             (
                 cvcol.min(u16::MAX as usize) as u16,
-                (cvrow - scroll).min(u16::MAX as usize) as u16,
+                (cvrow - offset).min(u16::MAX as usize) as u16,
             )
         });
-        EditorView { rows, cursor }
+        let scroll = (total > window).then_some(Scroll { offset, total });
+        EditorView {
+            rows,
+            cursor,
+            scroll,
+        }
     }
 
     /// The current body text, trailing blank lines trimmed.
