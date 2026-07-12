@@ -10,6 +10,7 @@ use std::io::{self, Stdout};
 use std::time::Duration;
 
 use ratatui::backend::{Backend, CrosstermBackend};
+use ratatui::crossterm::cursor::Show;
 use ratatui::crossterm::event::{self, Event};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
@@ -413,16 +414,37 @@ impl TerminalGuard {
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen)?;
         let terminal = Terminal::new(CrosstermBackend::new(stdout))?;
+        install_panic_hook();
         Ok(Self { terminal })
     }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = disable_raw_mode();
-        let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
-        let _ = self.terminal.show_cursor();
+        restore_terminal();
     }
+}
+
+/// Undo the setup [`TerminalGuard::enter`] performed: leave raw mode and the
+/// alternate screen and make the cursor visible again. Best-effort and
+/// idempotent, so both the guard's `Drop` and the panic hook can call it
+/// without coordinating over which runs first.
+fn restore_terminal() {
+    let _ = disable_raw_mode();
+    let _ = execute!(io::stdout(), LeaveAlternateScreen, Show);
+}
+
+/// Chain a panic hook that restores the terminal before the default hook runs.
+/// A panic while the review owns the alternate screen would otherwise print its
+/// message and backtrace onto that screen, which the process then tears down as
+/// it unwinds, leaving the user at a bare shell with no clue why. Restoring
+/// first puts the panic output on the primary screen the user is returned to.
+fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restore_terminal();
+        previous(info);
+    }));
 }
 
 #[cfg(test)]
