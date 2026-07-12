@@ -65,6 +65,51 @@ pub struct ComposeView {
     pub below: Vec<Line<'static>>,
 }
 
+/// Where the cursor sits while the editor floats detached from its anchor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DetachFocus {
+    /// The cursor is back in the floating editor, typing; the diff is frozen.
+    Inside,
+    /// The cursor roams the diff; the editor floats out of the way.
+    Outside,
+}
+
+/// A single vertical step's direction, deciding which way a nudge moves the
+/// diff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Nudge {
+    Up,
+    Down,
+}
+
+/// What the caller needs to draw the detached editor floating over the diff,
+/// once the ordinary document has been drawn behind it.
+pub struct FloatView {
+    /// The document row the box's top border sits on. It tracks the anchor as
+    /// the diff scrolls, then comes to rest against the top or bottom edge once
+    /// the anchor scrolls out of the viewport.
+    pub top_row: u16,
+    /// The color to fill behind the floating box before drawing it.
+    pub background: Rgb,
+    /// The editor's border block, drawn around its rows.
+    pub editor_block: Block<'static>,
+    /// The editor's visible interior rows, wrapped and scrolled to fit the box.
+    pub editor_rows: Vec<Line<'static>>,
+    /// The cursor's (column, row) within `editor_rows`, present only while the
+    /// cursor is in the editor; `None` while it roams the diff.
+    pub editor_cursor: Option<(u16, u16)>,
+    /// Present when the body overflows the box; `None` when it fits.
+    pub editor_scroll: Option<Scroll>,
+    /// Blank columns held between each side of the box's border and the cleared
+    /// area's edge. Zero when a narrower box would wrap the body to a taller box.
+    pub inset: u16,
+    /// The tint the chrome shows at `cursor_offset`.
+    pub cursor_bg: Rgb,
+    /// The box row, counting the borders, the roaming diff cursor sits behind;
+    /// `None` while the cursor is in the editor or clear of the box.
+    pub cursor_offset: Option<u16>,
+}
+
 /// Which family of rows a jump seeks: file, hunk, or comment headers.
 #[derive(Debug, Clone, Copy)]
 enum Landmark {
@@ -248,6 +293,12 @@ pub struct App {
     review: Option<Review>,
     /// The inline comment editor, present while authoring or revising a comment.
     compose: Option<Compose>,
+    /// Where the cursor sits while the open editor floats detached from its
+    /// anchor, present only while it floats; `None` while it renders inline.
+    detach: Option<DetachFocus>,
+    /// Whether an arrow past the editor's top or bottom row detaches it, from
+    /// the reviewer's configured default.
+    nudge_to_detach: bool,
     /// The chosen way to leave, set once a quit resolves, which the host reads
     /// to end the loop.
     exit: Option<Exit>,
@@ -337,6 +388,8 @@ impl App {
             document,
             review: None,
             compose: None,
+            detach: None,
+            nudge_to_detach: true,
             exit: None,
             picker: None,
             pending_compare: None,
@@ -409,8 +462,19 @@ impl App {
         self
     }
 
+    /// Set whether an arrow past the top or bottom of the open editor detaches
+    /// it, from the reviewer's configured default.
+    pub fn with_nudge_to_detach(mut self, nudge: bool) -> Self {
+        self.nudge_to_detach = nudge;
+        self
+    }
+
     /// The editor border hint naming the keys that submit and cancel a comment,
     /// resolved from the active keymap so it shows the reviewer's own bindings.
+    /// While the editor floats, the detach key is named too, before the cancel
+    /// key so the cancel hint is the one that truncates when the title
+    /// overflows: it reads `edit` while the cursor roams the diff and
+    /// `navigate` while it is back in the editor, naming what the key does next.
     fn editor_hint(&self) -> String {
         let submit = self
             .keymap
@@ -420,7 +484,18 @@ impl App {
             .keymap
             .primary_label(Action::CancelComment)
             .unwrap_or_default();
-        format!("{submit} submit  {cancel} cancel")
+        let Some(focus) = self.detach else {
+            return format!("{submit} submit  {cancel} cancel");
+        };
+        let detach = self
+            .keymap
+            .primary_label(Action::DetachEditor)
+            .unwrap_or_default();
+        let verb = match focus {
+            DetachFocus::Inside => "navigate",
+            DetachFocus::Outside => "edit",
+        };
+        format!("{submit} submit  [{detach} {verb}]  {cancel} cancel")
     }
 
     /// An incremental markdown highlighter for the inline editor, over the
@@ -605,14 +680,12 @@ impl App {
             return Update::Passed(Action::AddComment);
         }
         if let Some((target, anchor, label)) = self.add_target_at_cursor() {
-            let hint = self.editor_hint();
             let highlighter = self.editor_highlighter();
             self.compose = Some(Compose::new(
                 ComposeKind::Add(target),
                 anchor,
                 "",
                 label,
-                hint,
                 self.compose_border,
                 highlighter,
             ));
@@ -637,14 +710,12 @@ impl App {
                 .as_ref()
                 .and_then(|review| review.comment_body(id))
                 .unwrap_or_default();
-            let hint = self.editor_hint();
             let highlighter = self.editor_highlighter();
             self.compose = Some(Compose::new(
                 ComposeKind::Edit(id),
                 anchor,
                 &body,
                 "edit comment".to_string(),
-                hint,
                 self.compose_border,
                 highlighter,
             ));
@@ -735,22 +806,176 @@ impl App {
         };
         if compose.confirming() {
             match press.key {
-                Key::Char('y') | Key::Char('Y') => self.compose = None,
+                Key::Char('y') | Key::Char('Y') => self.close_compose(),
                 _ => compose.resume(),
             }
             return;
         }
+        let outside = matches!(self.detach, Some(DetachFocus::Outside));
+        if outside {
+            self.compose_key_outside(press);
+        } else {
+            self.compose_key_editing(press);
+        }
+    }
+
+    /// Route a press while the cursor is in the editor, whether anchored inline
+    /// or floating detached. Submit and cancel leave; the detach binding, or an
+    /// arrow past the editor's edge when nudging is enabled, floats the editor
+    /// and hands the cursor to the diff; every other press edits the body.
+    fn compose_key_editing(&mut self, press: KeyPress) {
+        let width = self.width.saturating_sub(2);
         match self.keymap.resolve(std::slice::from_ref(&press)) {
             Resolution::Action(Action::SubmitComment) => self.submit_compose(),
-            Resolution::Action(Action::CancelComment) => {
-                if compose.is_dirty() {
-                    compose.begin_confirm();
-                } else {
-                    self.compose = None;
+            Resolution::Action(Action::CancelComment) => self.cancel_compose(),
+            Resolution::Action(Action::DetachEditor) => self.detach_to_outside(),
+            _ => {
+                if let Some(nudge) = self.nudge_out_of_editor(&press, width) {
+                    self.nudge_out(nudge, width);
+                    return;
+                }
+                if let Some(compose) = self.compose.as_mut() {
+                    compose.input(press, width);
                 }
             }
-            _ => compose.input(press, self.width.saturating_sub(2)),
         }
+    }
+
+    /// Route a press while the floating editor's cursor roams the diff. Submit
+    /// and cancel still leave; navigation and search drive the diff; the edit or
+    /// detach binding, or any other key, returns to the editor, a printable key
+    /// inserting itself once back inside.
+    fn compose_key_outside(&mut self, press: KeyPress) {
+        match self.keymap.resolve(std::slice::from_ref(&press)) {
+            Resolution::Action(Action::SubmitComment) => self.submit_compose(),
+            Resolution::Action(Action::CancelComment) => self.cancel_compose(),
+            Resolution::Action(Action::EditComment | Action::DetachEditor) => self.reenter_editor(),
+            Resolution::Action(action) if is_navigation(action) => {
+                self.update(action);
+            }
+            _ => {
+                self.reenter_editor();
+                if let (Key::Char(_), Some(compose)) = (press.key, self.compose.as_mut()) {
+                    compose.input(press, self.width.saturating_sub(2));
+                }
+            }
+        }
+    }
+
+    /// Whether `press` is an arrow or page key that would step past the editor's
+    /// top or bottom row, returning the direction it detaches in. `None` when
+    /// nudging is disabled, the press is not a vertical step, or the step stays
+    /// within the editor.
+    fn nudge_out_of_editor(&self, press: &KeyPress, width: usize) -> Option<Nudge> {
+        if !self.nudge_to_detach {
+            return None;
+        }
+        let compose = self.compose.as_ref()?;
+        match nudge_direction(press)? {
+            Nudge::Up if compose.at_first_visual_row(width) => Some(Nudge::Up),
+            Nudge::Down if compose.at_last_visual_row(width) => Some(Nudge::Down),
+            _ => None,
+        }
+    }
+
+    /// Detach the editor and hand the cursor to the diff, placing it on the
+    /// anchor line on the first detach. The editor keeps floating over the
+    /// anchor and drifts to a screen edge only if the reviewer scrolls the
+    /// anchor out of view.
+    fn detach_to_outside(&mut self) {
+        // Only the first detach moves the cursor. A later toggle from Inside
+        // leaves it where it roamed to on the diff; the view cannot have
+        // scrolled since, as navigation is frozen while the cursor is Inside.
+        if self.detach.is_none() {
+            let anchor = self.compose_anchor();
+            self.move_to(anchor);
+        }
+        self.detach = Some(DetachFocus::Outside);
+    }
+
+    /// Detach in response to an arrow past the editor's edge and hand the cursor
+    /// to the diff just past the box the way the arrow pointed. On the first
+    /// detach the box floats where `compose_float` will place it, and the cursor
+    /// steps to the diff row just past the border the arrow pointed at: the row
+    /// above the top border going up, or below the bottom border going down,
+    /// mirroring both edges. When that border already rests against the matching
+    /// viewport edge there is no such row on screen, so the nudge does nothing
+    /// rather than scrolling the anchor away from the box. A later nudge steps a
+    /// single row from where the roaming cursor already sits.
+    fn nudge_out(&mut self, nudge: Nudge, interior: usize) {
+        if self.detach.is_none() {
+            let box_height = self.float_box_height(interior);
+            let anchor_row = self.compose_anchor().saturating_sub(self.top);
+            let top_row = anchor_row.min(self.height.saturating_sub(box_height));
+            let target_row = match nudge {
+                Nudge::Up if top_row == 0 => return,
+                Nudge::Up => top_row - 1,
+                Nudge::Down if top_row + box_height >= self.height => return,
+                Nudge::Down => top_row + box_height,
+            };
+            self.detach = Some(DetachFocus::Outside);
+            self.move_to(self.top + target_row);
+            return;
+        }
+        self.detach = Some(DetachFocus::Outside);
+        match nudge {
+            Nudge::Up => self.move_to(self.cursor.saturating_sub(1)),
+            Nudge::Down => self.move_to(self.cursor + 1),
+        }
+    }
+
+    /// The tallest interior the floating editor's body is shown at: about a
+    /// third of the viewport, and at least one row, so a long body does not
+    /// crowd out the diff while a short one still shrinks to fit.
+    fn editor_max_interior(&self) -> usize {
+        (self.height * 3 / 10).max(3).saturating_sub(2).max(1)
+    }
+
+    /// The height of the floating editor box, counting both borders, when its
+    /// body wraps to `interior` columns.
+    fn float_box_height(&self, interior: usize) -> usize {
+        self.compose.as_ref().map_or(2, |compose| {
+            compose
+                .layout(interior, self.editor_max_interior())
+                .rows
+                .len()
+                + 2
+        })
+    }
+
+    /// Return the roaming cursor to the floating editor, freezing the diff where
+    /// the reviewer left it. The editor's insertion point is untouched, so
+    /// typing resumes where it left off.
+    fn reenter_editor(&mut self) {
+        if self.detach.is_some() {
+            self.detach = Some(DetachFocus::Inside);
+        }
+    }
+
+    /// The editor's anchor row, clamped to the view.
+    fn compose_anchor(&self) -> usize {
+        self.compose
+            .as_ref()
+            .map_or(0, |compose| compose.anchor().min(self.last_view()))
+    }
+
+    /// Cancel the open editor, confirming first when the body has unsaved
+    /// changes so an accidental keystroke cannot discard work.
+    fn cancel_compose(&mut self) {
+        let Some(compose) = self.compose.as_mut() else {
+            return;
+        };
+        if compose.is_dirty() {
+            compose.begin_confirm();
+        } else {
+            self.close_compose();
+        }
+    }
+
+    /// Close the editor, clearing any detached state.
+    fn close_compose(&mut self) {
+        self.compose = None;
+        self.detach = None;
     }
 
     /// Commit the open editor's body to the review: a new comment or a revision.
@@ -759,6 +984,7 @@ impl App {
         let Some(compose) = self.compose.take() else {
             return;
         };
+        self.detach = None;
         let body = compose.body();
         if body.is_empty() {
             return;
@@ -785,14 +1011,17 @@ impl App {
     /// `None` when not composing.
     pub fn compose_view(&self, width: usize) -> Option<ComposeView> {
         let compose = self.compose.as_ref()?;
+        // A detached editor floats over the ordinary document render instead;
+        // see `compose_float`.
+        if self.detach.is_some() {
+            return None;
+        }
         if self.height == 0 {
             return None;
         }
         // The border takes a column on each side; the body wraps into the rest.
         let interior = width.saturating_sub(2);
-        // Cap the editor at about a third of the viewport so a long body does
-        // not crowd out the diff; a short body still shrinks to fit its content.
-        let max_interior = (self.height * 3 / 10).max(3).saturating_sub(2).max(1);
+        let max_interior = self.editor_max_interior();
         let editor = compose.layout(interior, max_interior);
         let editor_height = editor.rows.len() + 2;
         let doc_shown = self.height.saturating_sub(editor_height);
@@ -819,11 +1048,72 @@ impl App {
             .collect();
         Some(ComposeView {
             above,
-            editor_block: compose.block(),
+            editor_block: compose.block(&self.editor_hint()),
             editor_rows: editor.rows,
             editor_cursor: editor.cursor,
             editor_scroll: editor.scroll,
             below,
+        })
+    }
+
+    /// The floating editor drawn over the ordinary document while it is detached
+    /// from its anchor: the box, the row it sits on, and the background to clear
+    /// behind it. The box tracks the anchor's on-screen position, coming to rest
+    /// at a screen edge once the anchor scrolls out of view. The cursor is
+    /// reported only while it is in the editor, so a roaming cursor leaves the
+    /// box without a hardware cursor. `None` when the editor is anchored inline
+    /// or closed.
+    pub fn compose_float(&self, width: usize) -> Option<FloatView> {
+        let compose = self.compose.as_ref()?;
+        let focus = self.detach?;
+        if self.height == 0 {
+            return None;
+        }
+        let max_interior = self.editor_max_interior();
+        let wide = compose.layout(width.saturating_sub(2), max_interior);
+        // Inset the box a couple of columns each side, giving the roaming
+        // cursor's tint blank margin cells beside the border to read against.
+        // The narrower text must wrap to the same height, else keep the wide box
+        // so the inset never grows the box.
+        const INSET: usize = 2;
+        let inset_interior = width.saturating_sub(2 + 2 * INSET);
+        let narrow = (inset_interior >= 1).then(|| compose.layout(inset_interior, max_interior));
+        let (inset, editor) = match narrow {
+            Some(narrow) if narrow.rows.len() == wide.rows.len() => (INSET as u16, narrow),
+            _ => (0, wide),
+        };
+        let box_height = editor.rows.len() + 2;
+        // Place the box where the anchor sits on screen, then clamp so it never
+        // spills past the bottom: as the anchor scrolls toward an edge the box
+        // follows it and then rests against that edge once it scrolls off.
+        let anchor_row = self.compose_anchor().saturating_sub(self.top);
+        let top_row = anchor_row.min(self.height.saturating_sub(box_height));
+        let editor_cursor = match focus {
+            DetachFocus::Inside => editor.cursor,
+            DetachFocus::Outside => None,
+        };
+        // While the cursor roams the diff behind the box, its covered line cannot
+        // show its own tint, so report the box row it sits on for the chrome to
+        // show the tint around the editor's edges.
+        let cursor_offset = match focus {
+            DetachFocus::Outside if self.cursor >= self.top => {
+                let screen = self.cursor - self.top;
+                (top_row..top_row + box_height)
+                    .contains(&screen)
+                    .then(|| (screen - top_row) as u16)
+            }
+            _ => None,
+        };
+        Some(FloatView {
+            top_row: top_row.min(u16::MAX as usize) as u16,
+            background: self.background,
+            editor_block: compose.block(&self.editor_hint()),
+            editor_rows: editor.rows,
+            editor_cursor,
+            editor_scroll: editor.scroll,
+            inset,
+            cursor_bg: self.cursor_bg,
+            cursor_offset,
         })
     }
 
@@ -2150,6 +2440,50 @@ impl App {
     }
 }
 
+/// The direction a plain arrow steps, used to nudge the editor loose when the
+/// cursor is already at its edge. Only the arrows count: the page keys page
+/// within the body even from the edge row, so treating them as a nudge would
+/// switch modality out from under a reviewer paging through their comment.
+/// `None` for any other press.
+fn nudge_direction(press: &KeyPress) -> Option<Nudge> {
+    if press.ctrl || press.alt || press.shift {
+        return None;
+    }
+    match press.key {
+        Key::Up => Some(Nudge::Up),
+        Key::Down => Some(Nudge::Down),
+        _ => None,
+    }
+}
+
+/// Whether `action` moves or searches the diff without mutating a comment or
+/// opening a modal, so it is safe to run while the editor floats detached and
+/// the cursor roams.
+fn is_navigation(action: Action) -> bool {
+    matches!(
+        action,
+        Action::LineDown
+            | Action::LineUp
+            | Action::PageDown
+            | Action::PageUp
+            | Action::Top
+            | Action::Bottom
+            | Action::NextFile
+            | Action::PrevFile
+            | Action::NextHunk
+            | Action::PrevHunk
+            | Action::NextComment
+            | Action::PrevComment
+            | Action::ToggleFold
+            | Action::ToggleWrap
+            | Action::HideComments
+            | Action::SearchForward
+            | Action::SearchBackward
+            | Action::SearchNext
+            | Action::SearchPrev
+    )
+}
+
 /// Lay out the status line: `left` at the start and `right` flush against the
 /// end at `width`, spaces filling the gap between them. When they cannot both
 /// fit, `right` is kept whole and `left` is truncated to make room.
@@ -2346,7 +2680,7 @@ mod tests {
     use wiff_core::review::CommentState;
     use wiff_diff::{Diff, FileStatus, LineKind, Side};
 
-    use super::{App, CompareRequest, ComposeView, Update};
+    use super::{App, CompareRequest, ComposeView, FloatView, Update};
     use crate::action::Action;
     use crate::exit::{Exit, ExitDefault};
     use crate::key::{Chord, Key, KeyPress};
@@ -2412,6 +2746,57 @@ mod tests {
             dump(&view.editor_rows),
             dump(&view.below),
         )
+    }
+
+    /// The screen as a human sees it while the editor floats detached: the diff
+    /// rows with the floating editor box overlaid on the row it tracks, and the
+    /// tracked row and cursor named on the box's divider. The box covers the
+    /// diff rows it sits over, matching the real overlay in [`crate::run`].
+    fn dump_detached(app: &App, width: usize, height: usize) -> String {
+        let mut doc = app.visible(width);
+        // The document area is `height` rows tall; a short diff leaves blank
+        // rows the floating box may sit over, so pad to the full height first.
+        doc.resize(height, ratatui::text::Line::from(String::new()));
+        let float = app.compose_float(width).expect("detached");
+        let cursor = match float.editor_cursor {
+            Some((col, row)) => format!("cursor {col},{row}"),
+            None => "cursor off".to_string(),
+        };
+        let top_row = float.top_row as usize;
+        let box_end = (top_row + float.editor_rows.len() + 2).min(doc.len());
+        format!(
+            "{}--float row {top_row} {cursor}--\n{}--float end--\n{}",
+            dump(&doc[..top_row.min(doc.len())]),
+            dump(&float.editor_rows),
+            dump(&doc[box_end..]),
+        )
+    }
+
+    /// The document row the floating editor's top border sits on, or `None` when
+    /// the editor is anchored inline or closed.
+    fn float_top(app: &App) -> Option<usize> {
+        app.compose_float(TEST_WIDTH)
+            .map(|view| view.top_row as usize)
+    }
+
+    /// The blank margin the floating box holds on each side, or `None` when the
+    /// editor is anchored inline or closed.
+    fn float_inset(app: &App) -> Option<u16> {
+        app.compose_float(TEST_WIDTH).map(|view| view.inset)
+    }
+
+    /// Whether the floating editor shows a cursor, i.e. focus is inside it.
+    fn float_has_cursor(app: &App) -> bool {
+        app.compose_float(TEST_WIDTH)
+            .and_then(|view: FloatView| view.editor_cursor)
+            .is_some()
+    }
+
+    /// The box row the roaming diff cursor sits behind, or `None` when it is
+    /// clear of the box, in the editor, or the editor is inline or closed.
+    fn float_cursor_offset(app: &App) -> Option<u16> {
+        app.compose_float(TEST_WIDTH)
+            .and_then(|view| view.cursor_offset)
     }
 
     /// An after-side line comment on `line` of `path` by `author`, with `body`,
@@ -3764,6 +4149,302 @@ mod tests {
         );
     }
 
+    /// The detach chord, ctrl-o.
+    fn detach() -> KeyPress {
+        KeyPress::with_modifiers(Key::Char('o'), true, false, false)
+    }
+
+    /// Open the editor on the added line of a `height`-row review, seeded with
+    /// `seed`, its width set for wrapping.
+    fn composing_on_added_line(height: usize, seed: &str) -> App {
+        let mut app = App::reviewing(plain_review(), height, &Theme::dark());
+        app.set_width(TEST_WIDTH);
+        for _ in 0..4 {
+            app.update(Action::LineDown);
+        }
+        app.update(Action::AddComment);
+        typed(&mut app, seed);
+        app
+    }
+
+    /// A review over a one-file diff of `lines` added lines, for tests that need
+    /// a diff taller than the viewport so the floating editor scrolls to an edge.
+    fn tall_review(lines: u32) -> Review {
+        let owned: Vec<(LineKind, String, u32)> = (1..=lines)
+            .map(|i| (LineKind::Added, format!("let v{i} = {i};"), i))
+            .collect();
+        let rows: Vec<(LineKind, &str, u32)> = owned
+            .iter()
+            .map(|(kind, text, n)| (*kind, text.as_str(), *n))
+            .collect();
+        let diff = Diff {
+            files: vec![file("src/lib.rs", FileStatus::Modified, &rows)],
+        };
+        Review::new(
+            DiffView::new(Theme::dark()).unwrap(),
+            diff,
+            Author {
+                name: "wez".to_string(),
+                kind: AuthorKind::Human,
+            },
+            0,
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn a_short_body_insets_the_box_but_a_wide_one_that_would_wrap_taller_does_not() {
+        // A short body wraps to one row at either width, so the box insets its
+        // border a couple of columns to give the roaming cursor's tint margin
+        // cells to read against.
+        let mut app = composing_on_added_line(20, "why 2?");
+        app.compose_key(detach());
+        k9::assert_equal!((float_inset(&app), float_top(&app)), (Some(2), Some(4)));
+        // A body that fits the wide interior on one row but overflows the
+        // narrower inset interior keeps the wide box, so the inset never grows
+        // the box: TEST_WIDTH is 40, the wide interior 38 and the inset one 34,
+        // and 36 characters wrap to one wide row but two inset rows.
+        let mut app = composing_on_added_line(20, &"x".repeat(36));
+        app.compose_key(detach());
+        k9::assert_equal!((float_inset(&app), float_top(&app)), (Some(0), Some(4)));
+    }
+
+    #[test]
+    fn the_detach_binding_floats_the_editor_over_its_anchor() {
+        // ctrl-o detaches the editor: it stops rendering inline and floats over
+        // the anchored line rather than snapping to a screen edge, with the
+        // cursor leaving it to sit on that line.
+        let mut app = composing_on_added_line(8, "why 2?");
+        app.compose_key(detach());
+        k9::assert_equal!(app.composing(), true);
+        k9::assert_equal!(app.compose_view(TEST_WIDTH).is_none(), true);
+        k9::assert_equal!(float_top(&app), Some(4));
+        k9::assert_equal!(float_has_cursor(&app), false);
+        let expected = "\
+<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,2 +1,2 @@
+<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+--float row 4 cursor off--
+<#c0c5ce|-|->why 2?
+--float end--
+
+";
+        k9::assert_equal!(dump_detached(&app, TEST_WIDTH, 8), expected.to_string());
+    }
+
+    #[test]
+    fn scrolling_the_anchor_off_the_top_rests_the_editor_at_the_top_edge() {
+        // Author near the top of a tall diff, detach, then scroll the diff down
+        // until the anchor leaves the top: the box tracks it up and rests at the
+        // top edge, row 0.
+        let mut app = App::reviewing(tall_review(40), 10, &Theme::dark());
+        app.set_width(TEST_WIDTH);
+        for _ in 0..4 {
+            app.update(Action::LineDown);
+        }
+        app.update(Action::AddComment);
+        typed(&mut app, "why?");
+        app.compose_key(detach());
+        // While the anchor is on screen the box floats over it, not at an edge.
+        k9::assert_equal!(float_top(&app), Some(4));
+        for _ in 0..20 {
+            app.compose_key(ch('j'));
+        }
+        k9::assert_equal!(float_top(&app), Some(0));
+        k9::assert_equal!(float_has_cursor(&app), false);
+    }
+
+    #[test]
+    fn scrolling_the_anchor_off_the_bottom_rests_the_editor_at_the_bottom_edge() {
+        // Author far down a tall diff, detach, then scroll the diff up until the
+        // anchor leaves the bottom: the box tracks it down and rests at the
+        // bottom edge, height minus the box height.
+        let mut app = App::reviewing(tall_review(40), 10, &Theme::dark());
+        app.set_width(TEST_WIDTH);
+        for _ in 0..30 {
+            app.update(Action::LineDown);
+        }
+        app.update(Action::AddComment);
+        typed(&mut app, "why?");
+        app.compose_key(detach());
+        for _ in 0..20 {
+            app.compose_key(ch('k'));
+        }
+        k9::assert_equal!(float_top(&app), Some(7));
+        k9::assert_equal!(float_has_cursor(&app), false);
+    }
+
+    #[test]
+    fn the_roaming_cursor_reports_the_box_row_it_sits_behind() {
+        // With a multi-line editor floating over the diff, stepping the cursor
+        // down through the rows the box covers reports each row in turn, so the
+        // chrome can show the cursor tint around the editor; once the cursor
+        // steps clear below the box the report clears and the cursor shows its
+        // own full-width tint again.
+        let mut app = App::reviewing(tall_review(40), 20, &Theme::dark());
+        app.set_width(TEST_WIDTH);
+        for _ in 0..4 {
+            app.update(Action::LineDown);
+        }
+        app.update(Action::AddComment);
+        for line in ["a", "b", "c", "d"] {
+            typed(&mut app, line);
+            if line != "d" {
+                app.compose_key(KeyPress::new(Key::Enter));
+            }
+        }
+        app.compose_key(detach());
+        // The cursor sits on the anchor, the box's top border row.
+        k9::assert_equal!(float_cursor_offset(&app), Some(0));
+        let offsets: Vec<Option<u16>> = (0..6)
+            .map(|_| {
+                app.compose_key(ch('j'));
+                float_cursor_offset(&app)
+            })
+            .collect();
+        k9::assert_equal!(
+            offsets,
+            vec![Some(1), Some(2), Some(3), Some(4), Some(5), None]
+        );
+    }
+
+    #[test]
+    fn an_arrow_past_the_top_nudges_the_editor_loose() {
+        // With the cursor on the editor's first row, Up has nowhere to go inside
+        // the editor, so it detaches, floats over the anchor, and steps the diff
+        // up.
+        let mut app = composing_on_added_line(8, "why 2?");
+        let anchor = app.cursor();
+        app.compose_key(KeyPress::new(Key::Up));
+        k9::assert_equal!(float_top(&app), Some(4));
+        k9::assert_equal!(float_has_cursor(&app), false);
+        k9::assert_equal!(app.cursor(), anchor - 1);
+    }
+
+    #[test]
+    fn an_arrow_past_the_bottom_nudges_the_editor_loose() {
+        // With the cursor on the editor's last row, Down has nowhere to go
+        // inside the editor, so it detaches, floats over the anchor, and places
+        // the diff cursor on the line just below the box's bottom border,
+        // mirroring the top edge. The box is three rows tall over the
+        // single-line body, so the cursor rests three rows past the anchor.
+        let mut app = App::reviewing(tall_review(20), 20, &Theme::dark());
+        app.set_width(TEST_WIDTH);
+        for _ in 0..5 {
+            app.update(Action::LineDown);
+        }
+        app.update(Action::AddComment);
+        typed(&mut app, "why 2?");
+        let anchor = app.cursor();
+        app.compose_key(KeyPress::new(Key::Down));
+        k9::assert_equal!(float_has_cursor(&app), false);
+        k9::assert_equal!(app.cursor(), anchor + 3);
+    }
+
+    #[test]
+    fn nudging_off_a_bottom_pinned_editor_does_nothing() {
+        // Compose on the last line of a tall diff. The anchor sits against the
+        // bottom of the viewport, so the box would float pinned to that edge
+        // with no diff row below its bottom border on screen. Down on the
+        // editor's last row therefore does nothing: the editor stays inline and
+        // the diff does not scroll, rather than flinging the anchor up the page.
+        let mut app = App::reviewing(tall_review(20), 12, &Theme::dark());
+        app.set_width(TEST_WIDTH);
+        for _ in 0..20 {
+            app.update(Action::LineDown);
+        }
+        app.update(Action::AddComment);
+        typed(&mut app, "why 2?");
+        let before = (app.top, app.cursor());
+        app.compose_key(KeyPress::new(Key::Down));
+        k9::assert_equal!((app.top, app.cursor()), before);
+        k9::assert_equal!(app.compose_float(TEST_WIDTH).is_none(), true);
+        k9::assert_equal!(app.compose_view(TEST_WIDTH).is_some(), true);
+    }
+
+    #[test]
+    fn nudging_stays_in_the_editor_when_disabled() {
+        // With nudging off, Up on the first row is an ordinary editor move: the
+        // editor stays anchored inline and never floats.
+        let mut app = App::reviewing(plain_review(), 8, &Theme::dark()).with_nudge_to_detach(false);
+        app.set_width(TEST_WIDTH);
+        for _ in 0..4 {
+            app.update(Action::LineDown);
+        }
+        app.update(Action::AddComment);
+        typed(&mut app, "why 2?");
+        app.compose_key(KeyPress::new(Key::Up));
+        k9::assert_equal!(app.compose_float(TEST_WIDTH).is_none(), true);
+        k9::assert_equal!(app.compose_view(TEST_WIDTH).is_some(), true);
+    }
+
+    #[test]
+    fn navigation_scrolls_the_diff_while_the_editor_floats() {
+        // Detached and outside, j moves the diff cursor and the editor keeps
+        // floating with the cursor out of it.
+        let mut app = composing_on_added_line(8, "why 2?");
+        app.compose_key(detach());
+        let start = app.cursor();
+        // The anchor is the last diff row, so move up into the diff, then back.
+        app.compose_key(ch('k'));
+        k9::assert_equal!(app.cursor(), start - 1);
+        k9::assert_equal!(float_has_cursor(&app), false);
+        app.compose_key(ch('j'));
+        k9::assert_equal!(app.cursor(), start);
+        k9::assert_equal!(float_has_cursor(&app), false);
+    }
+
+    #[test]
+    fn the_edit_binding_returns_the_cursor_to_the_floating_editor() {
+        // From outside, e returns the cursor to the editor without moving the
+        // diff, so the reviewer resumes typing where they left off.
+        let mut app = composing_on_added_line(8, "why 2?");
+        app.compose_key(detach());
+        app.compose_key(ch('j'));
+        let looked_at = app.cursor();
+        app.compose_key(ch('e'));
+        k9::assert_equal!(float_has_cursor(&app), true);
+        k9::assert_equal!(app.cursor(), looked_at);
+        // The editor still floats; it does not snap back inline.
+        k9::assert_equal!(app.compose_view(TEST_WIDTH).is_none(), true);
+    }
+
+    #[test]
+    fn a_printable_key_returns_to_the_editor_and_inserts() {
+        // From outside, an unbound printable snaps back into the editor and
+        // types itself; submitting then shows the appended text in the draft.
+        let mut app = composing_on_added_line(8, "why 2?");
+        app.compose_key(detach());
+        // '2' is unbound in the review keymap, so it re-enters and inserts.
+        app.compose_key(ch('2'));
+        k9::assert_equal!(float_has_cursor(&app), true);
+        app.compose_key(submit());
+        k9::assert_equal!(app.composing(), false);
+        let expected = "\
+<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
+<#c0c5ce|-|b>modified  src/lib.rs
+<#96b5b4|-|->@@ -1,2 +1,2 @@
+<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
+<#c8d8ba|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#c8d8ba|#4f5b66|-> [draft]<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#c8d8ba|#4f5b66|-> <#c8d8ba|#4f5b66|->┐
+<#a3be8c|-|->│<#c0c5ce|-|->why 2?2<-|-|->                               <#a3be8c|-|->│
+<#a3be8c|-|->└──────────────────────────────────────┘
+<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
+";
+        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+    }
+
+    #[test]
+    fn submitting_from_a_floating_editor_saves_the_comment() {
+        // Submit works while detached: the draft is authored and the editor
+        // closes, clearing the floating state.
+        let mut app = composing_on_added_line(8, "why 2?");
+        app.compose_key(detach());
+        app.compose_key(submit());
+        k9::assert_equal!(app.composing(), false);
+        k9::assert_equal!(app.compose_float(TEST_WIDTH).is_none(), true);
+    }
+
     #[test]
     fn cancelling_a_clean_editor_closes_it_at_once() {
         // Escape with nothing typed leaves editing immediately with no draft.
@@ -3839,6 +4520,26 @@ mod tests {
 <#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
         k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+    }
+
+    #[test]
+    fn the_floating_editor_hint_names_the_detach_key() {
+        // Inline, the hint names only submit and cancel. Floating, it also names
+        // the detach key before cancel, reading `edit` while the cursor roams
+        // the diff (the key returns it to the editor) and `navigate` once it is
+        // back in the editor (the key hands it to the diff).
+        let mut app = composing_on_added_line(8, "why 2?");
+        k9::assert_equal!(app.editor_hint(), "ctrl-d submit  esc cancel".to_string());
+        app.compose_key(detach());
+        k9::assert_equal!(
+            app.editor_hint(),
+            "ctrl-d submit  [ctrl-o edit]  esc cancel".to_string()
+        );
+        app.compose_key(ch('e'));
+        k9::assert_equal!(
+            app.editor_hint(),
+            "ctrl-d submit  [ctrl-o navigate]  esc cancel".to_string()
+        );
     }
 
     #[test]

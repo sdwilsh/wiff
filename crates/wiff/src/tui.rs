@@ -56,7 +56,8 @@ pub fn open(session_path: &Path, config: &Config, offer_refresh: bool) -> anyhow
     let mut app = App::reviewing(review, 0, &theme)
         .with_exit_default(exit_default(config.on_exit))
         .with_keymap(keymap.clone())
-        .with_wrap_content(config.wrap_lines);
+        .with_wrap_content(config.wrap_lines)
+        .with_nudge_to_detach(config.nudge_to_detach);
     // A resumed session whose source has moved on opens over the existing state
     // with a prompt to recapture it, rather than silently showing a stale diff.
     if offer_refresh && source_changed(&state) {

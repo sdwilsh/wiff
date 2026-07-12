@@ -65,8 +65,6 @@ pub struct Compose {
     original: String,
     /// The heading naming what is being written, shown on the editor border.
     label: String,
-    /// The submit/cancel key hint shown alongside the label on the border.
-    hint: String,
     /// The color of the editor's border.
     border: Rgb,
     /// Whether a cancel with unsaved changes is awaiting a yes/no answer.
@@ -82,14 +80,14 @@ pub struct Compose {
 
 impl Compose {
     /// An editor for `kind`, rendered above view row `anchor`, seeded with
-    /// `seed` (empty when authoring), titled `label` with the submit/cancel
-    /// `hint` beside it, and bordered in `border`.
+    /// `seed` (empty when authoring), titled `label`, and bordered in `border`.
+    /// The key hint beside the label is supplied to [`block`](Self::block) at
+    /// render time, since it depends on whether the editor is floating.
     pub fn new(
         kind: ComposeKind,
         anchor: usize,
         seed: &str,
         label: String,
-        hint: String,
         border: Rgb,
         mut highlighter: LiveHighlighter,
     ) -> Self {
@@ -112,7 +110,6 @@ impl Compose {
             anchor,
             original: seed.to_string(),
             label,
-            hint,
             border,
             confirming: false,
             bias: CursorBias::Forward,
@@ -208,18 +205,36 @@ impl Compose {
         WrapMap::build(self.textarea.lines(), width)
     }
 
+    /// Whether the cursor sits on the first visual row, so an upward move has
+    /// nowhere to go within the editor.
+    pub fn at_first_visual_row(&self, width: usize) -> bool {
+        let map = self.wrap(width);
+        let (crow, ccol) = self.textarea.cursor();
+        let (cvrow, _) = map.cursor_to_visual(crow, ccol, self.bias);
+        cvrow == 0
+    }
+
+    /// Whether the cursor sits on the last visual row, so a downward move has
+    /// nowhere to go within the editor.
+    pub fn at_last_visual_row(&self, width: usize) -> bool {
+        let map = self.wrap(width);
+        let (crow, ccol) = self.textarea.cursor();
+        let (cvrow, _) = map.cursor_to_visual(crow, ccol, self.bias);
+        cvrow + 1 >= map.row_count()
+    }
+
     /// The view row the editor renders above.
     pub fn anchor(&self) -> usize {
         self.anchor
     }
 
-    /// The editor's border block, titled with the label and either the
-    /// submit/cancel hint or the discard confirmation.
-    pub fn block(&self) -> Block<'static> {
+    /// The editor's border block, titled with the label and either `hint` or,
+    /// while a cancel awaits confirmation, the discard prompt.
+    pub fn block(&self, hint: &str) -> Block<'static> {
         let title = if self.confirming {
             format!(" {}  discard changes? y/n ", self.label)
         } else {
-            format!(" {}  {} ", self.label, self.hint)
+            format!(" {}  {} ", self.label, hint)
         };
         Block::default()
             .borders(Borders::ALL)

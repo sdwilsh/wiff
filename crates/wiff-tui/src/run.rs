@@ -23,9 +23,10 @@ use ratatui::widgets::{
 use ratatui::{Frame, Terminal};
 
 use wiff_core::record::RecordBody;
+use wiff_diff::Rgb;
 
 use crate::action::Action;
-use crate::app::{App, CompareRequest, ComposeView, Update};
+use crate::app::{App, CompareRequest, ComposeView, FloatView, Update};
 use crate::event::to_key_press;
 use crate::exit::Exit;
 use crate::input::Input;
@@ -105,6 +106,11 @@ pub fn draw<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
             render_compose(frame, doc_area, compose);
         } else {
             frame.render_widget(Paragraph::new(app.visible(area.width as usize)), doc_area);
+            // A detached editor floats over the ordinary document at a screen
+            // edge while the cursor roams the diff behind it.
+            if let Some(float) = app.compose_float(area.width as usize) {
+                render_float(frame, doc_area, float);
+            }
         }
         frame.render_widget(Paragraph::new(app.status(area.width as usize)), status_area);
         // The modal list floats centered over whatever it interrupts.
@@ -175,16 +181,97 @@ fn render_compose(frame: &mut Frame, area: Rect, view: ComposeView) {
         ..area
     };
     frame.render_widget(Paragraph::new(view.above), above_area);
-    let editor_cursor = view.editor_cursor;
+    frame.render_widget(Paragraph::new(view.below), below_area);
+    draw_editor_box(
+        frame,
+        editor_area,
+        view.editor_block,
+        view.editor_rows,
+        view.editor_cursor,
+        view.editor_scroll,
+    );
+}
+
+/// Draw the detached editor floating over the diff on the row it tracks the
+/// anchor to, sized to its rows and clearing the cells behind it.
+fn render_float(frame: &mut Frame, area: Rect, view: FloatView) {
+    let height = (view.editor_rows.len() as u16 + 2).min(area.height);
+    // The row is clamped to fit against the source, but clamp again to the drawn
+    // area's own height as a guard.
+    let y = area.y + view.top_row.min(area.height.saturating_sub(height));
+    let editor_area = Rect { y, height, ..area };
+    let (cursor_bg, cursor_offset, inset) = (view.cursor_bg, view.cursor_offset, view.inset);
+    // Clear resets the box to the terminal's own background, so refill it with
+    // the theme background before drawing the border and rows. The full width is
+    // cleared, leaving the inset margins blank rather than showing the diff the
+    // box overlaps.
+    frame.render_widget(Clear, editor_area);
     frame.render_widget(
-        Paragraph::new(view.editor_rows).block(view.editor_block),
+        Paragraph::new("").style(Style::default().bg(color(view.background))),
         editor_area,
     );
-    frame.render_widget(Paragraph::new(view.below), below_area);
+    let box_area = Rect {
+        x: editor_area.x + inset,
+        width: editor_area.width.saturating_sub(2 * inset),
+        ..editor_area
+    };
+    draw_editor_box(
+        frame,
+        box_area,
+        view.editor_block,
+        view.editor_rows,
+        view.editor_cursor,
+        view.editor_scroll,
+    );
+    // The reviewer's cursor line, covered by the box while it roams the diff
+    // behind it, shows through as the cursor tint on the chrome of the row it
+    // sits behind.
+    if let Some(offset) = cursor_offset {
+        tint_cursor_row(frame, editor_area, box_area, offset, cursor_bg);
+    }
+}
+
+/// Tint the editor chrome on the box row the roaming diff cursor sits behind:
+/// the whole cursor line on the top or bottom border row, or the border cell
+/// and its inset margin cells on an interior row, so the covered cursor line
+/// reads around the editor.
+fn tint_cursor_row(frame: &mut Frame, area: Rect, box_area: Rect, offset: u16, cursor_bg: Rgb) {
+    if area.width == 0 || area.height == 0 || box_area.width == 0 {
+        return;
+    }
+    let y = area.y + offset.min(area.height - 1);
+    let bg = color(cursor_bg);
+    let buffer = frame.buffer_mut();
+    if offset == 0 || offset + 1 >= area.height {
+        for x in area.left()..area.right() {
+            buffer[(x, y)].set_bg(bg);
+        }
+    } else {
+        // The left border and its margin, then the right border and its margin.
+        // The early return on a zero-width box keeps `box_area.right()` at least
+        // one, so the right-border column below never underflows.
+        for x in (area.left()..=box_area.left()).chain(box_area.right() - 1..area.right()) {
+            buffer[(x, y)].set_bg(bg);
+        }
+    }
+}
+
+/// Draw an editor box into `editor_area`: its border block and wrapped rows, a
+/// scrollbar down the right border when the body overflows, and the terminal's
+/// hardware cursor placed inside the border when the cursor is in the box.
+fn draw_editor_box(
+    frame: &mut Frame,
+    editor_area: Rect,
+    block: Block<'static>,
+    rows: Vec<ratatui::text::Line<'static>>,
+    cursor: Option<(u16, u16)>,
+    scroll: Option<crate::compose::Scroll>,
+) {
+    frame.render_widget(Paragraph::new(rows).block(block), editor_area);
     // A body taller than the box draws a scrollbar down the right border so the
     // reviewer can see how much is off-screen.
-    if let Some(scroll) = view.editor_scroll {
-        let visible = editor_height.saturating_sub(2) as usize;
+    if let Some(scroll) = scroll {
+        let visible = editor_area.height.saturating_sub(2) as usize;
         // ratatui sizes the thumb from the scrollable range, not the total, so
         // pass total - visible (the number of scroll steps) as the content
         // length. The extra step keeps the thumb just short of the full track
@@ -207,7 +294,7 @@ fn render_compose(frame: &mut Frame, area: Rect, view: ComposeView) {
     // Place the terminal's hardware cursor inside the border, past the box's
     // top and left edge, keeping an input method's candidate window on the real
     // edit point.
-    if let Some((col, row)) = editor_cursor {
+    if let Some((col, row)) = cursor {
         let x = editor_area.x + 1 + col;
         let y = editor_area.y + 1 + row;
         if x < editor_area.right() && y < editor_area.bottom() {
@@ -464,6 +551,167 @@ mod tests {
             "src/lib.rs        0 open  100%\n",
         );
         k9::assert_equal!(screen(30, 9, app), expected.to_string());
+    }
+
+    /// The screen after drawing `app`, each row shown as its symbols and then a
+    /// mask marking cells the cursor tint covers with `#` and the rest with `.`,
+    /// so the cursor line's tint around the floating editor is asserted. Drawing
+    /// through the shared loop settles the width, height, and initial cursor
+    /// position, so callers draw once to settle before interacting.
+    fn screen_tinted(width: u16, height: u16, app: &mut App) -> String {
+        let tint = crate::render::color(Theme::dark().cursor_bg);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+        draw(&mut terminal, app).expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let mut out = String::new();
+        for row in 0..height {
+            for col in 0..width {
+                out.push_str(buffer[(col, row)].symbol());
+            }
+            out.push_str("  ");
+            for col in 0..width {
+                out.push(if buffer[(col, row)].bg == tint {
+                    '#'
+                } else {
+                    '.'
+                });
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    /// A review over a six-line added file, for the detached-editor tint tests.
+    fn six_line_review() -> Review {
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[
+                    (LineKind::Added, "let v1 = 1;", 1),
+                    (LineKind::Added, "let v2 = 2;", 2),
+                    (LineKind::Added, "let v3 = 3;", 3),
+                    (LineKind::Added, "let v4 = 4;", 4),
+                    (LineKind::Added, "let v5 = 5;", 5),
+                    (LineKind::Added, "let v6 = 6;", 6),
+                ],
+            )],
+        };
+        let author = Author {
+            name: "wez".to_string(),
+            kind: AuthorKind::Human,
+        };
+        Review::new(
+            DiffView::new(Theme::dark()).expect("view"),
+            diff,
+            author,
+            0,
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn the_detached_editor_tints_the_whole_rule_when_the_cursor_is_on_the_anchor() {
+        let mut app = App::reviewing(six_line_review(), 12, &Theme::dark());
+        // Settle the width, height, and initial cursor position before moving.
+        screen_tinted(30, 12, &mut app);
+        app.update(Action::Top);
+        for _ in 0..4 {
+            app.update(Action::LineDown);
+        }
+        app.update(Action::AddComment);
+        for c in "why 2?".chars() {
+            app.compose_key(KeyPress::new(Key::Char(c)));
+        }
+        // Detaching leaves the cursor on the anchor line, which the box's top
+        // border sits over, so the whole top rule shows the cursor tint.
+        app.compose_key(KeyPress::with_modifiers(Key::Char('o'), true, false, false));
+
+        let expected = concat!(
+            "Review [press c here to draft   ..............................\n",
+            "modified  src/lib.rs            ..............................\n",
+            "@@ -1,6 +1,6 @@                 ..............................\n",
+            "        1 + let v1 = 1;         ..............................\n",
+            "  ┌ new comment  src/lib.rs┐    ##############################\n",
+            "  │why 2?                  │    ..............................\n",
+            "  └────────────────────────┘    ..............................\n",
+            "        5 + let v5 = 5;         ..............................\n",
+            "        6 + let v6 = 6;         ..............................\n",
+            "                                ..............................\n",
+            "                                ..............................\n",
+            "src/lib.rs         0 open  50%  ..............................\n",
+        );
+        k9::assert_equal!(screen_tinted(30, 12, &mut app), expected.to_string());
+    }
+
+    #[test]
+    fn the_detached_editor_carries_the_cursor_tint_around_its_chrome() {
+        let mut app = App::reviewing(six_line_review(), 12, &Theme::dark());
+        // Settle the width, height, and initial cursor position before moving.
+        screen_tinted(30, 12, &mut app);
+        app.update(Action::Top);
+        for _ in 0..4 {
+            app.update(Action::LineDown);
+        }
+        app.update(Action::AddComment);
+        for c in "why 2?".chars() {
+            app.compose_key(KeyPress::new(Key::Char(c)));
+        }
+        // Detach with ctrl-o, then step the cursor down one so it sits on the
+        // line the box body covers: the cursor tint reads on the box's left and
+        // right border cells at that row rather than as a full-width line.
+        app.compose_key(KeyPress::with_modifiers(Key::Char('o'), true, false, false));
+        app.compose_key(KeyPress::new(Key::Char('j')));
+
+        let expected = concat!(
+            "Review [press c here to draft   ..............................\n",
+            "modified  src/lib.rs            ..............................\n",
+            "@@ -1,6 +1,6 @@                 ..............................\n",
+            "        1 + let v1 = 1;         ..............................\n",
+            "  ┌ new comment  src/lib.rs┐    ..............................\n",
+            "  │why 2?                  │    ###........................###\n",
+            "  └────────────────────────┘    ..............................\n",
+            "        5 + let v5 = 5;         ..............................\n",
+            "        6 + let v6 = 6;         ..............................\n",
+            "                                ..............................\n",
+            "                                ..............................\n",
+            "src/lib.rs         0 open  62%  ..............................\n",
+        );
+        k9::assert_equal!(screen_tinted(30, 12, &mut app), expected.to_string());
+    }
+
+    #[test]
+    fn the_detached_editor_names_the_detach_key_in_its_title() {
+        let mut app = App::reviewing(six_line_review(), 10, &Theme::dark());
+        // Settle the width, height, and initial cursor position before moving.
+        let mut terminal = Terminal::new(TestBackend::new(80, 10)).expect("test terminal");
+        draw(&mut terminal, &mut app).expect("draw");
+        app.update(Action::Top);
+        for _ in 0..4 {
+            app.update(Action::LineDown);
+        }
+        app.update(Action::AddComment);
+        for c in "why 2?".chars() {
+            app.compose_key(KeyPress::new(Key::Char(c)));
+        }
+        // ctrl-o floats the editor and hands the cursor to the diff, so the
+        // title names the detach key reading `edit`, sitting before the cancel
+        // key.
+        app.compose_key(KeyPress::with_modifiers(Key::Char('o'), true, false, false));
+
+        let expected = concat!(
+            "Review [press c here to draft the review comment]                               \n",
+            "modified  src/lib.rs                                                            \n",
+            "@@ -1,6 +1,6 @@                                                                 \n",
+            "        1 + let v1 = 1;                                                         \n",
+            "  ┌ new comment  src/lib.rs:2  ctrl-d submit  [ctrl-o edit]  esc cancel ─────┐  \n",
+            "  │why 2?                                                                    │  \n",
+            "  └──────────────────────────────────────────────────────────────────────────┘  \n",
+            "        5 + let v5 = 5;                                                         \n",
+            "        6 + let v6 = 6;                                                         \n",
+            "src/lib.rs                                                           0 open  50%\n",
+        );
+        k9::assert_equal!(screen(80, 10, app), expected.to_string());
     }
 
     #[test]

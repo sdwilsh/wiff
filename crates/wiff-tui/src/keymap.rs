@@ -171,6 +171,7 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
         // and esc stay free for the review view.
         (Action::SubmitComment, vec![chord("ctrl-d")]),
         (Action::CancelComment, vec![chord("esc")]),
+        (Action::DetachEditor, vec![chord("ctrl-o")]),
         (Action::Save, vec![chord("ctrl-s")]),
         (Action::SearchForward, vec![chord("/")]),
         (Action::SearchBackward, vec![chord("?")]),

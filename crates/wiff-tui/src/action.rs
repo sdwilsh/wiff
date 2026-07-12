@@ -64,6 +64,10 @@ pub enum Action {
     /// Abandon the comment being composed, closing the inline editor. Only acts
     /// while the editor is open, confirming first when the body has changed.
     CancelComment,
+    /// Detach the open editor from its anchor, floating it at a screen edge and
+    /// freeing the cursor to navigate the diff for something to reference. Only
+    /// acts while the editor is open.
+    DetachEditor,
     /// Commit the pending draft edits to the session log, keeping the review
     /// open.
     Save,
@@ -119,6 +123,7 @@ impl Action {
             Action::DeleteComment => "delete_comment",
             Action::SubmitComment => "submit_comment",
             Action::CancelComment => "cancel_comment",
+            Action::DetachEditor => "detach_editor",
             Action::Save => "save",
             Action::SearchForward => "search_forward",
             Action::SearchBackward => "search_backward",

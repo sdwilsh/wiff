@@ -48,6 +48,11 @@ pub struct Config {
     /// Whether diff content wraps to the viewport width instead of being clipped
     /// at the edge. The `toggle_wrap` action flips it within a session.
     pub wrap_lines: bool,
+    /// Whether pressing an arrow past the top or bottom of the open comment
+    /// editor detaches it, floating it at a screen edge to free the cursor for
+    /// navigating the diff. When false, only the `detach_editor` binding
+    /// detaches.
+    pub nudge_to_detach: bool,
     /// The default author identity for annotations.
     pub author: AuthorDefaults,
     /// Per-language patterns recognising the enclosing-definition line shown on a
@@ -68,6 +73,7 @@ impl Default for Config {
             display_context: DEFAULT_DISPLAY_CONTEXT,
             editor: None,
             wrap_lines: true,
+            nudge_to_detach: true,
             author: AuthorDefaults::default(),
             section: BTreeMap::new(),
             disable_default_keymap: false,
