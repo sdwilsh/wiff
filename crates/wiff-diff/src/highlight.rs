@@ -251,6 +251,12 @@ impl Highlighter {
         }
     }
 
+    /// An incremental highlighter for `token`'s syntax, sharing this
+    /// highlighter's syntaxes and current theme.
+    pub fn live(&self, token: &str) -> LiveHighlighter {
+        LiveHighlighter::new(Arc::clone(&self.syntaxes), self.theme.clone(), token)
+    }
+
     /// Color a `parsed` side with the current theme, keyed by line number. This
     /// is the cheap part of highlighting: a theme change only replays the cached
     /// scope operations through the new theme. Each run restarts the scope state
@@ -330,6 +336,128 @@ fn convert_style(style: syntect::highlighting::Style) -> Style {
         bold: style.font_style.contains(FontStyle::BOLD),
         italic: style.font_style.contains(FontStyle::ITALIC),
         underline: style.font_style.contains(FontStyle::UNDERLINE),
+    }
+}
+
+/// The parse and highlight state at a line boundary, cached so an edit can
+/// resume coloring from an unchanged line instead of from the top of the
+/// buffer.
+#[derive(Clone, PartialEq)]
+struct LineState {
+    parse: ParseState,
+    highlight: HighlightState,
+}
+
+#[derive(Clone)]
+struct LiveLine {
+    text: String,
+    spans: HighlightedLine,
+}
+
+/// An incremental highlighter for a small, live-edited buffer such as a comment
+/// editor. Reparsing the whole buffer on every keystroke would dominate the
+/// cost of typing; caching each line's coloring keeps an edit's work
+/// proportional to what changed rather than the whole buffer.
+pub struct LiveHighlighter {
+    syntaxes: Arc<SyntaxSet>,
+    theme: Theme,
+    /// The line boundaries: `boundaries[i]` is the state entering line `i`, with
+    /// a terminal entry after the last line, so it is one longer than `lines`.
+    boundaries: Vec<LineState>,
+    lines: Vec<LiveLine>,
+}
+
+impl LiveHighlighter {
+    /// Build a highlighter for `token`'s syntax over `syntaxes` and `theme`,
+    /// with an empty buffer. An unknown token falls back to plain text.
+    fn new(syntaxes: Arc<SyntaxSet>, theme: Theme, token: &str) -> Self {
+        let syntax = syntaxes
+            .find_syntax_by_token(token)
+            .unwrap_or_else(|| syntaxes.find_syntax_plain_text());
+        let theme_highlighter = ThemeHighlighter::new(&theme);
+        let initial = LineState {
+            parse: ParseState::new(syntax),
+            highlight: HighlightState::new(&theme_highlighter, ScopeStack::new()),
+        };
+        Self {
+            syntaxes,
+            theme,
+            boundaries: vec![initial],
+            lines: Vec::new(),
+        }
+    }
+
+    /// Recolor the buffer to `lines`.
+    pub fn update(&mut self, lines: &[String]) {
+        let theme_highlighter = ThemeHighlighter::new(&self.theme);
+        let mut first = 0;
+        while first < self.lines.len()
+            && first < lines.len()
+            && self.lines[first].text == lines[first]
+        {
+            first += 1;
+        }
+        // A cursor-only move leaves every line unchanged; nothing to recolor.
+        if first == self.lines.len() && first == lines.len() {
+            return;
+        }
+        let mut state = self.boundaries[first].clone();
+        // Reused across lines to hold the current line plus the trailing newline
+        // syntect expects, avoiding a fresh allocation per line per keystroke.
+        let mut text = String::new();
+        let mut new_lines = self.lines[..first].to_vec();
+        let mut new_boundaries = self.boundaries[..=first].to_vec();
+        let mut i = first;
+        while i < lines.len() {
+            // Past the first change, an unchanged line reached with the same
+            // entering state reproduces the cached tail, boundaries and all.
+            // This convergence check leans on syntect's `PartialEq` for the
+            // parse and highlight state reflecting only what affects coloring;
+            // were it to compare transient internal fields, convergence would be
+            // missed and the tail recolored needlessly, still correct but
+            // slower.
+            if i < self.lines.len() && lines[i] == self.lines[i].text && state == self.boundaries[i]
+            {
+                new_lines.extend_from_slice(&self.lines[i..]);
+                new_boundaries.extend_from_slice(&self.boundaries[i + 1..]);
+                self.lines = new_lines;
+                self.boundaries = new_boundaries;
+                return;
+            }
+            // syntect's newline-aware syntaxes expect a trailing newline to
+            // close line-scoped constructs; coloring trims it back off.
+            text.clear();
+            text.push_str(&lines[i]);
+            text.push('\n');
+            let ops = state
+                .parse
+                .parse_line(&text, &self.syntaxes)
+                .unwrap_or_default();
+            let spans =
+                HighlightIterator::new(&mut state.highlight, &ops, &text, &theme_highlighter)
+                    .map(|(style, piece)| StyledSpan {
+                        text: piece.trim_end_matches('\n').to_string(),
+                        style: convert_style(style),
+                    })
+                    .filter(|span| !span.text.is_empty())
+                    .collect();
+            new_lines.push(LiveLine {
+                text: lines[i].clone(),
+                spans,
+            });
+            new_boundaries.push(state.clone());
+            i += 1;
+        }
+        self.lines = new_lines;
+        self.boundaries = new_boundaries;
+    }
+
+    /// Returns the colored spans of line `index`, or an empty slice when out of
+    /// range.
+    pub fn line_spans(&self, index: usize) -> &[StyledSpan] {
+        self.lines
+            .get(index)
+            .map_or(&[], |line| line.spans.as_slice())
     }
 }
 
@@ -551,5 +679,91 @@ mod tests {
             highlighter.color_side(&parsed),
             fresh.highlight_side(&file, Side::After)
         );
+    }
+
+    /// Every line's colored spans, for asserting a live buffer in full.
+    fn live_spans(live: &super::LiveHighlighter, count: usize) -> Vec<HighlightedLine> {
+        (0..count).map(|i| live.line_spans(i).to_vec()).collect()
+    }
+
+    #[test]
+    fn a_live_highlighter_colors_markdown_source() {
+        let highlighter = Highlighter::with_theme(TEST_THEME).unwrap();
+        let mut live = highlighter.live("markdown");
+        live.update(&["# Title".to_string(), "plain text".to_string()]);
+
+        // A heading takes the theme's heading color while ordinary prose stays
+        // the default foreground, proving the markdown syntax resolved.
+        k9::assert_equal!(
+            live_spans(&live, 2),
+            vec![
+                vec![
+                    span("#", "#8fa1b3"),
+                    span(" ", "#c0c5ce"),
+                    span("Title", "#8fa1b3"),
+                ],
+                vec![span("plain text", "#c0c5ce")],
+            ]
+        );
+    }
+
+    #[test]
+    fn a_live_edit_matches_a_fresh_highlight_of_the_final_buffer() {
+        // Correctness of the incremental path: typing a buffer up line by line,
+        // then editing an early line, must leave every line colored exactly as
+        // highlighting the final buffer in one pass would. A fenced code block
+        // spans lines, so an early edit must recolor the lines below it.
+        let highlighter = Highlighter::with_theme(TEST_THEME).unwrap();
+        let mut typed = highlighter.live("markdown");
+        typed.update(&["# Note".to_string()]);
+        typed.update(&["# Note".to_string(), "```rust".to_string()]);
+        typed.update(&[
+            "# Note".to_string(),
+            "```rust".to_string(),
+            "let x = 1;".to_string(),
+        ]);
+        // Edit the first line: the fenced block below it must stay colored.
+        typed.update(&[
+            "# Heading".to_string(),
+            "```rust".to_string(),
+            "let x = 1;".to_string(),
+        ]);
+
+        let final_buffer = [
+            "# Heading".to_string(),
+            "```rust".to_string(),
+            "let x = 1;".to_string(),
+        ];
+        let mut fresh = highlighter.live("markdown");
+        fresh.update(&final_buffer);
+
+        k9::assert_equal!(live_spans(&typed, 3), live_spans(&fresh, 3));
+    }
+
+    #[test]
+    fn a_live_shrink_matches_a_fresh_highlight_of_the_shorter_buffer() {
+        // Deleting trailing lines drives the tail-trimming branch and must keep
+        // the boundaries one longer than the lines. After typing three lines and
+        // shrinking back to one, the remaining line stays colored as a fresh
+        // one-pass highlight of the one-line buffer, and coloring can still
+        // continue correctly when the buffer grows again.
+        let highlighter = Highlighter::with_theme(TEST_THEME).unwrap();
+        let mut typed = highlighter.live("markdown");
+        typed.update(&[
+            "# Note".to_string(),
+            "first".to_string(),
+            "second".to_string(),
+        ]);
+        typed.update(&["# Note".to_string()]);
+
+        let mut fresh = highlighter.live("markdown");
+        fresh.update(&["# Note".to_string()]);
+        k9::assert_equal!(live_spans(&typed, 1), live_spans(&fresh, 1));
+
+        // Grow again and the appended line colors as a fresh two-line highlight.
+        typed.update(&["# Note".to_string(), "tail".to_string()]);
+        let mut grown = highlighter.live("markdown");
+        grown.update(&["# Note".to_string(), "tail".to_string()]);
+        k9::assert_equal!(live_spans(&typed, 2), live_spans(&grown, 2));
     }
 }

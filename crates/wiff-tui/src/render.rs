@@ -23,7 +23,8 @@ use wiff_core::record::{Author, CommentTarget, Confidence};
 use wiff_core::review::CommentState;
 use wiff_diff::{
     Diff, DiffLine, FileDiff, FileStatus, HighlightError, HighlightedLine, Highlighter, LineKind,
-    LineNo, ParsedSide, Parser, Rgb, Section, SectionMatchers, Side, StyledSpan, intraline,
+    LineNo, LiveHighlighter, ParsedSide, Parser, Rgb, Section, SectionMatchers, Side, StyledSpan,
+    intraline,
 };
 
 use crate::action::Action;
@@ -394,6 +395,12 @@ impl DiffView {
     /// off the main thread while the view stays put to color the results.
     pub fn parser(&self) -> Parser {
         self.highlighter.parser()
+    }
+
+    /// An incremental highlighter for `token`'s syntax under this view's current
+    /// theme, for coloring the inline editor as it is typed.
+    pub fn live_highlighter(&self, token: &str) -> LiveHighlighter {
+        self.highlighter.live(token)
     }
 
     /// Render `diff` with `comments` woven in: a review summary row at the top,

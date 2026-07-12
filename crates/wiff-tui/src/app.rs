@@ -24,7 +24,7 @@ use ratatui::widgets::Block;
 use ulid::Ulid;
 use wiff_core::LineOrigin;
 use wiff_core::record::{CommentTarget, RecordBody};
-use wiff_diff::{Diff, LineNo, Rgb, Side};
+use wiff_diff::{Diff, LineNo, LiveHighlighter, Rgb, Side};
 
 use crate::action::Action;
 use crate::compose::{Compose, ComposeKind, Scroll};
@@ -59,8 +59,7 @@ pub struct ComposeView {
     /// The cursor's (column, row) within `editor_rows`, for placing the terminal
     /// cursor inside the box; `None` when the cursor has scrolled out of view.
     pub editor_cursor: Option<(u16, u16)>,
-    /// Where the shown rows sit within the whole body, for drawing a scrollbar;
-    /// `None` when the body fits the box.
+    /// Present when the body overflows the box; `None` when it fits.
     pub editor_scroll: Option<Scroll>,
     /// The document lines shown below the editor.
     pub below: Vec<Line<'static>>,
@@ -424,6 +423,16 @@ impl App {
         format!("{submit} submit  {cancel} cancel")
     }
 
+    /// An incremental markdown highlighter for the inline editor, over the
+    /// review's current theme. Composing only starts with a review attached, so
+    /// its absence here is a bug.
+    fn editor_highlighter(&self) -> LiveHighlighter {
+        self.review
+            .as_ref()
+            .expect("composing requires an attached review")
+            .live_highlighter("markdown")
+    }
+
     /// Take the pending draft records to be committed to the session log,
     /// emptying the buffer. Empty when no review is attached.
     pub fn take_drafts(&mut self) -> Vec<RecordBody> {
@@ -597,6 +606,7 @@ impl App {
         }
         if let Some((target, anchor, label)) = self.add_target_at_cursor() {
             let hint = self.editor_hint();
+            let highlighter = self.editor_highlighter();
             self.compose = Some(Compose::new(
                 ComposeKind::Add(target),
                 anchor,
@@ -604,6 +614,7 @@ impl App {
                 label,
                 hint,
                 self.compose_border,
+                highlighter,
             ));
         }
         Update::Handled
@@ -627,6 +638,7 @@ impl App {
                 .and_then(|review| review.comment_body(id))
                 .unwrap_or_default();
             let hint = self.editor_hint();
+            let highlighter = self.editor_highlighter();
             self.compose = Some(Compose::new(
                 ComposeKind::Edit(id),
                 anchor,
@@ -634,6 +646,7 @@ impl App {
                 "edit comment".to_string(),
                 hint,
                 self.compose_border,
+                highlighter,
             ));
         }
         Update::Handled
@@ -2836,7 +2849,7 @@ mod tests {
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,1 +1,1 @@
 --editor cursor 4,0--
-<-|-|->why?
+<#c0c5ce|-|->why?
 --below--
 <#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> total = alpha plus beta<-|#414a4a|-> 
 <#9ea1a9|#414a4a|->            <#c0c5ce|#414a4a|->plus gamma;<-|#414a4a|->                 
@@ -3671,7 +3684,7 @@ mod tests {
 <#96b5b4|-|->@@ -1,2 +1,2 @@
 <#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
 --editor cursor 6,0--
-<-|-|->why 2?
+<#c0c5ce|-|->why 2?
 --below--
 <#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
@@ -3694,7 +3707,7 @@ mod tests {
         // "lazy dog" on row 1).
         k9::assert_equal!(
             dump(&view.editor_rows),
-            "<-|-|->the quick brown fox jumps over the \n<-|-|->lazy dog\n".to_string()
+            "<#c0c5ce|-|->the quick brown fox jumps over the \n<#c0c5ce|-|->lazy dog\n".to_string()
         );
         k9::assert_equal!(view.editor_cursor, Some((8, 1)));
     }
@@ -3715,7 +3728,7 @@ mod tests {
         let view = app.compose_view(TEST_WIDTH).expect("composing");
         k9::assert_equal!(
             dump(&view.editor_rows),
-            "<-|-|->the quick brown fox jumps over the \n<-|-|->lazy dog\n".to_string()
+            "<#c0c5ce|-|->the quick brown fox jumps over the \n<#c0c5ce|-|->lazy dog\n".to_string()
         );
         k9::assert_equal!(view.editor_cursor, Some((8, 0)));
     }
@@ -3741,7 +3754,8 @@ mod tests {
         let view = app.compose_view(TEST_WIDTH).expect("composing");
         k9::assert_equal!(
             dump(&view.editor_rows),
-            "<-|-|->line 5\n<-|-|->line 6\n<-|-|->line 7\n<-|-|->line 8\n".to_string()
+            "<#c0c5ce|-|->line 5\n<#c0c5ce|-|->line 6\n<#c0c5ce|-|->line 7\n<#c0c5ce|-|->line 8\n"
+                .to_string()
         );
         k9::assert_equal!(view.editor_cursor, Some((6, 3)));
         k9::assert_equal!(
@@ -3840,7 +3854,7 @@ mod tests {
         // past its end, on column 8 of the second row.
         k9::assert_equal!(
             dump(&view.editor_rows),
-            "<-|-|->why 2?\n<-|-|->say more\n".to_string()
+            "<#c0c5ce|-|->why 2?\n<#c0c5ce|-|->say more\n".to_string()
         );
         k9::assert_equal!(view.editor_cursor, Some((8, 1)));
         drop(view);
@@ -3884,8 +3898,8 @@ mod tests {
 <#767b84|-|->└──────────────────────────────────────┘
 <#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
 --editor cursor 8,1--
-<-|-|->why 2?
-<-|-|->say more
+<#c0c5ce|-|->why 2?
+<#c0c5ce|-|->say more
 --below--
 <#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
@@ -3911,7 +3925,7 @@ mod tests {
 <#a3be8c|-|->│<#c0c5ce|-|->first<-|-|->                                 <#a3be8c|-|->│
 <#a3be8c|-|->└──────────────────────────────────────┘
 --editor cursor 6,0--
-<-|-|->second
+<#c0c5ce|-|->second
 --below--
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@

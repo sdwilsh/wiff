@@ -15,7 +15,7 @@ use wiff_core::LineOrigin;
 use wiff_core::draft::{DraftBuffer, draft_record};
 use wiff_core::record::{Author, CommentTarget, RecordBody};
 use wiff_core::review::CommentState;
-use wiff_diff::{Diff, Side};
+use wiff_diff::{Diff, LiveHighlighter, Side};
 
 use crate::highlight::BackgroundHighlighter;
 use crate::render::{
@@ -214,6 +214,12 @@ impl Review {
         self.highlighter
             .as_mut()
             .is_some_and(|highlighter| highlighter.wait(timeout))
+    }
+
+    /// An incremental highlighter for `token`'s syntax under the review's
+    /// current theme, for coloring the inline editor as it is typed.
+    pub fn live_highlighter(&self, token: &str) -> LiveHighlighter {
+        self.view.live_highlighter(token)
     }
 
     /// Render the effective review -- the committed comments with the pending

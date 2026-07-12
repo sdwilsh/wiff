@@ -14,37 +14,35 @@
 //! follows the wrapped shape, and an input method's candidate window tracks the
 //! real edit point.
 
-use ratatui::style::Style;
-use ratatui::text::Line;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders};
 use tui_textarea::{CursorMove, Input, Key as EditorKey, TextArea};
 use ulid::Ulid;
 use wiff_core::record::CommentTarget;
-use wiff_diff::Rgb;
+use wiff_diff::{LiveHighlighter, Rgb};
 
-use crate::editor_wrap::{CursorBias, WrapMap};
+use crate::editor_wrap::{CursorBias, VisualRow, WrapMap};
 use crate::key::{Key, KeyPress};
 use crate::render::color;
 
 /// What the caller needs to draw one frame of the editor box: the rows to paint
-/// inside it, where to put the terminal cursor, and whether to show a scrollbar.
+/// inside it, where to put the terminal cursor, and the scroll state.
 pub struct EditorView {
     /// The rows drawn inside the editor box.
     pub rows: Vec<Line<'static>>,
     /// The cursor's (column, row) within `rows`, or `None` when it has scrolled
     /// out of view.
     pub cursor: Option<(u16, u16)>,
-    /// Where the shown rows sit within the whole body, present only when the
-    /// body is taller than the box so a scrollbar is warranted.
+    /// Present only when the body is taller than the box.
     pub scroll: Option<Scroll>,
 }
 
-/// How far a body taller than the editor box is scrolled, for drawing a
-/// scrollbar.
+/// How far a body taller than the editor box is scrolled.
 pub struct Scroll {
-    /// The offset of the first shown row within the whole body.
+    /// Index of the first visible row.
     pub offset: usize,
-    /// The body's total wrapped row count.
+    /// Total wrapped row count.
     pub total: usize,
 }
 
@@ -78,6 +76,8 @@ pub struct Compose {
     /// The column a vertical move aims to keep, remembered across successive
     /// up/down presses; cleared by any edit or horizontal move.
     goal_col: Option<usize>,
+    /// Incremental markdown highlighter for the body.
+    highlighter: LiveHighlighter,
 }
 
 impl Compose {
@@ -91,12 +91,14 @@ impl Compose {
         label: String,
         hint: String,
         border: Rgb,
+        mut highlighter: LiveHighlighter,
     ) -> Self {
         let lines: Vec<String> = if seed.is_empty() {
             vec![String::new()]
         } else {
             seed.split('\n').map(str::to_string).collect()
         };
+        highlighter.update(&lines);
         let mut textarea = TextArea::new(lines);
         // The editor otherwise underlines the whole line the cursor is on, which
         // reads as emphasis on the text rather than a cursor.
@@ -115,6 +117,7 @@ impl Compose {
             confirming: false,
             bias: CursorBias::Forward,
             goal_col: None,
+            highlighter,
         }
     }
 
@@ -129,6 +132,7 @@ impl Compose {
             Key::End if plain(&press) => self.move_end(width),
             _ => {
                 self.textarea.input(to_input(press));
+                self.highlighter.update(self.textarea.lines());
                 // An edit or horizontal move abandons the remembered goal column
                 // and reads a wrap boundary as the start of the following row.
                 self.goal_col = None;
@@ -235,7 +239,7 @@ impl Compose {
         let offset = scroll_top(cvrow, window, total);
         let last = (offset + window).min(total);
         let rows = (offset..last)
-            .map(|vrow| Line::from(map.row(vrow).text.clone()))
+            .map(|vrow| self.styled_row(map.row(vrow)))
             .collect();
         let cursor = (offset..last).contains(&cvrow).then(|| {
             (
@@ -249,6 +253,27 @@ impl Compose {
             cursor,
             scroll,
         }
+    }
+
+    // Colors the chars visual row `row` covers with the cached markdown spans of
+    // its logical line.
+    fn styled_row(&self, row: &VisualRow) -> Line<'static> {
+        let mut out = Vec::new();
+        let mut col = 0usize;
+        for span in self.highlighter.line_spans(row.logical) {
+            let span_start = col;
+            col += span.text.chars().count();
+            let lo = row.start_char.max(span_start);
+            let hi = row.end_char.min(col);
+            if lo < hi {
+                let text = char_slice(&span.text, lo - span_start, hi - span_start);
+                out.push(Span::styled(text.to_string(), style_of(&span.style)));
+            }
+            if col >= row.end_char {
+                break;
+            }
+        }
+        Line::from(out)
     }
 
     /// The current body text, trailing blank lines trimmed.
@@ -307,6 +332,26 @@ fn scroll_top(cursor: usize, window: usize, total: usize) -> usize {
 /// than being reserved for a modified binding.
 fn plain(press: &KeyPress) -> bool {
     !press.ctrl && !press.alt && !press.shift
+}
+
+/// Substring of `s` spanning char indices `start..end`.
+fn char_slice(s: &str, start: usize, end: usize) -> &str {
+    let byte = |char_index: usize| s.char_indices().nth(char_index).map_or(s.len(), |(i, _)| i);
+    &s[byte(start)..byte(end)]
+}
+
+fn style_of(style: &wiff_diff::Style) -> Style {
+    let mut out = Style::default().fg(color(style.fg));
+    if style.bold {
+        out = out.add_modifier(Modifier::BOLD);
+    }
+    if style.italic {
+        out = out.add_modifier(Modifier::ITALIC);
+    }
+    if style.underline {
+        out = out.add_modifier(Modifier::UNDERLINED);
+    }
+    out
 }
 
 /// Translate a binding [`KeyPress`] into the editor's own input type, so the
