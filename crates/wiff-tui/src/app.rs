@@ -605,10 +605,23 @@ impl App {
             .as_ref()
             .expect("review present")
             .document(self.layout());
+        self.adopt_document(document);
+        self.restore_spot(spot);
+    }
+
+    /// Swap in a freshly rendered `document`, keeping each fold's collapse state
+    /// while the fold structure lines up and resetting it to collapsed when the
+    /// fold count has moved. A comment inside a long unchanged run splits the
+    /// fold around it, so the count can change even when the diff has not.
+    /// Comment collapse state is reconciled by identity. The caller places the
+    /// cursor afterward.
+    fn adopt_document(&mut self, document: Document) {
+        if document.folds.len() != self.collapsed.len() {
+            self.collapsed = vec![true; document.folds.len()];
+        }
         self.reconcile_comment_collapse(&document);
         self.document = document;
         self.rebuild_view();
-        self.restore_spot(spot);
     }
 
     /// Toggle whether diff content wraps to the viewport width or is clipped at
@@ -1571,17 +1584,10 @@ impl App {
         self.reload_document(document);
     }
 
-    /// Swap in a freshly rendered `document`, carrying the collapse state over.
-    /// A comment edit leaves the diff unchanged, so the fold structure matches
-    /// and its collapse state survives; each surviving comment keeps its
-    /// collapse state and a new one takes its rendered default.
+    /// Swap in a freshly rendered `document`, keeping the collapse state, and
+    /// clamp the cursor into the rebuilt view.
     fn reload_document(&mut self, document: Document) {
-        if document.folds.len() != self.collapsed.len() {
-            self.collapsed = vec![true; document.folds.len()];
-        }
-        self.reconcile_comment_collapse(&document);
-        self.document = document;
-        self.rebuild_view();
+        self.adopt_document(document);
         self.cursor = self.cursor.min(self.last_view());
         self.scroll_into_view();
     }
@@ -1677,13 +1683,11 @@ impl App {
             .collect();
     }
 
-    /// Replace the review's committed comments with `comments`, the freshly
-    /// folded live set persisted from the drafts, and re-render in place. The
-    /// diff is unchanged, so folds keep their state; only comment collapse
-    /// state is reconciled by identity, and the cursor returns to its spot.
-    /// Reports how the reloaded set differs from what was shown, so the host can
-    /// tell the reviewer what another actor changed. Passes through silently
-    /// when no review is attached.
+    /// Replace the review's committed comments with `comments`, the set the host
+    /// returns after persisting the drafts, and re-render in place. The cursor
+    /// returns to its spot. Reports how the reloaded set differs from what was
+    /// shown, so the host can tell the reviewer what another actor changed.
+    /// Passes through silently when no review is attached.
     pub fn reload_comments(
         &mut self,
         comments: Vec<wiff_core::review::CommentState>,
@@ -1698,9 +1702,7 @@ impl App {
             let sync = review.set_committed(comments);
             (sync, review.document(layout))
         };
-        self.reconcile_comment_collapse(&document);
-        self.document = document;
-        self.rebuild_view();
+        self.adopt_document(document);
         self.restore_spot(spot);
         sync
     }
@@ -5278,5 +5280,82 @@ modified  f.txt
 
         k9::assert_equal!(app.cursor(), before_cursor);
         k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), before);
+    }
+
+    #[test]
+    fn reloading_comments_that_split_a_fold_grows_the_collapse_state() {
+        // Another actor's comment inside a long unchanged run splits the fold
+        // around it, so the reloaded document has more folds than the one first
+        // rendered. The reload must grow the collapse state to match rather than
+        // index past its end when rebuilding the view.
+        let mut lines: Vec<(LineKind, String, u32)> = (1..=20)
+            .map(|n| (LineKind::Context, format!("ctx{n:02}"), n))
+            .collect();
+        lines.push((LineKind::Added, "change!".to_string(), 21));
+        let borrowed: Vec<(LineKind, &str, u32)> =
+            lines.iter().map(|(k, t, n)| (*k, t.as_str(), *n)).collect();
+        let diff = Diff {
+            files: vec![file("notes.txt", FileStatus::Modified, &borrowed)],
+        };
+        let review = Review::new(
+            DiffView::new(Theme::dark()).unwrap(),
+            diff,
+            Author {
+                name: "wez".to_string(),
+                kind: AuthorKind::Human,
+            },
+            0,
+            Vec::new(),
+        );
+        const BEFORE: &str = "\
+Review [press c here to draft the review comment]
+modified  notes.txt
+@@ -1,21 +1,21 @@
+            [17 unchanged lines]  ctx17
+  18   18   ctx18
+  19   19   ctx19
+  20   20   ctx20
+       21 + change!
+";
+        const AFTER: &str = "\
+Review [press c here to draft the review comment]
+modified  notes.txt
+@@ -1,21 +1,21 @@
+            [4 unchanged lines]  ctx04
+   5    5   ctx05
+   6    6   ctx06
+   7    7   ctx07
+┌ opus (agent)  press e to edit  r to resolve  d to delete  tab to expand/collapse ┐
+│why?                                  │
+└──────────────────────────────────────┘
+   8    8   ctx08
+   9    9   ctx09
+  10   10   ctx10
+  11   11   ctx11
+            [6 unchanged lines]  ctx17
+  18   18   ctx18
+  19   19   ctx19
+  20   20   ctx20
+       21 + change!
+";
+        // Opening with no comments, the one change buried at the end leaves a
+        // single leading fold over the whole unchanged run.
+        let mut app = App::reviewing(review, 24, &Theme::dark());
+        app.set_width(TEST_WIDTH);
+        k9::assert_equal!(plain(&app, TEST_WIDTH), BEFORE.to_string());
+
+        // A comment far enough into the run that its kept context does not reach
+        // the file top splits that one fold into a fold above and below it.
+        let comments = vec![line_comment(
+            1,
+            ("opus", AuthorKind::Agent),
+            "notes.txt",
+            8,
+            "why?",
+            false,
+        )];
+        app.reload_comments(comments);
+
+        k9::assert_equal!(plain(&app, TEST_WIDTH), AFTER.to_string());
     }
 }
