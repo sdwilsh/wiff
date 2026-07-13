@@ -202,12 +202,16 @@ pub enum RowKind {
         /// The hunk's index within the file.
         hunk: usize,
     },
-    /// A content line, anchorable to `(side, lineno)` on the diff.
+    /// A content line, anchorable to `(side, lineno)` on the diff. A row
+    /// addresses a Before-side line in its left column and an After-side line in
+    /// its right column. Unified fills only one column per row; side-by-side may
+    /// fill both, with the other column blank filler where the sides differ in
+    /// length.
     Content {
-        /// The side the line's number belongs to.
-        side: Side,
-        /// The line's number on that side, absent for a malformed line.
-        lineno: Option<LineNo>,
+        /// The Before-side line, drawn in the left column.
+        before: ColumnLine,
+        /// The After-side line, drawn in the right column.
+        after: ColumnLine,
     },
     /// The review summary row at the top of the document.
     ReviewSummary,
@@ -227,6 +231,55 @@ pub enum RowKind {
         /// The annotation the box belongs to.
         id: Ulid,
     },
+}
+
+/// One column's line on a content row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColumnLine {
+    /// Blank filler: this column has no line on this row.
+    Blank,
+    /// A line in this column: its number, or `None` for a malformed line.
+    Line(Option<LineNo>),
+}
+
+impl RowKind {
+    /// Build a content row addressing a single line on `side`, leaving the
+    /// opposite column blank. Unified rows and the filler side of a side-by-side
+    /// row are built this way.
+    pub fn content(side: Side, lineno: Option<LineNo>) -> Self {
+        match side {
+            Side::Before => RowKind::Content {
+                before: ColumnLine::Line(lineno),
+                after: ColumnLine::Blank,
+            },
+            Side::After => RowKind::Content {
+                before: ColumnLine::Blank,
+                after: ColumnLine::Line(lineno),
+            },
+        }
+    }
+
+    /// The `(side, lineno)` a content row is addressed by, applying the
+    /// comment-side rule: the After column when it holds a numbered line, else
+    /// the Before column. `None` for a non-content row or one whose addressed
+    /// column holds no number.
+    pub fn content_addr(&self) -> Option<(Side, LineNo)> {
+        let RowKind::Content { before, after } = self else {
+            return None;
+        };
+        if let ColumnLine::Line(Some(n)) = after {
+            return Some((Side::After, *n));
+        }
+        if let ColumnLine::Line(Some(n)) = before {
+            return Some((Side::Before, *n));
+        }
+        None
+    }
+
+    /// Whether this is a content row, numbered or malformed, in either column.
+    pub fn is_content(&self) -> bool {
+        matches!(self, RowKind::Content { .. })
+    }
 }
 
 impl Document {
@@ -723,7 +776,7 @@ impl DiffView {
                 for (rendered, text) in rows {
                     doc.push(
                         index,
-                        RowKind::Content { side, lineno },
+                        RowKind::content(side, lineno),
                         fill,
                         text,
                         rendered,

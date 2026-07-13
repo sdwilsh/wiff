@@ -23,8 +23,6 @@ deferred past v0 so the v0 architecture leaves room for them.
 
 ## Non-goals for v0
 
-- Side-by-side diff view (unified only in v0; the view is designed to be
-  selectable later).
 - Suggested code-change blocks (plain-text comments only in v0).
 - Auto-reloading a new diff capture from another process while the TUI is open
   (a new diff version still needs a manual refresh in v0; another actor's
@@ -384,9 +382,9 @@ which cannot be recaptured once the TUI owns the terminal.
   contrast it had on the plain background when the new background would dim it.
   A glyph the theme keeps dim on purpose, such as a comment, stays dim: the
   target never exceeds the contrast it had on the plain background.
-- The view type (unified now; side-by-side later) and options like
-  ignore-whitespace are designed to be user-selectable, though only unified
-  ships in v0.
+- The view type (unified or side-by-side, chosen by the `diff_mode` config or
+  switched live) and options like ignore-whitespace are user-selectable. See
+  side-by-side.md for the two-column layout.
 - Diff content lines soft-wrap to the viewport width by default. The
   `toggle_wrap` action, and the `wrap_lines` config default it starts from,
   switch to clipping them at the edge instead. Wrapping reuses the same
@@ -609,7 +607,7 @@ A cargo workspace under `crates/`:
   commentary).
 - Suggested code-change blocks in comments.
 - Markdown rendering of comment bodies in the TUI (plain wrapped text in v0).
-- Side-by-side view; ignore-whitespace and other diff options.
+- Ignore-whitespace and other diff options.
 - `--watch` live reload of a new diff capture from another process.
 - Opening files in an editor (`open_in_editor`): the action and its default
   binding exist, but materialization and editor launch, single-file then

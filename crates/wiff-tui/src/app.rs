@@ -838,13 +838,8 @@ impl App {
         let ViewRow::Row(row) = *self.view.get(index)? else {
             return None;
         };
-        match self.document.rows[row].kind {
-            RowKind::Content {
-                side,
-                lineno: Some(lineno),
-            } => Some((self.document.rows[row].file, side, lineno)),
-            _ => None,
-        }
+        let (side, lineno) = self.document.rows[row].kind.content_addr()?;
+        Some((self.document.rows[row].file, side, lineno))
     }
 
     /// The first view row showing content line `(file, side, lineno)`, or `None`
@@ -1037,11 +1032,8 @@ impl App {
                 let anchor = self.skip_comment_rows(self.cursor + 1);
                 Some((CommentTarget::File { file: path }, anchor, label))
             }
-            RowKind::Content {
-                side,
-                lineno: Some(lineno),
-            } => {
-                let (side, lineno) = (*side, *lineno);
+            RowKind::Content { .. } => {
+                let (side, lineno) = self.kind_at(self.cursor)?.content_addr()?;
                 let path = self.document.files.get(self.cursor_file()?)?.clone();
                 let label = format!("new comment  {path}:{}", lineno.get());
                 let target = CommentTarget::Lines {
@@ -1065,23 +1057,18 @@ impl App {
     /// which share its side and line number. Returns `index` unchanged for a row
     /// that is not a content line.
     fn content_line_top(&self, index: usize) -> usize {
-        let Some(RowKind::Content {
-            side,
-            lineno: Some(lineno),
-        }) = self.kind_at(index)
-        else {
+        let Some(kind) = self.kind_at(index) else {
             return index;
         };
-        let (side, lineno) = (*side, *lineno);
+        if kind.content_addr().is_none() {
+            return index;
+        }
+        // A soft-wrapped line's continuation rows share its full row identity
+        // (both columns), so walk back over rows with the same kind.
+        let kind = kind.clone();
         let mut top = index;
-        while top > 0 {
-            match self.kind_at(top - 1) {
-                Some(RowKind::Content {
-                    side: prev_side,
-                    lineno: Some(prev_lineno),
-                }) if *prev_side == side && *prev_lineno == lineno => top -= 1,
-                _ => break,
-            }
+        while top > 0 && self.kind_at(top - 1) == Some(&kind) {
+            top -= 1;
         }
         top
     }
@@ -2253,10 +2240,10 @@ impl App {
     fn cursor_spot(&self) -> Option<CursorSpot> {
         let file = self.document.files.get(self.cursor_file()?)?.clone();
         let place = match self.kind_at(self.cursor) {
-            Some(RowKind::Content {
-                side,
-                lineno: Some(lineno),
-            }) => SpotPlace::Line(*side, *lineno),
+            Some(kind) if kind.content_addr().is_some() => {
+                let (side, lineno) = kind.content_addr()?;
+                SpotPlace::Line(side, lineno)
+            }
             Some(
                 RowKind::CommentHeader { id }
                 | RowKind::CommentBody { id }
@@ -2304,11 +2291,7 @@ impl App {
                 if meta.file != file {
                     continue;
                 }
-                let RowKind::Content {
-                    side: row_side,
-                    lineno: Some(lineno),
-                } = meta.kind
-                else {
+                let Some((row_side, lineno)) = meta.kind.content_addr() else {
                     continue;
                 };
                 if row_side != side {
@@ -2563,11 +2546,7 @@ impl App {
     /// or `None` when no rendered line matches.
     fn first_content_row(&self, file: &str, side: Side, lineno: u32) -> Option<usize> {
         self.document.rows.iter().position(|row| {
-            let RowKind::Content {
-                side: row_side,
-                lineno: Some(n),
-            } = row.kind
-            else {
+            let Some((row_side, n)) = row.kind.content_addr() else {
                 return false;
             };
             row_side == side
