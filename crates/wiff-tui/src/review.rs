@@ -559,14 +559,15 @@ mod tests {
         let mut deferred =
             super::Review::deferred(view(), diff.clone(), author.clone(), 0, Vec::new());
         let plain = dump(&deferred.document(layout).lines);
-        let expected_plain = "\
-<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,2 +1,2 @@
-<#7d828c|-|->   1    1   <#c0c5ce|-|->let x = 1;
-<#9ea1a9|#414a4a|->        2 + <#c0c5ce|#414a4a|->let y = 2;
-";
-        k9::assert_equal!(plain, expected_plain.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            plain,
+            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#7d828c|-|->   1    1   <#c0c5ce|-|->let x = 1;\n",
+            "<#9ea1a9|#414a4a|->        2 + <#c0c5ce|#414a4a|->let y = 2;\n",
+        );
 
         // Once every file's parse arrives, the deferred review colors in to the
         // exact same document an eager review produces up front.

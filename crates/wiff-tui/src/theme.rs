@@ -269,58 +269,62 @@ mod tests {
 
     #[test]
     fn the_dark_theme_takes_the_syntax_themes_own_colors_and_derives_the_rest() {
-        let expected = "\
-syntax_theme base16-ocean.dark
-background #2b303b
-gutter_fg #7d828c
-file_header_fg #c0c5ce
-hunk_header_fg #96b5b4
-added_bg #414a4a
-removed_bg #463943
-added_emphasis_bg #5b695b
-removed_emphasis_bg #66444e
-whitespace_bg #7c4b55
-cursor_bg #4f5b66
-search_match_bg #686255
-fold_fg #767b84
-status_fg #c0c5ce
-status_bg #3a3f4a
-review_fg #ebcb8b
-comment_fg #c0c5ce
-comment_author_fg #8fa1b3
-comment_border_fg #767b84
-comment_flag_fg #767b84
-comment_warn_fg #d08770
-comment_draft_fg #a3be8c";
-        k9::assert_equal!(dump(&Theme::dark()), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&Theme::dark()),
+            "syntax_theme base16-ocean.dark\n",
+            "background #2b303b\n",
+            "gutter_fg #7d828c\n",
+            "file_header_fg #c0c5ce\n",
+            "hunk_header_fg #96b5b4\n",
+            "added_bg #414a4a\n",
+            "removed_bg #463943\n",
+            "added_emphasis_bg #5b695b\n",
+            "removed_emphasis_bg #66444e\n",
+            "whitespace_bg #7c4b55\n",
+            "cursor_bg #4f5b66\n",
+            "search_match_bg #686255\n",
+            "fold_fg #767b84\n",
+            "status_fg #c0c5ce\n",
+            "status_bg #3a3f4a\n",
+            "review_fg #ebcb8b\n",
+            "comment_fg #c0c5ce\n",
+            "comment_author_fg #8fa1b3\n",
+            "comment_border_fg #767b84\n",
+            "comment_flag_fg #767b84\n",
+            "comment_warn_fg #d08770\n",
+            "comment_draft_fg #a3be8c",
+        );
     }
 
     #[test]
     fn the_light_theme_derives_a_legible_palette_over_a_light_background() {
-        let expected = "\
-syntax_theme InspiredGitHub
-background #ffffff
-gutter_fg #8e8e8e
-file_header_fg #323232
-hunk_header_fg #627675
-added_bg #eef3ea
-removed_bg #f3e3e4
-added_emphasis_bg #dae5d1
-removed_emphasis_bg #e5c0c3
-whitespace_bg #dca8ad
-cursor_bg #f8eec7
-search_match_bg #f8eec7
-fold_fg #939393
-status_fg #323232
-status_bg #ebebeb
-review_fg #81704c
-comment_fg #323232
-comment_author_fg #64717d
-comment_border_fg #939393
-comment_flag_fg #939393
-comment_warn_fg #9c6554
-comment_draft_fg #6a7c5b";
-        k9::assert_equal!(dump(&Theme::light()), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&Theme::light()),
+            "syntax_theme InspiredGitHub\n",
+            "background #ffffff\n",
+            "gutter_fg #8e8e8e\n",
+            "file_header_fg #323232\n",
+            "hunk_header_fg #627675\n",
+            "added_bg #eef3ea\n",
+            "removed_bg #f3e3e4\n",
+            "added_emphasis_bg #dae5d1\n",
+            "removed_emphasis_bg #e5c0c3\n",
+            "whitespace_bg #dca8ad\n",
+            "cursor_bg #f8eec7\n",
+            "search_match_bg #f8eec7\n",
+            "fold_fg #939393\n",
+            "status_fg #323232\n",
+            "status_bg #ebebeb\n",
+            "review_fg #81704c\n",
+            "comment_fg #323232\n",
+            "comment_author_fg #64717d\n",
+            "comment_border_fg #939393\n",
+            "comment_flag_fg #939393\n",
+            "comment_warn_fg #9c6554\n",
+            "comment_draft_fg #6a7c5b",
+        );
     }
 
     #[test]
@@ -356,11 +360,13 @@ comment_draft_fg #6a7c5b";
             ),
         ]
         .join("\n");
-        let expected = "\
-comment on background #65737e
-comment on tint      #848f98
-text on background    #c0c5ce
-text on tint          #c0c5ce";
-        k9::assert_equal!(report, expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            report,
+            "comment on background #65737e\n",
+            "comment on tint      #848f98\n",
+            "text on background    #c0c5ce\n",
+            "text on tint          #c0c5ce",
+        );
     }
 }

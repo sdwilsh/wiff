@@ -915,7 +915,7 @@ mod tests {
     #[test]
     fn paragraph_with_inline_styles() {
         let out = show("A **bold** and *italic* and `code` and ~~gone~~.", 80);
-        k9::assert_equal!(
+        wince::snapshot_str!(
             out,
             "A <bold>bold and <italic>italic and <cyan>code and <strike>gone."
         );
@@ -924,46 +924,75 @@ mod tests {
     #[test]
     fn headings_by_level() {
         let out = show("# One\n\n## Two\n\n### Three", 80);
-        k9::assert_equal!(
+        #[rustfmt::skip]
+        wince::snapshot_str!(
             out,
-            "<yellow,bold,underline>One\n\n<yellow,bold>Two\n\n<yellow,bold>### Three"
+            "<yellow,bold,underline>One\n",
+            "\n",
+            "<yellow,bold>Two\n",
+            "\n",
+            "<yellow,bold>### Three",
         );
     }
 
     #[test]
     fn unordered_and_ordered_lists() {
         let out = show("- first\n- second\n\n1. one\n2. two", 80);
-        k9::assert_equal!(out, "- first\n- second\n\n1. one\n2. two");
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            out,
+            "- first\n",
+            "- second\n",
+            "\n",
+            "1. one\n",
+            "2. two",
+        );
     }
 
     #[test]
     fn bare_ordered_marker_still_renders() {
         // A whole reply of "8." parses as an ordered list with a single empty
         // item; it must show its marker rather than render as nothing.
-        k9::assert_equal!(show("8.", 80), "8. ");
+        wince::snapshot_str!(show("8.", 80), "8. ");
     }
 
     #[test]
     fn empty_item_between_filled_ones_keeps_its_marker() {
-        k9::assert_equal!(show("1. one\n2.\n3. three", 80), "1. one\n2. \n3. three");
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            show("1. one\n2.\n3. three", 80),
+            "1. one\n",
+            "2. \n",
+            "3. three",
+        );
     }
 
     #[test]
     fn nested_list_indents() {
         let out = show("- outer\n    - inner", 80);
-        k9::assert_equal!(out, "- outer\n  - inner");
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            out,
+            "- outer\n",
+            "  - inner",
+        );
     }
 
     #[test]
     fn task_list_markers() {
         let out = show("- [x] done\n- [ ] todo", 80);
-        k9::assert_equal!(out, "- [x] done\n- [ ] todo");
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            out,
+            "- [x] done\n",
+            "- [ ] todo",
+        );
     }
 
     #[test]
     fn blockquote_has_gutter_and_italic() {
         let out = show("> quoted text", 80);
-        k9::assert_equal!(out, "<gray>\u{258f} <gray,italic>quoted text");
+        wince::snapshot_str!(out, "<gray>▏ <gray,italic>quoted text");
     }
 
     #[test]
@@ -971,11 +1000,9 @@ mod tests {
         // The fence delimiter lines are dropped; the body is highlighted by its
         // info-string language.
         let out = show("```rust\nfn main() {}\n```", 80);
-        k9::assert_equal!(
+        wince::snapshot_str!(
             out,
-            "<Rgb(180, 142, 173)>fn<Rgb(192, 197, 206)> <Rgb(143, 161, 179)>main\
-             <Rgb(192, 197, 206)>(<Rgb(192, 197, 206)>)<Rgb(192, 197, 206)> \
-             <Rgb(192, 197, 206)>{<Rgb(192, 197, 206)>}"
+            "<Rgb(180, 142, 173)>fn<Rgb(192, 197, 206)> <Rgb(143, 161, 179)>main<Rgb(192, 197, 206)>(<Rgb(192, 197, 206)>)<Rgb(192, 197, 206)> <Rgb(192, 197, 206)>{<Rgb(192, 197, 206)>}"
         );
     }
 
@@ -984,13 +1011,13 @@ mod tests {
         // An info string that names no known syntax falls back to the flat code
         // color, still with no fence delimiter lines.
         let out = show("```nonesuch\nfn main() {}\n```", 80);
-        k9::assert_equal!(out, "<green>fn main() {}");
+        wince::snapshot_str!(out, "<green>fn main() {}");
     }
 
     #[test]
     fn link_appends_url_when_text_differs() {
         let out = show("see [docs](https://example.com)", 80);
-        k9::assert_equal!(
+        wince::snapshot_str!(
             out,
             "see <blue,underline>docs <dimgray>(https://example.com)"
         );
@@ -999,54 +1026,66 @@ mod tests {
     #[test]
     fn autolink_omits_redundant_url() {
         let out = show("<https://example.com>", 80);
-        k9::assert_equal!(out, "<blue,underline>https://example.com");
+        wince::snapshot_str!(out, "<blue,underline>https://example.com");
     }
 
     #[test]
     fn image_shows_alt_text_and_url() {
         let out = show("![alt text](img.png)", 80);
-        k9::assert_equal!(out, "alt text <dimgray>(img.png)");
+        wince::snapshot_str!(out, "alt text <dimgray>(img.png)");
     }
 
     #[test]
     fn thematic_break_is_a_rule() {
         let out = show("a\n\n---\n\nb", 10);
-        k9::assert_equal!(
+        #[rustfmt::skip]
+        wince::snapshot_str!(
             out,
-            "a\n\n<gray>\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n\nb"
+            "a\n",
+            "\n",
+            "<gray>──────────\n",
+            "\n",
+            "b",
         );
     }
 
     #[test]
     fn wraps_to_width() {
         let out = show("one two three four five", 12);
-        k9::assert_equal!(out, "one two\nthree four\nfive");
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            out,
+            "one two\n",
+            "three four\n",
+            "five",
+        );
     }
 
     #[test]
     fn a_zero_width_leaves_prose_unwrapped() {
         // Width zero means the target width is unknown, so nothing wraps.
         let out = show("one two three four five", 0);
-        k9::assert_equal!(out, "one two three four five");
+        wince::snapshot_str!(out, "one two three four five");
     }
 
     #[test]
     fn table_columns_align_with_box_borders() {
         let out = show("| a | b |\n| - | - |\n| 1 | 2 |", 80);
-        k9::assert_equal!(
+        #[rustfmt::skip]
+        wince::snapshot_str!(
             out,
-            "<gray>\u{250c}\u{2500}\u{2500}\u{2500}\u{252c}\u{2500}\u{2500}\u{2500}\u{2510}\n\
-             <gray>\u{2502} <bold>a <gray>\u{2502} <bold>b <gray>\u{2502}\n\
-             <gray>\u{251c}\u{2500}\u{2500}\u{2500}\u{253c}\u{2500}\u{2500}\u{2500}\u{2524}\n\
-             <gray>\u{2502} 1 <gray>\u{2502} 2 <gray>\u{2502}\n\
-             <gray>\u{2514}\u{2500}\u{2500}\u{2500}\u{2534}\u{2500}\u{2500}\u{2500}\u{2518}"
+            "<gray>┌───┬───┐\n",
+            "<gray>│ <bold>a <gray>│ <bold>b <gray>│\n",
+            "<gray>├───┼───┤\n",
+            "<gray>│ 1 <gray>│ 2 <gray>│\n",
+            "<gray>└───┴───┘",
         );
     }
 
     #[test]
     fn inline_html_is_shown_raw() {
         let out = show("before <br> after", 80);
-        k9::assert_equal!(out, "before <br> after");
+        wince::snapshot_str!(out, "before <br> after");
     }
 
     #[test]

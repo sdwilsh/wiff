@@ -266,16 +266,24 @@ mod tests {
     fn a_line_wraps_greedily_at_spaces() {
         let lines = vec!["hello world foo".to_string()];
         let map = WrapMap::build(&lines, 11);
-        k9::assert_equal!(rows(&map), "0: 0..6 \"hello \"\n0: 6..15 \"world foo\"");
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            rows(&map),
+            "0: 0..6 \"hello \"\n",
+            "0: 6..15 \"world foo\"",
+        );
     }
 
     #[test]
     fn an_over_long_word_hard_breaks_at_the_width() {
         let lines = vec!["abcdefghij".to_string()];
         let map = WrapMap::build(&lines, 4);
-        k9::assert_equal!(
+        #[rustfmt::skip]
+        wince::snapshot_str!(
             rows(&map),
-            "0: 0..4 \"abcd\"\n0: 4..8 \"efgh\"\n0: 8..10 \"ij\""
+            "0: 0..4 \"abcd\"\n",
+            "0: 4..8 \"efgh\"\n",
+            "0: 8..10 \"ij\"",
         );
     }
 
@@ -283,7 +291,12 @@ mod tests {
     fn empty_and_multiple_logical_lines_each_yield_rows() {
         let lines = vec!["".to_string(), "hi".to_string()];
         let map = WrapMap::build(&lines, 10);
-        k9::assert_equal!(rows(&map), "0: 0..0 \"\"\n1: 0..2 \"hi\"");
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            rows(&map),
+            "0: 0..0 \"\"\n",
+            "1: 0..2 \"hi\"",
+        );
     }
 
     #[test]
