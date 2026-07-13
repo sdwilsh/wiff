@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use ulid::Ulid;
 use wiff_core::LineOrigin;
-use wiff_core::draft::{DraftBuffer, draft_record};
+use wiff_core::draft::{DraftBuffer, EffectiveComment, draft_record};
 use wiff_core::record::{Author, CommentTarget, RecordBody};
 use wiff_core::review::CommentState;
 use wiff_diff::{Diff, LiveHighlighter, Side};
@@ -399,6 +399,13 @@ impl Review {
     /// warned before leaving that leaving without committing loses them.
     pub fn has_drafts(&self) -> bool {
         !self.drafts.is_empty()
+    }
+
+    /// The effective comments -- the committed comments with the buffered drafts
+    /// applied -- each flagged whether it has an uncommitted change, in the order
+    /// they were created.
+    pub fn comment_states(&self) -> Vec<EffectiveComment> {
+        self.drafts.apply(&self.committed)
     }
 
     /// How many effective comments are still open: neither resolved nor

@@ -23,7 +23,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Block;
 use ulid::Ulid;
 use wiff_core::LineOrigin;
-use wiff_core::record::{CommentTarget, RecordBody};
+use wiff_core::draft::EffectiveComment;
+use wiff_core::record::{CommentTarget, Confidence, RecordBody};
+use wiff_core::review::CommentState;
 use wiff_diff::{Diff, LineNo, LiveHighlighter, Rgb, Side};
 
 use crate::action::Action;
@@ -31,7 +33,7 @@ use crate::compose::{Compose, ComposeKind, Scroll};
 use crate::exit::{Exit, ExitDefault, ExitPlan, plan_exit};
 use crate::key::{Key, KeyPress};
 use crate::keymap::{Keymap, Resolution};
-use crate::picker::{Picker, PickerColors, PickerRow};
+use crate::picker::{Picker, PickerColors, PickerRow, RowSpan};
 use crate::render::{Document, RowKind, ViewLayout, color};
 use crate::review::{CommentSync, Review};
 use crate::search::{Direction, Matcher, Search, SearchInput};
@@ -244,16 +246,21 @@ impl PickerRow<App> for FileRow {
     }
 }
 
-/// A comment in the modal list: its one-line description and its stable
-/// identity, so choosing it jumps the cursor to that comment's header.
+/// A comment in the modal list: its status marker, location, author, and body
+/// start as styled fragments, and its stable identity, so choosing it jumps the
+/// cursor to that comment's header.
 struct CommentRow {
-    label: String,
+    spans: Vec<RowSpan>,
     id: Ulid,
 }
 
 impl PickerRow<App> for CommentRow {
     fn label(&self) -> String {
-        self.label.clone()
+        self.spans.iter().map(|span| span.text.as_str()).collect()
+    }
+
+    fn styled(&self) -> Option<Vec<RowSpan>> {
+        Some(self.spans.clone())
     }
 
     fn activate(self: Box<Self>, app: &mut App) {
@@ -264,6 +271,64 @@ impl PickerRow<App> for CommentRow {
             app.move_to(index);
         }
     }
+}
+
+/// The colors the comment picker paints its status markers with.
+#[derive(Clone, Copy)]
+struct CommentMarkerColors {
+    /// The `*` on a comment with an uncommitted change.
+    draft: Rgb,
+    /// The `check` on a resolved comment and the text of a withdrawn one.
+    muted: Rgb,
+    /// The `!` on a comment whose anchor drifted off its lines.
+    warn: Rgb,
+}
+
+/// The sort key grouping comments in the picker: draft first, then open,
+/// resolved, and withdrawn. A comment with an uncommitted change reads as a
+/// draft whatever else is true of it.
+fn comment_bucket(comment: &CommentState, pending: bool) -> u8 {
+    if pending {
+        0
+    } else if comment.deleted {
+        3
+    } else if comment.resolved {
+        2
+    } else {
+        1
+    }
+}
+
+/// Where a comment is attached, for the picker's location column: `file:line`
+/// or `file:start-end` for a line range, the bare path for a whole file, and
+/// `review` for a comment on the review overall.
+fn comment_location(target: &CommentTarget) -> String {
+    match target {
+        CommentTarget::Lines {
+            file,
+            start_line,
+            end_line,
+            ..
+        } => {
+            if start_line == end_line {
+                format!("{file}:{}", start_line.get())
+            } else {
+                format!("{file}:{}-{}", start_line.get(), end_line.get())
+            }
+        }
+        CommentTarget::File { file } => file.clone(),
+        CommentTarget::Review => "review".to_string(),
+    }
+}
+
+/// The first non-blank line of a comment body, trimmed, for the picker's
+/// preview column.
+fn comment_preview(body: &str) -> String {
+    body.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("")
+        .to_string()
 }
 
 /// A color theme in the modal list, named by its syntax theme, so choosing it
@@ -372,6 +437,8 @@ pub struct App {
     keymap: Keymap,
     /// The colors the modal list paints with.
     picker_colors: PickerColors,
+    /// The colors the comment picker paints its status markers with.
+    comment_marker_colors: CommentMarkerColors,
     /// A transient note shown in the status line until the next key press, used
     /// to report the tally of a refresh.
     message: Option<String>,
@@ -436,6 +503,11 @@ impl App {
                 selected_bg: theme.cursor_bg,
                 text: theme.comment_fg,
                 hint: theme.fold_fg,
+            },
+            comment_marker_colors: CommentMarkerColors {
+                draft: theme.comment_draft_fg,
+                muted: theme.comment_flag_fg,
+                warn: theme.comment_warn_fg,
             },
             message: None,
             search: None,
@@ -1230,20 +1302,81 @@ impl App {
     /// Open the modal list of the diff's comments, each jumping to that comment
     /// when chosen. Does nothing when the diff carries no comments.
     fn open_comment_picker(&mut self) {
-        let rows: Vec<Box<dyn PickerRow<App>>> = self
+        // Pair each comment placed in the document with its effective state --
+        // the committed comment with any buffered draft edit applied.
+        let states: HashMap<Ulid, EffectiveComment> = match self.review.as_ref() {
+            Some(review) => review
+                .comment_states()
+                .into_iter()
+                .map(|entry| (entry.comment.id, entry))
+                .collect(),
+            None => return,
+        };
+        let mut listed: Vec<(usize, EffectiveComment)> = self
             .document
             .comments
             .iter()
-            .map(|region| {
+            .enumerate()
+            .filter_map(|(position, region)| {
+                states
+                    .get(&region.id)
+                    .cloned()
+                    .map(|entry| (position, entry))
+            })
+            .collect();
+        if listed.is_empty() {
+            return;
+        }
+        // Group by status -- draft, then open, resolved, and withdrawn -- keeping
+        // each group in the order the comments appear in the document.
+        listed.sort_by_key(|(position, entry)| {
+            (comment_bucket(&entry.comment, entry.pending), *position)
+        });
+
+        let locations: Vec<String> = listed
+            .iter()
+            .map(|(_, entry)| comment_location(&entry.comment.target))
+            .collect();
+        let location_width = locations
+            .iter()
+            .map(|location| location.chars().count())
+            .max()
+            .unwrap_or(0);
+        let author_width = listed
+            .iter()
+            .map(|(_, entry)| entry.comment.author.name.chars().count())
+            .max()
+            .unwrap_or(0);
+
+        let rows: Vec<Box<dyn PickerRow<App>>> = listed
+            .iter()
+            .zip(&locations)
+            .map(|((_, entry), location)| {
+                let (marker, marker_color) = self.comment_marker(&entry.comment, entry.pending);
+                let author = entry.comment.author.name.as_str();
+                let preview = comment_preview(&entry.comment.body);
+                let body =
+                    format!("{location:<location_width$}  {author:<author_width$}  {preview}");
+                let withdrawn = entry.comment.deleted;
+                let spans = vec![
+                    RowSpan {
+                        text: marker.to_string(),
+                        color: marker_color,
+                        strikethrough: false,
+                    },
+                    RowSpan {
+                        text: body,
+                        color: withdrawn.then_some(self.comment_marker_colors.muted),
+                        strikethrough: withdrawn,
+                    },
+                ];
                 Box::new(CommentRow {
-                    label: self.comment_label(region),
-                    id: region.id,
+                    spans,
+                    id: entry.comment.id,
                 }) as Box<dyn PickerRow<App>>
             })
             .collect();
-        if rows.is_empty() {
-            return;
-        }
+
         let hint = self.picker_hint();
         self.picker = Some(Picker::new(
             "Jump to comment",
@@ -1253,28 +1386,25 @@ impl App {
         ));
     }
 
-    /// A one-line description of `region` for the comment picker: where the
-    /// comment sits, then the start of its body, so the reviewer can tell the
-    /// comments apart without their full text.
-    fn comment_label(&self, region: &crate::render::CommentRegion) -> String {
-        let location = self
-            .document
-            .rows
-            .get(region.header)
-            .and_then(|meta| self.document.files.get(meta.file))
-            .map(String::as_str)
-            .unwrap_or("review");
-        let preview = self
-            .document
-            .text
-            .get(region.body.start)
-            .map(String::as_str)
-            .unwrap_or("")
-            .trim();
-        if preview.is_empty() {
-            location.to_string()
+    /// The two-column status marker for a comment and the color it is painted:
+    /// `*` while it has an uncommitted change, a check once resolved, `!` when
+    /// its anchor has drifted off its lines, and blank otherwise. A withdrawn
+    /// comment shows no marker, reading as struck-through text instead.
+    fn comment_marker(&self, comment: &CommentState, pending: bool) -> (&'static str, Option<Rgb>) {
+        let colors = self.comment_marker_colors;
+        if pending {
+            ("* ", Some(colors.draft))
+        } else if comment.deleted {
+            ("  ", None)
+        } else if comment.resolved {
+            ("\u{2713} ", Some(colors.muted))
+        } else if matches!(
+            comment.confidence,
+            Some(Confidence::Approximate | Confidence::Outdated)
+        ) {
+            ("! ", Some(colors.warn))
         } else {
-            format!("{location}  {preview}")
+            ("  ", None)
         }
     }
 
@@ -1539,6 +1669,11 @@ impl App {
             selected_bg: theme.cursor_bg,
             text: theme.comment_fg,
             hint: theme.fold_fg,
+        };
+        self.comment_marker_colors = CommentMarkerColors {
+            draft: theme.comment_draft_fg,
+            muted: theme.comment_flag_fg,
+            warn: theme.comment_warn_fg,
         };
         if let Some(review) = self.review.as_ref() {
             let document = review.document(self.layout());
@@ -2729,7 +2864,7 @@ fn wash(mut line: Line<'static>, bg: Rgb, width: usize, reference: Rgb) -> Line<
 #[cfg(test)]
 mod tests {
     use ulid::Ulid;
-    use wiff_core::record::{Author, AuthorKind, CommentTarget, RecordBody};
+    use wiff_core::record::{Author, AuthorKind, CommentTarget, Confidence, RecordBody};
     use wiff_core::review::CommentState;
     use wiff_diff::{Diff, FileStatus, LineKind, Side};
 
@@ -3360,34 +3495,115 @@ mod tests {
     }
 
     #[test]
-    fn the_comment_picker_lists_every_comment_with_its_location_and_body_start() {
-        // Opening the picker over the commented diff lists both comments in
-        // document order, each labeled with its file and the start of its body,
-        // the first highlighted, then a spacer and the key hint.
-        let mut app = App::new(commented_document(), 8, &Theme::dark());
+    fn the_comment_picker_groups_comments_by_status_with_a_marker_location_and_author() {
+        // Opening the picker over the commented review groups the comments by
+        // status: the open one leads with a blank marker, then the resolved one
+        // marked with a check, each showing its location and author before the
+        // start of its body, then a spacer and the key hint.
+        let mut app = App::reviewing(commented_review(), 8, &Theme::dark());
         app.update(Action::PickComment);
         k9::assert_equal!(app.picking(), true);
-        let expected = "\
-<#c0c5ce|#4f5b66|->> src/lib.rs  ok                        
-<#c0c5ce|#2b303b|->  src/lib.rs  why 2? say more           
-<-|#2b303b|->                                        
-<#767b84|#2b303b|->  up/down move  enter select  esc cancel
-";
-        k9::assert_equal!(dump_picker(&mut app), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump_picker(&mut app),
+            "<#c0c5ce|#4f5b66|->> <#c0c5ce|#4f5b66|->  <#c0c5ce|#4f5b66|->src/lib.rs:2  wez   why 2?<#c0c5ce|#4f5b66|->          \n",
+            "<#c0c5ce|#2b303b|->  <#767b84|#2b303b|->\u{2713} <#c0c5ce|#2b303b|->src/lib.rs:1  opus  ok<#c0c5ce|#2b303b|->              \n",
+            "<-|#2b303b|->                                        \n",
+            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
+        );
+    }
+
+    #[test]
+    fn the_comment_picker_marks_each_status_and_strikes_through_a_withdrawn_comment() {
+        // A review whose four comments span the statuses: an open one, a
+        // resolved one, an open one whose anchor has drifted, and one withdrawn
+        // as an uncommitted draft. The picker groups them draft first, then the
+        // open pair in document order, then the resolved one, marking each with
+        // its status glyph and striking through the withdrawn one.
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[
+                    (LineKind::Added, "one", 1),
+                    (LineKind::Added, "two", 2),
+                    (LineKind::Added, "three", 3),
+                    (LineKind::Added, "four", 4),
+                ],
+            )],
+        };
+        let open = line_comment(
+            1,
+            ("wez", AuthorKind::Human),
+            "src/lib.rs",
+            1,
+            "open one",
+            false,
+        );
+        let resolved = line_comment(
+            2,
+            ("opus", AuthorKind::Agent),
+            "src/lib.rs",
+            2,
+            "resolved one",
+            true,
+        );
+        let mut shifted = line_comment(
+            3,
+            ("wez", AuthorKind::Human),
+            "src/lib.rs",
+            3,
+            "shifted one",
+            false,
+        );
+        shifted.confidence = Some(Confidence::Approximate);
+        let withdrawn = line_comment(
+            4,
+            ("wez", AuthorKind::Human),
+            "src/lib.rs",
+            4,
+            "withdrawn one",
+            false,
+        );
+        let mut review = Review::new(
+            DiffView::new(Theme::dark()).unwrap(),
+            diff,
+            Author {
+                name: "wez".to_string(),
+                kind: AuthorKind::Human,
+            },
+            0,
+            vec![open, resolved, shifted, withdrawn],
+        );
+        review.toggle_deleted(Ulid(4));
+        let mut app = App::reviewing(review, 8, &Theme::dark());
+        app.update(Action::PickComment);
+        k9::assert_equal!(app.picking(), true);
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump_picker(&mut app),
+            "<#c0c5ce|#4f5b66|->> <#a3be8c|#4f5b66|->* <#767b84|#4f5b66|s>src/lib.rs:4  wez   withdrawn one<#c0c5ce|#4f5b66|->   \n",
+            "<#c0c5ce|#2b303b|->  <#c0c5ce|#2b303b|->  <#c0c5ce|#2b303b|->src/lib.rs:1  wez   open one<#c0c5ce|#2b303b|->        \n",
+            "<#c0c5ce|#2b303b|->  <#d08770|#2b303b|->! <#c0c5ce|#2b303b|->src/lib.rs:3  wez   shifted one<#c0c5ce|#2b303b|->     \n",
+            "<#c0c5ce|#2b303b|->  <#767b84|#2b303b|->\u{2713} <#c0c5ce|#2b303b|->src/lib.rs:2  opus  resolved one<#c0c5ce|#2b303b|->    \n",
+            "<-|#2b303b|->                                        \n",
+            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
+        );
     }
 
     #[test]
     fn choosing_a_comment_from_the_picker_jumps_the_cursor_to_its_header() {
-        // Stepping down to the second comment and activating closes the picker
-        // and lands the cursor on that comment's header row.
-        let mut app = App::new(commented_document(), 8, &Theme::dark());
+        // Stepping down past the leading open comment to the resolved one and
+        // activating closes the picker and moves the cursor to that comment's
+        // header row.
+        let mut app = App::reviewing(commented_review(), 8, &Theme::dark());
         app.update(Action::PickComment);
         app.picker_nav(Action::LineDown);
         app.picker_activate();
         k9::assert_equal!(app.picking(), false);
         k9::assert_equal!(
             app.kind_at(app.cursor()),
-            Some(&RowKind::CommentHeader { id: Ulid(2) })
+            Some(&RowKind::CommentHeader { id: Ulid(1) })
         );
     }
 

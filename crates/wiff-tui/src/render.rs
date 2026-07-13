@@ -1411,10 +1411,17 @@ pub(crate) mod testutil {
 
     /// The set modifiers as short flags, or `-` when none.
     fn mods(modifier: Modifier) -> String {
+        let mut flags = String::new();
         if modifier.contains(Modifier::BOLD) {
-            "b".to_string()
-        } else {
+            flags.push('b');
+        }
+        if modifier.contains(Modifier::CROSSED_OUT) {
+            flags.push('s');
+        }
+        if flags.is_empty() {
             "-".to_string()
+        } else {
+            flags
         }
     }
 }

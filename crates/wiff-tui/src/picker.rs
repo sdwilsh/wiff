@@ -8,7 +8,7 @@
 //! modal drives all of them. A list taller than the space it is given scrolls,
 //! keeping the highlighted row in view.
 
-use ratatui::style::Style;
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use wiff_diff::Rgb;
 
@@ -21,8 +21,28 @@ pub trait PickerRow<Ctx> {
     /// The text shown for this row.
     fn label(&self) -> String;
 
+    /// The row's text as styled fragments, painting parts of it in colors other
+    /// than the picker's default or striking it through. Defaults to `None`, so
+    /// a row shows its `label` in one plain color.
+    fn styled(&self) -> Option<Vec<RowSpan>> {
+        None
+    }
+
     /// Act on the host now that this row has been chosen.
     fn activate(self: Box<Self>, ctx: &mut Ctx);
+}
+
+/// A styled fragment of a picker row: its text, an optional foreground color
+/// that overrides the picker's default text color, and whether it is struck
+/// through.
+#[derive(Clone)]
+pub struct RowSpan {
+    /// The fragment's text.
+    pub text: String,
+    /// Its foreground color, or `None` to take the picker's default text color.
+    pub color: Option<Rgb>,
+    /// Whether it is drawn struck through.
+    pub strikethrough: bool,
 }
 
 /// The colors a picker paints with, taken from the theme by the host.
@@ -180,21 +200,27 @@ impl<Ctx> Picker<Ctx> {
         let label_width = width.saturating_sub(2);
         let background = color(self.colors.background);
         let end = (self.top + self.height).min(self.rows.len());
+        let text_color = color(self.colors.text);
         let mut lines: Vec<Line<'static>> = (self.top..end)
             .map(|index| {
                 let selected = index == self.selected;
                 let marker = if selected { "> " } else { "  " };
-                let label = clip(&self.rows[index].label(), label_width);
-                let text = format!("{marker}{label:<label_width$}");
                 let row_bg = if selected {
                     color(self.colors.selected_bg)
                 } else {
                     background
                 };
-                Line::from(Span::styled(
-                    text,
-                    Style::default().fg(color(self.colors.text)).bg(row_bg),
-                ))
+                match self.rows[index].styled() {
+                    Some(spans) => styled_row(marker, &spans, label_width, text_color, row_bg),
+                    None => {
+                        let label = clip(&self.rows[index].label(), label_width);
+                        let text = format!("{marker}{label:<label_width$}");
+                        Line::from(Span::styled(
+                            text,
+                            Style::default().fg(text_color).bg(row_bg),
+                        ))
+                    }
+                }
             })
             .collect();
         lines.push(Line::from(Span::styled(
@@ -238,6 +264,39 @@ impl<Ctx> Picker<Ctx> {
 /// Clip `text` to at most `width` columns.
 fn clip(text: &str, width: usize) -> String {
     text.chars().take(width).collect()
+}
+
+/// Render one styled row: the selection `marker`, then the row's `spans` clipped
+/// to `label_width` and padded to fill it, each painted over `row_bg` in its own
+/// color or `text_color` when it names none.
+fn styled_row(
+    marker: &str,
+    spans: &[RowSpan],
+    label_width: usize,
+    text_color: Color,
+    row_bg: Color,
+) -> Line<'static> {
+    let plain = Style::default().fg(text_color).bg(row_bg);
+    let mut out = vec![Span::styled(marker.to_string(), plain)];
+    let mut used = 0;
+    for span in spans {
+        if used >= label_width {
+            break;
+        }
+        let text: String = span.text.chars().take(label_width - used).collect();
+        used += text.chars().count();
+        let mut style = Style::default()
+            .fg(span.color.map(color).unwrap_or(text_color))
+            .bg(row_bg);
+        if span.strikethrough {
+            style = style.add_modifier(Modifier::CROSSED_OUT);
+        }
+        out.push(Span::styled(text, style));
+    }
+    if used < label_width {
+        out.push(Span::styled(" ".repeat(label_width - used), plain));
+    }
+    Line::from(out)
 }
 
 #[cfg(test)]

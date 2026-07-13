@@ -332,8 +332,10 @@ escape cancels. A list taller than the space it is given scrolls to keep the
 highlight in view. The widget is generic over what a row does when chosen, so
 the same modal serves several pickers. `pick_file` (`t`) lists the diff's files
 and jumps the cursor to the chosen file's header; `pick_comment` (`C`) lists the
-diff's comments, each labeled with its location and the start of its body, and
-jumps to the chosen comment; `pick_theme` (`T`) lists the built-in color themes,
+diff's comments grouped by status -- draft, then open, resolved, and withdrawn,
+each group kept in document order -- with a status marker, its location, its
+author, and the start of its body, and jumps to the chosen comment; `pick_theme`
+(`T`) lists the built-in color themes,
 opening on the one in effect, and recolors the whole view to the chosen theme;
 `compare_versions` (`v`) lists the captured versions to view the change against
 (see Version comparison and refresh).
