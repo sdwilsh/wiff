@@ -2873,7 +2873,7 @@ mod tests {
     use crate::exit::{Exit, ExitDefault};
     use crate::key::{Chord, Key, KeyPress};
     use crate::keymap::{Keymap, KeymapOverrides};
-    use crate::render::testutil::{dump, file, ln};
+    use crate::render::testutil::{dump, file, ln, theme};
     use crate::render::{DiffView, RowKind, ViewLayout};
     use crate::review::Review;
     use crate::theme::Theme;
@@ -2909,7 +2909,7 @@ mod tests {
             )],
         };
         Review::new(
-            DiffView::new(Theme::dark()).unwrap(),
+            DiffView::new(theme()).unwrap(),
             diff,
             Author {
                 name: "wez".to_string(),
@@ -3053,19 +3053,16 @@ mod tests {
     /// attached, for navigation and collapse tests.
     fn commented_document() -> crate::render::Document {
         let (diff, comments) = commented_diff();
-        DiffView::new(Theme::dark()).unwrap().render_review(
-            &diff,
-            &comments,
-            &[],
-            ViewLayout::default(),
-        )
+        DiffView::new(theme())
+            .unwrap()
+            .render_review(&diff, &comments, &[], ViewLayout::default())
     }
 
     /// The [`commented_diff`] as an editable review, for comment-authoring tests.
     fn commented_review() -> Review {
         let (diff, comments) = commented_diff();
         Review::new(
-            DiffView::new(Theme::dark()).unwrap(),
+            DiffView::new(theme()).unwrap(),
             diff,
             Author {
                 name: "wez".to_string(),
@@ -3095,7 +3092,7 @@ mod tests {
                 ),
             ],
         };
-        DiffView::new(Theme::dark()).unwrap().render(&diff)
+        DiffView::new(theme()).unwrap().render(&diff)
     }
 
     /// A single text file whose one change is buried in long runs of unchanged
@@ -3114,7 +3111,7 @@ mod tests {
         let diff = Diff {
             files: vec![file("notes.txt", FileStatus::Modified, &borrowed)],
         };
-        DiffView::new(Theme::dark()).unwrap().render(&diff)
+        DiffView::new(theme()).unwrap().render(&diff)
     }
 
     /// A single added file long enough that the cursor scrolls with a margin
@@ -3128,7 +3125,7 @@ mod tests {
         let diff = Diff {
             files: vec![file("long.txt", FileStatus::Added, &borrowed)],
         };
-        DiffView::new(Theme::dark()).unwrap().render(&diff)
+        DiffView::new(theme()).unwrap().render(&diff)
     }
 
     /// The width the test viewport renders at, wide enough that the cursor row
@@ -3142,7 +3139,7 @@ mod tests {
         height: usize,
         actions: &[Action],
     ) -> (usize, usize, String) {
-        let mut app = App::new(document, height, &Theme::dark());
+        let mut app = App::new(document, height, &theme());
         for action in actions {
             app.update(*action);
         }
@@ -3157,7 +3154,7 @@ mod tests {
     /// Drive `actions` through a fresh app editing `review` and return its
     /// cursor, top, and the dumped visible lines.
     fn drive_review(review: Review, height: usize, actions: &[Action]) -> (usize, usize, String) {
-        let mut app = App::reviewing(review, height, &Theme::dark());
+        let mut app = App::reviewing(review, height, &theme());
         for action in actions {
             app.update(*action);
         }
@@ -3184,7 +3181,7 @@ mod tests {
     fn setting_the_height_centers_the_initial_cursor() {
         // Applying a height of nine (as the first draw does) drops the cursor
         // onto the middle visible row with the view still anchored at the top.
-        let mut app = App::new(tall_document(), 0, &Theme::dark());
+        let mut app = App::new(tall_document(), 0, &theme());
         app.set_height(9);
         wince::assert_eq!(app.cursor(), 4);
         wince::assert_eq!(app.top(), 0);
@@ -3231,7 +3228,7 @@ mod tests {
     fn the_status_line_names_the_cursor_file_and_progress() {
         // At the top the first file is named and progress is zero; jumping to
         // the second file names it and shows how far through the view it sits.
-        let mut app = App::new(document(), 10, &Theme::dark());
+        let mut app = App::new(document(), 10, &theme());
         wince::snapshot_display!(
             dump(&[app.status(28)]),
             "<#c0c5ce|#3a3f4a|->src/lib.rs        0 open  0%\n"
@@ -3249,7 +3246,7 @@ mod tests {
         // the open one and shows no dirty marker. Reopening the resolved comment
         // buffers a draft, so the count rises to two and a `*` marks the
         // uncommitted edit.
-        let mut app = App::reviewing(commented_review(), 12, &Theme::dark());
+        let mut app = App::reviewing(commented_review(), 12, &theme());
         for _ in 0..3 {
             app.update(Action::LineDown);
         }
@@ -3268,7 +3265,7 @@ mod tests {
     fn hiding_comments_replaces_the_open_count_with_the_toggle_key() {
         // With comments hidden the open count gives way to a note naming the key
         // that shows them again; showing them brings the count back.
-        let mut app = App::reviewing(commented_review(), 12, &Theme::dark());
+        let mut app = App::reviewing(commented_review(), 12, &theme());
         for _ in 0..3 {
             app.update(Action::LineDown);
         }
@@ -3297,7 +3294,7 @@ mod tests {
             )],
         };
         let review = Review::new(
-            DiffView::new(Theme::dark()).unwrap(),
+            DiffView::new(theme()).unwrap(),
             diff,
             Author {
                 name: "wez".to_string(),
@@ -3313,7 +3310,7 @@ mod tests {
                 false,
             )],
         );
-        let mut app = App::reviewing(review, 12, &Theme::dark());
+        let mut app = App::reviewing(review, 12, &theme());
         app.set_width(TEST_WIDTH);
         let visible = dump(&app.visible(TEST_WIDTH));
         #[rustfmt::skip]
@@ -3348,7 +3345,7 @@ mod tests {
             )],
         };
         let review = Review::new(
-            DiffView::new(Theme::dark()).unwrap(),
+            DiffView::new(theme()).unwrap(),
             diff,
             Author {
                 name: "wez".to_string(),
@@ -3357,7 +3354,7 @@ mod tests {
             0,
             Vec::new(),
         );
-        let mut app = App::reviewing(review, 12, &Theme::dark());
+        let mut app = App::reviewing(review, 12, &theme());
         app.set_width(TEST_WIDTH);
         #[rustfmt::skip]
         wince::snapshot_display!(
@@ -3408,7 +3405,7 @@ mod tests {
             )],
         };
         let review = Review::new(
-            DiffView::new(Theme::dark()).unwrap(),
+            DiffView::new(theme()).unwrap(),
             diff,
             Author {
                 name: "wez".to_string(),
@@ -3417,7 +3414,7 @@ mod tests {
             0,
             Vec::new(),
         );
-        let mut app = App::reviewing(review, 8, &Theme::dark());
+        let mut app = App::reviewing(review, 8, &theme());
         app.set_width(TEST_WIDTH);
         app.update(Action::ToggleWrap);
         // Land on the continuation row, the second of the wrapped line's rows.
@@ -3470,7 +3467,7 @@ mod tests {
     fn the_file_picker_lists_every_file_with_the_first_highlighted() {
         // Opening the picker over the two-file diff lists both paths, the first
         // highlighted, then a spacer and the key hint.
-        let mut app = App::new(document(), 8, &Theme::dark());
+        let mut app = App::new(document(), 8, &theme());
         app.update(Action::PickFile);
         wince::assert_eq!(app.picking(), true);
         #[rustfmt::skip]
@@ -3487,7 +3484,7 @@ mod tests {
     fn choosing_a_file_from_the_picker_jumps_the_cursor_to_its_header() {
         // Stepping down to the second file and activating closes the picker and
         // lands the cursor on that file's header row.
-        let mut app = App::new(document(), 8, &Theme::dark());
+        let mut app = App::new(document(), 8, &theme());
         app.update(Action::PickFile);
         app.picker_nav(Action::LineDown);
         app.picker_activate();
@@ -3499,7 +3496,7 @@ mod tests {
     fn cancelling_the_picker_leaves_the_cursor_where_it_was() {
         // Escaping the picker closes it without moving the cursor, even after
         // moving the highlight within it.
-        let mut app = App::new(document(), 8, &Theme::dark());
+        let mut app = App::new(document(), 8, &theme());
         app.update(Action::PickFile);
         app.picker_nav(Action::LineDown);
         app.picker_cancel();
@@ -3513,7 +3510,7 @@ mod tests {
         // status: the open one leads with a blank marker, then the resolved one
         // marked with a check, each showing its location and author before the
         // start of its body, then a spacer and the key hint.
-        let mut app = App::reviewing(commented_review(), 8, &Theme::dark());
+        let mut app = App::reviewing(commented_review(), 8, &theme());
         app.update(Action::PickComment);
         wince::assert_eq!(app.picking(), true);
         #[rustfmt::skip]
@@ -3579,7 +3576,7 @@ mod tests {
             false,
         );
         let mut review = Review::new(
-            DiffView::new(Theme::dark()).unwrap(),
+            DiffView::new(theme()).unwrap(),
             diff,
             Author {
                 name: "wez".to_string(),
@@ -3589,7 +3586,7 @@ mod tests {
             vec![open, resolved, shifted, withdrawn],
         );
         review.toggle_deleted(Ulid(4));
-        let mut app = App::reviewing(review, 8, &Theme::dark());
+        let mut app = App::reviewing(review, 8, &theme());
         app.update(Action::PickComment);
         wince::assert_eq!(app.picking(), true);
         #[rustfmt::skip]
@@ -3609,7 +3606,7 @@ mod tests {
         // Stepping down past the leading open comment to the resolved one and
         // activating closes the picker and moves the cursor to that comment's
         // header row.
-        let mut app = App::reviewing(commented_review(), 8, &Theme::dark());
+        let mut app = App::reviewing(commented_review(), 8, &theme());
         app.update(Action::PickComment);
         app.picker_nav(Action::LineDown);
         app.picker_activate();
@@ -3625,7 +3622,7 @@ mod tests {
         // Opening the picker over a review lists the bundled themes in name
         // order, opening on the one in effect (the default dark theme) rather
         // than the first, then a spacer and the key hint.
-        let mut app = App::reviewing(commented_review(), 8, &Theme::dark());
+        let mut app = App::reviewing(commented_review(), 8, &theme());
         app.update(Action::PickTheme);
         wince::assert_eq!(app.picking(), true);
         #[rustfmt::skip]
@@ -3648,7 +3645,7 @@ mod tests {
         // Activating the light theme closes the picker and recolors the view:
         // the background and status bar take the light palette, and the diff
         // re-renders with it.
-        let mut app = App::reviewing(commented_review(), 8, &Theme::dark());
+        let mut app = App::reviewing(commented_review(), 8, &theme());
         app.update(Action::PickTheme);
         app.picker_nav(Action::Top);
         app.picker_activate();
@@ -3661,7 +3658,7 @@ mod tests {
     /// for the version-comparison picker.
     fn versioned_review(version: u32) -> Review {
         Review::new(
-            DiffView::new(Theme::dark()).unwrap(),
+            DiffView::new(theme()).unwrap(),
             Diff {
                 files: vec![file(
                     "src/lib.rs",
@@ -3683,7 +3680,7 @@ mod tests {
         // A review whose latest version is v2 offers the latest diff plus the
         // two earlier versions as reference points, newest first, opening on the
         // latest diff since no comparison is in effect.
-        let mut app = App::reviewing(versioned_review(2), 8, &Theme::dark());
+        let mut app = App::reviewing(versioned_review(2), 8, &theme());
         app.update(Action::CompareVersions);
         wince::assert_eq!(app.picking(), true);
         #[rustfmt::skip]
@@ -3702,7 +3699,7 @@ mod tests {
         // With a comparison against v1 already in effect, the showing-now mark
         // follows it onto the earlier row rather than staying on the latest diff,
         // and the list opens on that row.
-        let mut app = App::reviewing(versioned_review(2), 8, &Theme::dark());
+        let mut app = App::reviewing(versioned_review(2), 8, &theme());
         app.show_comparison(comparison_diff(), Some((1, from_v1_before_origin())));
         app.update(Action::CompareVersions);
         wince::assert_eq!(app.picking(), true);
@@ -3722,7 +3719,7 @@ mod tests {
         // Stepping down to the first earlier version and activating closes the
         // picker and records a request to compare against v1, which the host
         // reads back to reconstruct the diff.
-        let mut app = App::reviewing(versioned_review(2), 8, &Theme::dark());
+        let mut app = App::reviewing(versioned_review(2), 8, &theme());
         app.update(Action::CompareVersions);
         app.picker_nav(Action::LineDown);
         app.picker_activate();
@@ -3735,7 +3732,7 @@ mod tests {
     fn the_compare_picker_reports_when_there_is_no_earlier_version() {
         // At v0 there is nothing earlier to compare against, so the picker does
         // not open and the status line says so.
-        let mut app = App::reviewing(versioned_review(0), 8, &Theme::dark());
+        let mut app = App::reviewing(versioned_review(0), 8, &theme());
         app.set_width(TEST_WIDTH);
         app.update(Action::CompareVersions);
         wince::assert_eq!(app.picking(), false);
@@ -3749,7 +3746,7 @@ mod tests {
     fn the_refresh_prompt_offers_to_recapture_or_keep_the_current_diff() {
         // The launch prompt names the version the source has moved past and
         // offers the two choices, opening on the first.
-        let mut app = App::reviewing(versioned_review(1), 8, &Theme::dark());
+        let mut app = App::reviewing(versioned_review(1), 8, &theme());
         app.offer_refresh();
         wince::assert_eq!(app.picking(), true);
         #[rustfmt::skip]
@@ -3766,7 +3763,7 @@ mod tests {
     fn choosing_refresh_from_the_prompt_records_the_request() {
         // Activating the first choice closes the prompt and records the refresh
         // for the host to act on, taken exactly once.
-        let mut app = App::reviewing(versioned_review(1), 8, &Theme::dark());
+        let mut app = App::reviewing(versioned_review(1), 8, &theme());
         app.offer_refresh();
         app.picker_activate();
         wince::assert_eq!(app.picking(), false);
@@ -3778,7 +3775,7 @@ mod tests {
     fn keeping_the_current_diff_from_the_prompt_records_no_refresh() {
         // Stepping to the second choice and activating closes the prompt without
         // asking the host to refresh.
-        let mut app = App::reviewing(versioned_review(1), 8, &Theme::dark());
+        let mut app = App::reviewing(versioned_review(1), 8, &theme());
         app.offer_refresh();
         app.picker_nav(Action::LineDown);
         app.picker_activate();
@@ -3790,7 +3787,7 @@ mod tests {
     fn the_post_refresh_prompt_marks_the_latest_when_the_reviewer_was_on_the_latest() {
         // Refreshing while on the latest diff opens the list marking and opening
         // on the latest, where the reviewer was.
-        let mut app = App::reviewing(versioned_review(1), 8, &Theme::dark());
+        let mut app = App::reviewing(versioned_review(1), 8, &theme());
         app.offer_compare_after_refresh(None, None);
         wince::assert_eq!(app.picking(), true);
         #[rustfmt::skip]
@@ -3807,7 +3804,7 @@ mod tests {
     fn the_post_refresh_prompt_marks_and_opens_on_the_reviewers_prior_comparison() {
         // Refreshing while comparing against v1 opens the list marking and
         // opening on that row, so the reviewer keeps the perspective they had.
-        let mut app = App::reviewing(versioned_review(2), 8, &Theme::dark());
+        let mut app = App::reviewing(versioned_review(2), 8, &theme());
         app.offer_compare_after_refresh(Some(1), None);
         wince::assert_eq!(app.picking(), true);
         #[rustfmt::skip]
@@ -3826,7 +3823,7 @@ mod tests {
         // Refreshing while on the latest with comments committed against v1 opens
         // on the latest, where the reviewer was, and marks v1 as where their
         // comments are so they can step to it.
-        let mut app = App::reviewing(versioned_review(2), 8, &Theme::dark());
+        let mut app = App::reviewing(versioned_review(2), 8, &theme());
         app.offer_compare_after_refresh(None, Some(1));
         wince::assert_eq!(app.picking(), true);
         #[rustfmt::skip]
@@ -3844,7 +3841,7 @@ mod tests {
     fn choosing_a_version_after_refresh_records_the_comparison() {
         // Stepping to the earlier version and activating closes the prompt and
         // records a request to compare against v0, taken exactly once.
-        let mut app = App::reviewing(versioned_review(1), 8, &Theme::dark());
+        let mut app = App::reviewing(versioned_review(1), 8, &theme());
         app.offer_compare_after_refresh(None, None);
         app.picker_nav(Action::LineDown);
         app.picker_activate();
@@ -3857,7 +3854,7 @@ mod tests {
     fn keeping_the_latest_after_refresh_records_a_return_to_the_latest() {
         // Activating the default choice closes the prompt and records a return
         // to the latest diff the refresh already reloaded.
-        let mut app = App::reviewing(versioned_review(1), 8, &Theme::dark());
+        let mut app = App::reviewing(versioned_review(1), 8, &theme());
         app.offer_compare_after_refresh(None, None);
         app.picker_activate();
         wince::assert_eq!(app.picking(), false);
@@ -3870,7 +3867,7 @@ mod tests {
         // Escaping the post-refresh list keeps the reviewer comparing against the
         // version they were on before the refresh, against the fresh capture,
         // taken exactly once.
-        let mut app = App::reviewing(versioned_review(2), 8, &Theme::dark());
+        let mut app = App::reviewing(versioned_review(2), 8, &theme());
         app.offer_compare_after_refresh(Some(1), None);
         app.picker_cancel();
         wince::assert_eq!(app.picking(), false);
@@ -3882,7 +3879,7 @@ mod tests {
     fn cancelling_the_post_refresh_prompt_from_the_latest_returns_to_the_latest() {
         // Escaping when the reviewer was on the latest before the refresh keeps
         // them on the latest, taken exactly once.
-        let mut app = App::reviewing(versioned_review(2), 8, &Theme::dark());
+        let mut app = App::reviewing(versioned_review(2), 8, &theme());
         app.offer_compare_after_refresh(None, None);
         app.picker_cancel();
         wince::assert_eq!(app.picking(), false);
@@ -3894,7 +3891,7 @@ mod tests {
     fn cancelling_the_compare_hotkey_picker_records_no_comparison() {
         // The compare hotkey's list has no cancel comparison, so escaping it
         // leaves the reviewer where they were with nothing recorded.
-        let mut app = App::reviewing(versioned_review(2), 8, &Theme::dark());
+        let mut app = App::reviewing(versioned_review(2), 8, &theme());
         app.update(Action::CompareVersions);
         app.picker_cancel();
         wince::assert_eq!(app.picking(), false);
@@ -3931,7 +3928,7 @@ mod tests {
 
     #[test]
     fn a_non_navigation_action_is_passed_back_to_the_host() {
-        let mut app = App::new(document(), 10, &Theme::dark());
+        let mut app = App::new(document(), 10, &theme());
         wince::assert_eq!(app.update(Action::Refresh), Update::Passed(Action::Refresh));
         wince::assert_eq!(app.update(Action::LineDown), Update::Handled);
     }
@@ -3940,7 +3937,7 @@ mod tests {
     fn quitting_a_clean_viewport_resolves_by_the_configured_default() {
         // With no drafts to lose, a keep default leaves at once with no dialog
         // and settles on keeping the session.
-        let mut app = App::new(document(), 10, &Theme::dark()).with_exit_default(ExitDefault::Keep);
+        let mut app = App::new(document(), 10, &theme()).with_exit_default(ExitDefault::Keep);
         wince::assert_eq!(app.update(Action::Quit), Update::Handled);
         wince::assert_eq!(app.picking(), false);
         wince::assert_eq!(app.pending_exit(), Some(Exit::Commit));
@@ -3950,8 +3947,7 @@ mod tests {
     fn a_prompt_default_opens_the_picker_and_the_choice_settles_the_exit() {
         // A prompt default with nothing buffered asks keep-or-remove; moving to
         // the second choice and confirming removes the session.
-        let mut app =
-            App::new(document(), 10, &Theme::dark()).with_exit_default(ExitDefault::Prompt);
+        let mut app = App::new(document(), 10, &theme()).with_exit_default(ExitDefault::Prompt);
         wince::assert_eq!(app.update(Action::Quit), Update::Handled);
         wince::assert_eq!(app.picking(), true);
         wince::assert_eq!(app.pending_exit(), None);
@@ -3964,8 +3960,7 @@ mod tests {
     #[test]
     fn cancelling_the_exit_picker_returns_to_the_review() {
         // Escape closes the picker without choosing, leaving the exit unresolved.
-        let mut app =
-            App::new(document(), 10, &Theme::dark()).with_exit_default(ExitDefault::Prompt);
+        let mut app = App::new(document(), 10, &theme()).with_exit_default(ExitDefault::Prompt);
         app.update(Action::Quit);
         app.picker_cancel();
         wince::assert_eq!(app.picking(), false);
@@ -4302,7 +4297,7 @@ mod tests {
     fn an_editing_action_passes_through_when_no_review_is_attached() {
         // Without a review the app is a read-only viewport, so resolve and
         // delete are handed back to the host untouched.
-        let mut app = App::new(commented_document(), 12, &Theme::dark());
+        let mut app = App::new(commented_document(), 12, &theme());
         wince::assert_eq!(
             app.update(Action::ResolveComment),
             Update::Passed(Action::ResolveComment)
@@ -4325,7 +4320,7 @@ mod tests {
     fn adding_a_comment_on_a_line_renders_it_as_a_draft() {
         // Move onto the added line, author a comment there, and save it: it
         // appears as a pending draft in a block above the line it anchors.
-        let mut app = App::reviewing(plain_review(), 12, &Theme::dark());
+        let mut app = App::reviewing(plain_review(), 12, &theme());
         for _ in 0..4 {
             app.update(Action::LineDown);
         }
@@ -4352,7 +4347,7 @@ mod tests {
     fn the_editor_renders_inline_above_the_anchored_line() {
         // With the editor open on the added line, the split places the anchored
         // line just below the editor and the seeded body sits in the editor.
-        let mut app = App::reviewing(plain_review(), 8, &Theme::dark());
+        let mut app = App::reviewing(plain_review(), 8, &theme());
         for _ in 0..4 {
             app.update(Action::LineDown);
         }
@@ -4378,7 +4373,7 @@ mod tests {
         // A body wider than the box interior wraps at a space onto a second
         // interior row rather than scrolling sideways, and the cursor rests at
         // the end of the last wrapped row.
-        let mut app = App::reviewing(plain_review(), 14, &Theme::dark());
+        let mut app = App::reviewing(plain_review(), 14, &theme());
         for _ in 0..4 {
             app.update(Action::LineDown);
         }
@@ -4401,7 +4396,7 @@ mod tests {
         // From the end of a wrapped body, Up moves onto the first visual row at
         // the same column rather than leaving the editor, so the cursor sits on
         // row 0 rather than row 1.
-        let mut app = App::reviewing(plain_review(), 14, &Theme::dark());
+        let mut app = App::reviewing(plain_review(), 14, &theme());
         app.set_width(TEST_WIDTH);
         for _ in 0..4 {
             app.update(Action::LineDown);
@@ -4425,7 +4420,7 @@ mod tests {
         // (at the end) in view, reporting the scroll extent so a scrollbar can
         // be drawn. Height 20 caps the interior at 4 rows; the eight-line body
         // shows its last four.
-        let mut app = App::reviewing(plain_review(), 20, &Theme::dark());
+        let mut app = App::reviewing(plain_review(), 20, &theme());
         app.set_width(TEST_WIDTH);
         for _ in 0..4 {
             app.update(Action::LineDown);
@@ -4461,7 +4456,7 @@ mod tests {
     /// Open the editor on the added line of a `height`-row review, seeded with
     /// `seed`, its width set for wrapping.
     fn composing_on_added_line(height: usize, seed: &str) -> App {
-        let mut app = App::reviewing(plain_review(), height, &Theme::dark());
+        let mut app = App::reviewing(plain_review(), height, &theme());
         app.set_width(TEST_WIDTH);
         for _ in 0..4 {
             app.update(Action::LineDown);
@@ -4485,7 +4480,7 @@ mod tests {
             files: vec![file("src/lib.rs", FileStatus::Modified, &rows)],
         };
         Review::new(
-            DiffView::new(Theme::dark()).unwrap(),
+            DiffView::new(theme()).unwrap(),
             diff,
             Author {
                 name: "wez".to_string(),
@@ -4543,7 +4538,7 @@ mod tests {
         // Author near the top of a tall diff, detach, then scroll the diff down
         // until the anchor leaves the top: the box tracks it up and rests at the
         // top edge, row 0.
-        let mut app = App::reviewing(tall_review(40), 10, &Theme::dark());
+        let mut app = App::reviewing(tall_review(40), 10, &theme());
         app.set_width(TEST_WIDTH);
         for _ in 0..4 {
             app.update(Action::LineDown);
@@ -4565,7 +4560,7 @@ mod tests {
         // Author far down a tall diff, detach, then scroll the diff up until the
         // anchor leaves the bottom: the box tracks it down and rests at the
         // bottom edge, height minus the box height.
-        let mut app = App::reviewing(tall_review(40), 10, &Theme::dark());
+        let mut app = App::reviewing(tall_review(40), 10, &theme());
         app.set_width(TEST_WIDTH);
         for _ in 0..30 {
             app.update(Action::LineDown);
@@ -4587,7 +4582,7 @@ mod tests {
         // chrome can show the cursor tint around the editor; once the cursor
         // steps clear below the box the report clears and the cursor shows its
         // own full-width tint again.
-        let mut app = App::reviewing(tall_review(40), 20, &Theme::dark());
+        let mut app = App::reviewing(tall_review(40), 20, &theme());
         app.set_width(TEST_WIDTH);
         for _ in 0..4 {
             app.update(Action::LineDown);
@@ -4634,7 +4629,7 @@ mod tests {
         // the diff cursor on the line just below the box's bottom border,
         // mirroring the top edge. The box is three rows tall over the
         // single-line body, so the cursor rests three rows past the anchor.
-        let mut app = App::reviewing(tall_review(20), 20, &Theme::dark());
+        let mut app = App::reviewing(tall_review(20), 20, &theme());
         app.set_width(TEST_WIDTH);
         for _ in 0..5 {
             app.update(Action::LineDown);
@@ -4654,7 +4649,7 @@ mod tests {
         // with no diff row below its bottom border on screen. Down on the
         // editor's last row therefore does nothing: the editor stays inline and
         // the diff does not scroll, rather than flinging the anchor up the page.
-        let mut app = App::reviewing(tall_review(20), 12, &Theme::dark());
+        let mut app = App::reviewing(tall_review(20), 12, &theme());
         app.set_width(TEST_WIDTH);
         for _ in 0..20 {
             app.update(Action::LineDown);
@@ -4672,7 +4667,7 @@ mod tests {
     fn nudging_stays_in_the_editor_when_disabled() {
         // With nudging off, Up on the first row is an ordinary editor move: the
         // editor stays anchored inline and never floats.
-        let mut app = App::reviewing(plain_review(), 8, &Theme::dark()).with_nudge_to_detach(false);
+        let mut app = App::reviewing(plain_review(), 8, &theme()).with_nudge_to_detach(false);
         app.set_width(TEST_WIDTH);
         for _ in 0..4 {
             app.update(Action::LineDown);
@@ -4754,7 +4749,7 @@ mod tests {
     #[test]
     fn cancelling_a_clean_editor_closes_it_at_once() {
         // Escape with nothing typed leaves editing immediately with no draft.
-        let mut app = App::reviewing(plain_review(), 12, &Theme::dark());
+        let mut app = App::reviewing(plain_review(), 12, &theme());
         app.update(Action::AddComment);
         wince::assert_eq!(app.composing(), true);
         app.compose_key(KeyPress::new(Key::Escape));
@@ -4766,7 +4761,7 @@ mod tests {
     fn cancelling_a_changed_editor_asks_before_discarding() {
         // Escape after typing does not close; it asks. Declining resumes
         // editing; escaping again and confirming discards without a draft.
-        let mut app = App::reviewing(plain_review(), 12, &Theme::dark());
+        let mut app = App::reviewing(plain_review(), 12, &theme());
         app.update(Action::AddComment);
         typed(&mut app, "hmm");
         app.compose_key(KeyPress::new(Key::Escape));
@@ -4782,7 +4777,7 @@ mod tests {
     #[test]
     fn an_empty_body_is_discarded_on_save() {
         // Saving an untouched editor authors nothing.
-        let mut app = App::reviewing(plain_review(), 12, &Theme::dark());
+        let mut app = App::reviewing(plain_review(), 12, &theme());
         app.update(Action::AddComment);
         app.compose_key(submit());
         wince::assert_eq!(app.composing(), false);
@@ -4802,7 +4797,7 @@ mod tests {
         .into_iter()
         .collect();
         let keymap = Keymap::resolve_config(&overrides, false).unwrap();
-        let mut app = App::reviewing(plain_review(), 12, &Theme::dark()).with_keymap(keymap);
+        let mut app = App::reviewing(plain_review(), 12, &theme()).with_keymap(keymap);
         for _ in 0..4 {
             app.update(Action::LineDown);
         }
@@ -4853,7 +4848,7 @@ mod tests {
     fn editing_a_comment_seeds_the_editor_and_rewrites_the_body() {
         // Land on the unresolved comment and edit it: the editor opens with its
         // current body, and saving a new body rewrites it, badged as a draft.
-        let mut app = App::reviewing(commented_review(), 14, &Theme::dark());
+        let mut app = App::reviewing(commented_review(), 14, &theme());
         app.update(Action::NextComment);
         app.update(Action::NextComment);
         app.update(Action::EditComment);
@@ -4896,7 +4891,7 @@ mod tests {
         // Editing the unresolved comment drops its rendered box from the split:
         // the editor stands where the box was, the resolved comment above it
         // stays, and the anchored code sits just below the editor.
-        let mut app = App::reviewing(commented_review(), 14, &Theme::dark());
+        let mut app = App::reviewing(commented_review(), 14, &theme());
         app.update(Action::NextComment);
         app.update(Action::NextComment);
         app.update(Action::EditComment);
@@ -4923,7 +4918,7 @@ mod tests {
         // With a review comment already placed under the summary, authoring
         // another opens the editor below it, where its box will render, rather
         // than wedged between the summary and the existing comment.
-        let mut app = App::reviewing(commented_review(), 12, &Theme::dark());
+        let mut app = App::reviewing(commented_review(), 12, &theme());
         app.update(Action::AddComment);
         typed(&mut app, "first");
         app.compose_key(submit());
@@ -4968,7 +4963,7 @@ mod tests {
         // The reviewer sits on the added line, then a refresh appends a third
         // line below it. The same numbered line survives, so the cursor stays on
         // it, and the status line reports the captured version and comment tally.
-        let mut app = App::reviewing(plain_review(), 12, &Theme::dark());
+        let mut app = App::reviewing(plain_review(), 12, &theme());
         app.update(Action::Top);
         for _ in 0..4 {
             app.update(Action::LineDown);
@@ -5014,7 +5009,7 @@ mod tests {
         // A draft is authored on the added line, then a refresh inserts a line
         // above it. The drafted comment moves forward with its line, so it
         // renders above the same code, now one line lower.
-        let mut app = App::reviewing(plain_review(), 14, &Theme::dark());
+        let mut app = App::reviewing(plain_review(), 14, &theme());
         app.update(Action::Top);
         for _ in 0..4 {
             app.update(Action::LineDown);
@@ -5075,7 +5070,7 @@ mod tests {
         // The reviewer sits on the added second line, then a refresh drops it,
         // leaving only the first line. With the exact line gone, the cursor
         // falls back to the nearest surviving line in the same file.
-        let mut app = App::reviewing(plain_review(), 12, &Theme::dark());
+        let mut app = App::reviewing(plain_review(), 12, &theme());
         app.update(Action::Top);
         for _ in 0..4 {
             app.update(Action::LineDown);
@@ -5116,7 +5111,7 @@ mod tests {
         // files while the prompt shows the term, the live match tally, and the
         // progress percent; accepting it keeps the cursor and adds the repeat
         // keys.
-        let mut app = App::new(document(), 9, &Theme::dark());
+        let mut app = App::new(document(), 9, &theme());
         search_for(&mut app, Action::SearchForward, "hello");
         wince::snapshot_display!(
             status_text(&app),
@@ -5146,7 +5141,7 @@ mod tests {
         // Typing a term that appears on two lines highlights both, the one the
         // cursor jumps to and the other still in view, each occurrence washed in
         // the match color while the rest of its row keeps its own tint.
-        let mut app = App::new(document(), 9, &Theme::dark());
+        let mut app = App::new(document(), 9, &theme());
         search_for(&mut app, Action::SearchForward, "let");
         #[rustfmt::skip]
         wince::snapshot_display!(
@@ -5165,7 +5160,7 @@ mod tests {
     fn a_search_with_no_match_shows_a_no_matches_tally() {
         // A term absent from the document reports no matches in the prompt while
         // the cursor stays where the search opened.
-        let mut app = App::new(document(), 9, &Theme::dark());
+        let mut app = App::new(document(), 9, &theme());
         search_for(&mut app, Action::SearchForward, "absent");
         wince::snapshot_display!(
             status_text(&app),
@@ -5178,7 +5173,7 @@ mod tests {
         // The pattern is a regular expression: the dot matches any character, so
         // `l.t` finds `let` on both changed lines, jumps the cursor to the first,
         // and highlights every occurrence in view while the tally counts them.
-        let mut app = App::new(document(), 9, &Theme::dark());
+        let mut app = App::new(document(), 9, &theme());
         search_for(&mut app, Action::SearchForward, "l.t");
         wince::snapshot_display!(
             status_text(&app),
@@ -5201,7 +5196,7 @@ mod tests {
     fn a_half_typed_regex_reports_a_bad_pattern_rather_than_matching() {
         // An unbalanced group is not yet a valid expression, so the status says
         // so and the cursor stays where the search opened rather than jumping.
-        let mut app = App::new(document(), 9, &Theme::dark());
+        let mut app = App::new(document(), 9, &theme());
         search_for(&mut app, Action::SearchForward, "(let");
         wince::snapshot_display!(
             status_text(&app),
@@ -5213,7 +5208,7 @@ mod tests {
     fn a_search_passes_over_content_hidden_in_a_collapsed_fold() {
         // A term that lives only inside a collapsed fold finds nothing, so the
         // cursor stays where the search opened.
-        let mut app = App::new(folded_document(), 20, &Theme::dark());
+        let mut app = App::new(folded_document(), 20, &theme());
         search_for(&mut app, Action::SearchForward, "ctx03");
         #[rustfmt::skip]
         wince::snapshot_display!(
@@ -5235,7 +5230,7 @@ mod tests {
     #[test]
     fn a_search_matches_visible_context_around_a_change() {
         // A context line kept visible beside the change is matched and focused.
-        let mut app = App::new(folded_document(), 20, &Theme::dark());
+        let mut app = App::new(folded_document(), 20, &theme());
         search_for(&mut app, Action::SearchForward, "ctx07");
         #[rustfmt::skip]
         wince::snapshot_display!(
@@ -5259,7 +5254,7 @@ mod tests {
         // The resolved comment opens collapsed, hiding its body. Searching a
         // word from that body expands the comment and lands the cursor on the
         // matched line.
-        let mut app = App::reviewing(commented_review(), 14, &Theme::dark());
+        let mut app = App::reviewing(commented_review(), 14, &theme());
         search_for(&mut app, Action::SearchForward, "ok");
         #[rustfmt::skip]
         wince::snapshot_display!(
@@ -5281,7 +5276,7 @@ mod tests {
     #[test]
     fn cancelling_a_search_returns_the_cursor_to_where_it_opened() {
         // Escaping the prompt returns to the origin line the search opened on.
-        let mut app = App::new(document(), 9, &Theme::dark());
+        let mut app = App::new(document(), 9, &theme());
         for _ in 0..2 {
             app.update(Action::LineDown);
         }
@@ -5308,7 +5303,7 @@ mod tests {
         // percent and adds a wrap note alongside them, rather than replacing the
         // position with a full-width message. (Shown here at a wider width so the
         // note is not truncated away.)
-        let mut app = App::new(document(), 9, &Theme::dark());
+        let mut app = App::new(document(), 9, &theme());
         search_for(&mut app, Action::SearchForward, "hello");
         app.search_key(KeyPress::new(Key::Enter));
         app.update(Action::SearchNext);
@@ -5334,7 +5329,7 @@ mod tests {
         // With the term on two lines, accepting on the first and repeating
         // forward lands on the second without a wrap, so the status keeps
         // showing the accepted term and the repeat keys rather than a wrap note.
-        let mut app = App::new(document(), 9, &Theme::dark());
+        let mut app = App::new(document(), 9, &theme());
         search_for(&mut app, Action::SearchForward, "let");
         app.search_key(KeyPress::new(Key::Enter));
         app.update(Action::SearchNext);
@@ -5463,7 +5458,7 @@ mod tests {
             updated_seq: 0,
         };
         let review = Review::new(
-            DiffView::new(Theme::dark()).unwrap(),
+            DiffView::new(theme()).unwrap(),
             comparison_diff(),
             Author {
                 name: "wez".to_string(),
@@ -5472,7 +5467,7 @@ mod tests {
             2,
             vec![committed],
         );
-        let mut app = App::reviewing(review, 16, &Theme::dark());
+        let mut app = App::reviewing(review, 16, &theme());
         app.set_width(80);
         app.show_comparison(comparison_diff(), Some((1, from_v1_before_origin())));
 
@@ -5500,7 +5495,7 @@ mod tests {
         // anchors the draft against v1's after side, the version and side it
         // truly belongs to, so it rebases forward when the review advances.
         let mut review = Review::new(
-            DiffView::new(Theme::dark()).unwrap(),
+            DiffView::new(theme()).unwrap(),
             comparison_diff(),
             Author {
                 name: "wez".to_string(),
@@ -5545,7 +5540,7 @@ mod tests {
         // With the cursor resting on a comment box, the reload must return it to
         // that same comment rather than dropping it on the file header.
         let (_, comments) = commented_diff();
-        let mut app = App::reviewing(commented_review(), 14, &Theme::dark());
+        let mut app = App::reviewing(commented_review(), 14, &theme());
         app.set_width(TEST_WIDTH);
         // Move the cursor onto the second, unresolved comment's box.
         app.update(Action::NextComment);
@@ -5575,7 +5570,7 @@ mod tests {
             files: vec![file("notes.txt", FileStatus::Modified, &borrowed)],
         };
         let review = Review::new(
-            DiffView::new(Theme::dark()).unwrap(),
+            DiffView::new(theme()).unwrap(),
             diff,
             Author {
                 name: "wez".to_string(),
@@ -5586,7 +5581,7 @@ mod tests {
         );
         // Opening with no comments, the one change buried at the end leaves a
         // single leading fold over the whole unchanged run.
-        let mut app = App::reviewing(review, 24, &Theme::dark());
+        let mut app = App::reviewing(review, 24, &theme());
         app.set_width(TEST_WIDTH);
         #[rustfmt::skip]
         wince::snapshot_display!(

@@ -472,9 +472,8 @@ mod tests {
     use crate::exit::ExitDefault;
     use crate::key::{Key, KeyPress};
     use crate::render::DiffView;
-    use crate::render::testutil::file;
+    use crate::render::testutil::{file, theme};
     use crate::review::Review;
-    use crate::theme::Theme;
 
     /// A review over a one-line added file authored by a human, for driving the
     /// exit picker after a draft is made.
@@ -491,7 +490,7 @@ mod tests {
             kind: AuthorKind::Human,
         };
         Review::new(
-            DiffView::new(Theme::dark()).expect("view"),
+            DiffView::new(theme()).expect("view"),
             diff,
             author,
             0,
@@ -524,8 +523,8 @@ mod tests {
                 &[(LineKind::Context, "let x = 1;", 1)],
             )],
         };
-        let document = DiffView::new(Theme::dark()).expect("view").render(&diff);
-        let app = App::new(document, 0, &Theme::dark());
+        let document = DiffView::new(theme()).expect("view").render(&diff);
+        let app = App::new(document, 0, &theme());
 
         // A 30x4 screen shows the three rendered rows over the top three lines
         // and the status line filling the last, each padded to 30 columns. The
@@ -552,16 +551,12 @@ mod tests {
                 ],
             )],
         };
-        let view = DiffView::new(Theme::dark()).expect("view");
+        let view = DiffView::new(theme()).expect("view");
         let author = Author {
             name: "wez".to_string(),
             kind: AuthorKind::Human,
         };
-        let mut app = App::reviewing(
-            Review::new(view, diff, author, 0, Vec::new()),
-            0,
-            &Theme::dark(),
-        );
+        let mut app = App::reviewing(Review::new(view, diff, author, 0, Vec::new()), 0, &theme());
         // Move onto the added line and open the editor there, then type a body.
         for _ in 0..4 {
             app.update(Action::LineDown);
@@ -594,7 +589,7 @@ mod tests {
     /// through the shared loop settles the width, height, and initial cursor
     /// position, so callers draw once to settle before interacting.
     fn screen_tinted(width: u16, height: u16, app: &mut App) -> String {
-        let tint = crate::render::color(Theme::dark().cursor_bg);
+        let tint = crate::render::color(theme().cursor_bg);
         let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
         draw(&mut terminal, app).expect("draw");
         let buffer = terminal.backend().buffer().clone();
@@ -637,7 +632,7 @@ mod tests {
             kind: AuthorKind::Human,
         };
         Review::new(
-            DiffView::new(Theme::dark()).expect("view"),
+            DiffView::new(theme()).expect("view"),
             diff,
             author,
             0,
@@ -647,7 +642,7 @@ mod tests {
 
     #[test]
     fn the_detached_editor_tints_the_whole_rule_when_the_cursor_is_on_the_anchor() {
-        let mut app = App::reviewing(six_line_review(), 12, &Theme::dark());
+        let mut app = App::reviewing(six_line_review(), 12, &theme());
         // Settle the width, height, and initial cursor position before moving.
         screen_tinted(30, 12, &mut app);
         app.update(Action::Top);
@@ -682,7 +677,7 @@ mod tests {
 
     #[test]
     fn the_detached_editor_carries_the_cursor_tint_around_its_chrome() {
-        let mut app = App::reviewing(six_line_review(), 12, &Theme::dark());
+        let mut app = App::reviewing(six_line_review(), 12, &theme());
         // Settle the width, height, and initial cursor position before moving.
         screen_tinted(30, 12, &mut app);
         app.update(Action::Top);
@@ -719,7 +714,7 @@ mod tests {
 
     #[test]
     fn the_detached_editor_names_the_detach_key_in_its_title() {
-        let mut app = App::reviewing(six_line_review(), 10, &Theme::dark());
+        let mut app = App::reviewing(six_line_review(), 10, &theme());
         // Settle the width, height, and initial cursor position before moving.
         let mut terminal = Terminal::new(TestBackend::new(80, 10)).expect("test terminal");
         draw(&mut terminal, &mut app).expect("draw");
@@ -770,14 +765,14 @@ mod tests {
         };
         let mut app = App::reviewing(
             Review::new(
-                DiffView::new(Theme::dark()).expect("view"),
+                DiffView::new(theme()).expect("view"),
                 diff,
                 author,
                 0,
                 Vec::new(),
             ),
             0,
-            &Theme::dark(),
+            &theme(),
         );
         // Open the editor on the added line and type more lines than the capped
         // box can show.
@@ -845,14 +840,14 @@ mod tests {
         };
         let mut app = App::reviewing(
             Review::new(
-                DiffView::new(Theme::dark()).expect("view"),
+                DiffView::new(theme()).expect("view"),
                 diff,
                 author,
                 0,
                 Vec::new(),
             ),
             0,
-            &Theme::dark(),
+            &theme(),
         );
         for _ in 0..4 {
             app.update(Action::LineDown);
@@ -900,8 +895,8 @@ mod tests {
 
     #[test]
     fn draws_the_exit_picker_centered_over_the_view_with_pending_drafts() {
-        let mut app = App::reviewing(draft_review(), 0, &Theme::dark())
-            .with_exit_default(ExitDefault::Prompt);
+        let mut app =
+            App::reviewing(draft_review(), 0, &theme()).with_exit_default(ExitDefault::Prompt);
         // Author a comment so a draft is pending, then quit to raise the picker.
         app.update(Action::AddComment);
         for c in "why?".chars() {

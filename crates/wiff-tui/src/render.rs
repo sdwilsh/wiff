@@ -1341,6 +1341,18 @@ pub(crate) mod testutil {
     use ratatui::text::Line;
     use wiff_diff::{DiffLine, FileDiff, FileStatus, Hunk, LineKind, LineNo};
 
+    use crate::theme::Theme;
+
+    /// The syntax theme every rendering test pins to, held apart from the
+    /// shipped default so changing that default never churns snapshots that
+    /// assert exact colors.
+    pub(crate) const TEST_THEME: &str = "base16-ocean.dark";
+
+    /// The palette every rendering test paints with, pinned to [`TEST_THEME`].
+    pub(crate) fn theme() -> Theme {
+        Theme::named(TEST_THEME).expect("bundled test theme")
+    }
+
     /// A line number from a nonzero `n`.
     pub(crate) fn ln(n: u32) -> LineNo {
         LineNo::new(n).expect("nonzero line number")
@@ -1434,9 +1446,8 @@ mod tests {
     use wiff_core::review::CommentState;
     use wiff_diff::{Diff, FileStatus, LineKind, Side};
 
-    use super::testutil::{dump, file, ln};
+    use super::testutil::{dump, file, ln, theme};
     use super::{CommentRegion, DiffView, ViewLayout};
-    use crate::theme::Theme;
 
     /// A comment with the given identity, author, target, and body; not resolved
     /// and exactly anchored unless the test overrides those fields.
@@ -1505,7 +1516,7 @@ mod tests {
                 ],
             )],
         };
-        let view = DiffView::new(Theme::dark()).unwrap();
+        let view = DiffView::new(theme()).unwrap();
 
         #[rustfmt::skip]
         wince::snapshot_str!(
@@ -1529,7 +1540,7 @@ mod tests {
                 ],
             )],
         };
-        let view = DiffView::new(Theme::dark()).unwrap();
+        let view = DiffView::new(theme()).unwrap();
 
         // "fred"/"pete" (bytes 12..16) get the stronger emphasis background; the
         // unchanged run keeps the plain role tint. The .txt content has no
@@ -1559,7 +1570,7 @@ mod tests {
                 ],
             )],
         };
-        let view = DiffView::new(Theme::dark()).unwrap();
+        let view = DiffView::new(theme()).unwrap();
         #[rustfmt::skip]
         wince::snapshot_str!(
             dump(&view.render(&diff).lines),
@@ -1586,7 +1597,7 @@ mod tests {
         let diff = Diff {
             files: vec![file("src/lib.rs", FileStatus::Modified, &borrowed)],
         };
-        let doc = DiffView::new(Theme::dark()).unwrap().render(&diff);
+        let doc = DiffView::new(theme()).unwrap().render(&diff);
         let markers: Vec<Line<'static>> = doc.folds.iter().map(|f| f.marker.clone()).collect();
         wince::snapshot_str!(
             dump(&markers),
@@ -1630,7 +1641,7 @@ mod tests {
             on_lines("src/lib.rs", 2, 2),
             "why 2?",
         )];
-        let doc = DiffView::new(Theme::dark()).unwrap().render_review(
+        let doc = DiffView::new(theme()).unwrap().render_review(
             &diff,
             &comments,
             &[],
@@ -1657,7 +1668,7 @@ mod tests {
 
         // The cached render, reusing a prior highlight of the same diff, must
         // produce the identical lines; caching is a speed-up, not a change.
-        let view = DiffView::new(Theme::dark()).unwrap();
+        let view = DiffView::new(theme()).unwrap();
         let highlights: Vec<_> = view
             .recolor(&view.parse(&diff))
             .into_iter()
@@ -1694,7 +1705,7 @@ mod tests {
             on_lines("src/lib.rs", 1, 1),
             "why 2?",
         )];
-        let doc = DiffView::new(Theme::dark()).unwrap().render_review(
+        let doc = DiffView::new(theme()).unwrap().render_review(
             &diff,
             &comments,
             &[Ulid(1)],
@@ -1729,7 +1740,7 @@ mod tests {
             "done",
         );
         resolved.resolved = true;
-        let doc = DiffView::new(Theme::dark()).unwrap().render_review(
+        let doc = DiffView::new(theme()).unwrap().render_review(
             &diff,
             &[resolved],
             &[],
@@ -1767,7 +1778,7 @@ mod tests {
             CommentTarget::Review,
             "looks good overall",
         )];
-        let doc = DiffView::new(Theme::dark()).unwrap().render_review(
+        let doc = DiffView::new(theme()).unwrap().render_review(
             &diff,
             &comments,
             &[],
@@ -1806,7 +1817,7 @@ mod tests {
             on_lines("notes.txt", 6, 6),
             "here",
         )];
-        let doc = DiffView::new(Theme::dark()).unwrap().render_review(
+        let doc = DiffView::new(theme()).unwrap().render_review(
             &diff,
             &comments,
             &[],
@@ -1838,7 +1849,7 @@ mod tests {
             "stale",
         );
         outdated.confidence = Some(Confidence::Outdated);
-        let doc = DiffView::new(Theme::dark()).unwrap().render_review(
+        let doc = DiffView::new(theme()).unwrap().render_review(
             &diff,
             &[outdated],
             &[],

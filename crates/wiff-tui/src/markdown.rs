@@ -835,10 +835,7 @@ mod tests {
     use wiff_diff::Highlighter;
 
     use super::*;
-
-    /// A fixed syntax theme for the fenced-code tests, so changing the shipped
-    /// default does not churn these fixtures.
-    const TEST_THEME: &str = "base16-ocean.dark";
+    use crate::render::testutil::TEST_THEME;
 
     /// A palette of distinct, recognizable colors so the annotated output names
     /// each role. Body text is `Reset` so plain prose renders untagged.

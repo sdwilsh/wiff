@@ -542,8 +542,7 @@ mod tests {
         use wiff_diff::{Diff, FileStatus, LineKind};
 
         use crate::render::ViewLayout;
-        use crate::render::testutil::{dump, file};
-        use crate::theme::Theme;
+        use crate::render::testutil::{dump, file, theme};
 
         let diff = Diff {
             files: vec![file(
@@ -559,7 +558,7 @@ mod tests {
             name: "wez".to_string(),
             kind: AuthorKind::Human,
         };
-        let view = || crate::render::DiffView::new(Theme::dark()).expect("view");
+        let view = || crate::render::DiffView::new(theme()).expect("view");
         let layout = ViewLayout::default();
 
         // A deferred review opens with every file plain, before any parse arrives.
