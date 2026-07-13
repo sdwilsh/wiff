@@ -3171,12 +3171,13 @@ mod tests {
         wince::assert_eq!(top, 0);
         // The first three rows are shown; the cursor row (the file header) is
         // washed with the selection background out to the full width.
-        let expected = "\
-<#cdd1d8|#4f5b66|b>modified  src/lib.rs<-|#4f5b66|->                    
-<#96b5b4|-|->@@ -1,2 +1,2 @@
-<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-";
-        wince::assert_eq!(visible, expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            visible,
+            "<#cdd1d8|#4f5b66|b>modified  src/lib.rs<-|#4f5b66|->                    \n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+        );
     }
 
     #[test]
@@ -3187,18 +3188,19 @@ mod tests {
         app.set_height(9);
         wince::assert_eq!(app.cursor(), 4);
         wince::assert_eq!(app.top(), 0);
-        let expected = "\
-<#c0c5ce|-|b>added  long.txt
-<#96b5b4|-|->@@ -1,20 +1,20 @@
-<#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->row01<-|#414a4a|->                       
-<#9ea1a9|#414a4a|->        2 + <#c0c5ce|#414a4a|->row02<-|#414a4a|->                       
-<#cfd0d4|#4f5b66|->        3 + <#cdd1d8|#4f5b66|->row03<-|#4f5b66|->                       
-<#9ea1a9|#414a4a|->        4 + <#c0c5ce|#414a4a|->row04<-|#414a4a|->                       
-<#9ea1a9|#414a4a|->        5 + <#c0c5ce|#414a4a|->row05<-|#414a4a|->                       
-<#9ea1a9|#414a4a|->        6 + <#c0c5ce|#414a4a|->row06<-|#414a4a|->                       
-<#9ea1a9|#414a4a|->        7 + <#c0c5ce|#414a4a|->row07<-|#414a4a|->                       
-";
-        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#c0c5ce|-|b>added  long.txt\n",
+            "<#96b5b4|-|->@@ -1,20 +1,20 @@\n",
+            "<#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->row01<-|#414a4a|->                       \n",
+            "<#9ea1a9|#414a4a|->        2 + <#c0c5ce|#414a4a|->row02<-|#414a4a|->                       \n",
+            "<#cfd0d4|#4f5b66|->        3 + <#cdd1d8|#4f5b66|->row03<-|#4f5b66|->                       \n",
+            "<#9ea1a9|#414a4a|->        4 + <#c0c5ce|#414a4a|->row04<-|#414a4a|->                       \n",
+            "<#9ea1a9|#414a4a|->        5 + <#c0c5ce|#414a4a|->row05<-|#414a4a|->                       \n",
+            "<#9ea1a9|#414a4a|->        6 + <#c0c5ce|#414a4a|->row06<-|#414a4a|->                       \n",
+            "<#9ea1a9|#414a4a|->        7 + <#c0c5ce|#414a4a|->row07<-|#414a4a|->                       \n",
+        );
     }
 
     #[test]
@@ -3210,18 +3212,19 @@ mod tests {
         let (cursor, top, visible) = drive(tall_document(), 9, &actions);
         wince::assert_eq!(cursor, 12);
         wince::assert_eq!(top, 7);
-        let expected = "\
-<#9ea1a9|#414a4a|->        6 + <#c0c5ce|#414a4a|->row06<-|#414a4a|->                       
-<#9ea1a9|#414a4a|->        7 + <#c0c5ce|#414a4a|->row07<-|#414a4a|->                       
-<#9ea1a9|#414a4a|->        8 + <#c0c5ce|#414a4a|->row08<-|#414a4a|->                       
-<#9ea1a9|#414a4a|->        9 + <#c0c5ce|#414a4a|->row09<-|#414a4a|->                       
-<#9ea1a9|#414a4a|->       10 + <#c0c5ce|#414a4a|->row10<-|#414a4a|->                       
-<#cfd0d4|#4f5b66|->       11 + <#cdd1d8|#4f5b66|->row11<-|#4f5b66|->                       
-<#9ea1a9|#414a4a|->       12 + <#c0c5ce|#414a4a|->row12<-|#414a4a|->                       
-<#9ea1a9|#414a4a|->       13 + <#c0c5ce|#414a4a|->row13<-|#414a4a|->                       
-<#9ea1a9|#414a4a|->       14 + <#c0c5ce|#414a4a|->row14<-|#414a4a|->                       
-";
-        wince::assert_eq!(visible, expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            visible,
+            "<#9ea1a9|#414a4a|->        6 + <#c0c5ce|#414a4a|->row06<-|#414a4a|->                       \n",
+            "<#9ea1a9|#414a4a|->        7 + <#c0c5ce|#414a4a|->row07<-|#414a4a|->                       \n",
+            "<#9ea1a9|#414a4a|->        8 + <#c0c5ce|#414a4a|->row08<-|#414a4a|->                       \n",
+            "<#9ea1a9|#414a4a|->        9 + <#c0c5ce|#414a4a|->row09<-|#414a4a|->                       \n",
+            "<#9ea1a9|#414a4a|->       10 + <#c0c5ce|#414a4a|->row10<-|#414a4a|->                       \n",
+            "<#cfd0d4|#4f5b66|->       11 + <#cdd1d8|#4f5b66|->row11<-|#4f5b66|->                       \n",
+            "<#9ea1a9|#414a4a|->       12 + <#c0c5ce|#414a4a|->row12<-|#414a4a|->                       \n",
+            "<#9ea1a9|#414a4a|->       13 + <#c0c5ce|#414a4a|->row13<-|#414a4a|->                       \n",
+            "<#9ea1a9|#414a4a|->       14 + <#c0c5ce|#414a4a|->row14<-|#414a4a|->                       \n",
+        );
     }
 
     #[test]
@@ -3229,14 +3232,14 @@ mod tests {
         // At the top the first file is named and progress is zero; jumping to
         // the second file names it and shows how far through the view it sits.
         let mut app = App::new(document(), 10, &Theme::dark());
-        wince::assert_eq!(
+        wince::snapshot_display!(
             dump(&[app.status(28)]),
-            "<#c0c5ce|#3a3f4a|->src/lib.rs        0 open  0%\n".to_string()
+            "<#c0c5ce|#3a3f4a|->src/lib.rs        0 open  0%\n"
         );
         app.update(Action::NextFile);
-        wince::assert_eq!(
+        wince::snapshot_display!(
             dump(&[app.status(28)]),
-            "<#c0c5ce|#3a3f4a|->notes.txt        0 open  66%\n".to_string()
+            "<#c0c5ce|#3a3f4a|->notes.txt        0 open  66%\n"
         );
     }
 
@@ -3250,14 +3253,14 @@ mod tests {
         for _ in 0..3 {
             app.update(Action::LineDown);
         }
-        wince::assert_eq!(
+        wince::snapshot_display!(
             dump(&[app.status(28)]),
-            "<#c0c5ce|#3a3f4a|->src/lib.rs       1 open  33%\n".to_string()
+            "<#c0c5ce|#3a3f4a|->src/lib.rs       1 open  33%\n"
         );
         app.update(Action::ResolveComment);
-        wince::assert_eq!(
+        wince::snapshot_display!(
             dump(&[app.status(28)]),
-            "<#c0c5ce|#3a3f4a|->src/lib.rs     * 2 open  33%\n".to_string()
+            "<#c0c5ce|#3a3f4a|->src/lib.rs     * 2 open  33%\n"
         );
     }
 
@@ -3270,16 +3273,14 @@ mod tests {
             app.update(Action::LineDown);
         }
         app.update(Action::HideComments);
-        wince::assert_eq!(
+        wince::snapshot_display!(
             dump(&[app.status(60)]),
             "<#c0c5ce|#3a3f4a|->src/lib.rs               comments hidden, toggle with V  75%\n"
-                .to_string()
         );
         app.update(Action::HideComments);
-        wince::assert_eq!(
+        wince::snapshot_display!(
             dump(&[app.status(60)]),
             "<#c0c5ce|#3a3f4a|->src/lib.rs                                       1 open  55%\n"
-                .to_string()
         );
     }
 
@@ -3315,17 +3316,18 @@ mod tests {
         let mut app = App::reviewing(review, 12, &Theme::dark());
         app.set_width(TEST_WIDTH);
         let visible = dump(&app.visible(TEST_WIDTH));
-        let expected = "\
-<#ecce91|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,1 +1,1 @@
-<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐
-<#767b84|-|->│<#c0c5ce|-|->this comment runs well past the width<-|-|-> <#767b84|-|->│
-<#767b84|-|->│<#c0c5ce|-|->of the box and must wrap<-|-|->              <#767b84|-|->│
-<#767b84|-|->└──────────────────────────────────────┘
-<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
-";
-        wince::assert_eq!(visible, expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            visible,
+            "<#ecce91|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->│<#c0c5ce|-|->this comment runs well past the width<-|-|-> <#767b84|-|->│\n",
+            "<#767b84|-|->│<#c0c5ce|-|->of the box and must wrap<-|-|->              <#767b84|-|->│\n",
+            "<#767b84|-|->└──────────────────────────────────────┘\n",
+            "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+        );
     }
 
     #[test]
@@ -3357,26 +3359,35 @@ mod tests {
         );
         let mut app = App::reviewing(review, 12, &Theme::dark());
         app.set_width(TEST_WIDTH);
-        let clipped = "\
-<#ecce91|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,1 +1,1 @@
-<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> total <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> alpha plus beta plus gamma<#c0c5ce|#414a4a|->;
-";
-        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), clipped.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#ecce91|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
+            "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> total <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> alpha plus beta plus gamma<#c0c5ce|#414a4a|->;\n",
+        );
 
         app.update(Action::ToggleWrap);
-        let wrapped = "\
-<#ecce91|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,1 +1,1 @@
-<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> total = alpha plus beta<-|#414a4a|-> 
-<#9ea1a9|#414a4a|->            <#c0c5ce|#414a4a|->plus gamma;<-|#414a4a|->                 
-";
-        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), wrapped.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#ecce91|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
+            "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> total = alpha plus beta<-|#414a4a|-> \n",
+            "<#9ea1a9|#414a4a|->            <#c0c5ce|#414a4a|->plus gamma;<-|#414a4a|->                 \n",
+        );
 
         app.update(Action::ToggleWrap);
-        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), clipped.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#ecce91|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
+            "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> total <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> alpha plus beta plus gamma<#c0c5ce|#414a4a|->;\n",
+        );
     }
 
     #[test]
@@ -3417,17 +3428,18 @@ mod tests {
         app.update(Action::AddComment);
         typed(&mut app, "why?");
         let view = app.compose_view(TEST_WIDTH).expect("composing");
-        let expected = "\
-<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,1 +1,1 @@
---editor cursor 4,0--
-<#c0c5ce|-|->why?
---below--
-<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> total = alpha plus beta<-|#414a4a|-> 
-<#9ea1a9|#414a4a|->            <#c0c5ce|#414a4a|->plus gamma;<-|#414a4a|->                 
-";
-        wince::assert_eq!(dump_compose(&view), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump_compose(&view),
+            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
+            "--editor cursor 4,0--\n",
+            "<#c0c5ce|-|->why?\n",
+            "--below--\n",
+            "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> total = alpha plus beta<-|#414a4a|-> \n",
+            "<#9ea1a9|#414a4a|->            <#c0c5ce|#414a4a|->plus gamma;<-|#414a4a|->                 \n",
+        );
     }
 
     #[test]
@@ -3461,13 +3473,14 @@ mod tests {
         let mut app = App::new(document(), 8, &Theme::dark());
         app.update(Action::PickFile);
         wince::assert_eq!(app.picking(), true);
-        let expected = "\
-<#c0c5ce|#4f5b66|->> src/lib.rs                            
-<#c0c5ce|#2b303b|->  notes.txt                             
-<-|#2b303b|->                                        
-<#767b84|#2b303b|->  up/down move  enter select  esc cancel
-";
-        wince::assert_eq!(dump_picker(&mut app), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump_picker(&mut app),
+            "<#c0c5ce|#4f5b66|->> src/lib.rs                            \n",
+            "<#c0c5ce|#2b303b|->  notes.txt                             \n",
+            "<-|#2b303b|->                                        \n",
+            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
+        );
     }
 
     #[test]
@@ -3615,18 +3628,19 @@ mod tests {
         let mut app = App::reviewing(commented_review(), 8, &Theme::dark());
         app.update(Action::PickTheme);
         wince::assert_eq!(app.picking(), true);
-        let expected = "\
-<#c0c5ce|#2b303b|->  InspiredGitHub                        
-<#c0c5ce|#2b303b|->  Solarized (dark)                      
-<#c0c5ce|#2b303b|->  Solarized (light)                     
-<#c0c5ce|#2b303b|->  base16-eighties.dark                  
-<#c0c5ce|#2b303b|->  base16-mocha.dark                     
-<#c0c5ce|#4f5b66|->> base16-ocean.dark                     
-<#c0c5ce|#2b303b|->  base16-ocean.light                    
-<-|#2b303b|->                                        
-<#767b84|#2b303b|->  up/down move  enter select  esc cancel
-";
-        wince::assert_eq!(dump_picker(&mut app), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump_picker(&mut app),
+            "<#c0c5ce|#2b303b|->  InspiredGitHub                        \n",
+            "<#c0c5ce|#2b303b|->  Solarized (dark)                      \n",
+            "<#c0c5ce|#2b303b|->  Solarized (light)                     \n",
+            "<#c0c5ce|#2b303b|->  base16-eighties.dark                  \n",
+            "<#c0c5ce|#2b303b|->  base16-mocha.dark                     \n",
+            "<#c0c5ce|#4f5b66|->> base16-ocean.dark                     \n",
+            "<#c0c5ce|#2b303b|->  base16-ocean.light                    \n",
+            "<-|#2b303b|->                                        \n",
+            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
+        );
     }
 
     #[test]
@@ -3672,14 +3686,15 @@ mod tests {
         let mut app = App::reviewing(versioned_review(2), 8, &Theme::dark());
         app.update(Action::CompareVersions);
         wince::assert_eq!(app.picking(), true);
-        let expected = "\
-<#c0c5ce|#4f5b66|->> the latest diff (v2) (showing now)    
-<#c0c5ce|#2b303b|->  changes since v1                      
-<#c0c5ce|#2b303b|->  changes since v0                      
-<-|#2b303b|->                                        
-<#767b84|#2b303b|->  up/down move  enter select  esc cancel
-";
-        wince::assert_eq!(dump_picker(&mut app), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump_picker(&mut app),
+            "<#c0c5ce|#4f5b66|->> the latest diff (v2) (showing now)    \n",
+            "<#c0c5ce|#2b303b|->  changes since v1                      \n",
+            "<#c0c5ce|#2b303b|->  changes since v0                      \n",
+            "<-|#2b303b|->                                        \n",
+            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
+        );
     }
 
     #[test]
@@ -3691,14 +3706,15 @@ mod tests {
         app.show_comparison(comparison_diff(), Some((1, from_v1_before_origin())));
         app.update(Action::CompareVersions);
         wince::assert_eq!(app.picking(), true);
-        let expected = "\
-<#c0c5ce|#2b303b|->  the latest diff (v2)                  
-<#c0c5ce|#4f5b66|->> changes since v1 (showing now)        
-<#c0c5ce|#2b303b|->  changes since v0                      
-<-|#2b303b|->                                        
-<#767b84|#2b303b|->  up/down move  enter select  esc cancel
-";
-        wince::assert_eq!(dump_picker(&mut app), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump_picker(&mut app),
+            "<#c0c5ce|#2b303b|->  the latest diff (v2)                  \n",
+            "<#c0c5ce|#4f5b66|->> changes since v1 (showing now)        \n",
+            "<#c0c5ce|#2b303b|->  changes since v0                      \n",
+            "<-|#2b303b|->                                        \n",
+            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
+        );
     }
 
     #[test]
@@ -3723,9 +3739,9 @@ mod tests {
         app.set_width(TEST_WIDTH);
         app.update(Action::CompareVersions);
         wince::assert_eq!(app.picking(), false);
-        wince::assert_eq!(
+        wince::snapshot_display!(
             status_text(&app),
-            "no earlier version to compare against   ".to_string()
+            "no earlier version to compare against   "
         );
     }
 
@@ -3736,13 +3752,14 @@ mod tests {
         let mut app = App::reviewing(versioned_review(1), 8, &Theme::dark());
         app.offer_refresh();
         wince::assert_eq!(app.picking(), true);
-        let expected = "\
-<#c0c5ce|#4f5b66|->> Refresh now                           
-<#c0c5ce|#2b303b|->  Keep the current diff                 
-<-|#2b303b|->                                        
-<#767b84|#2b303b|->  up/down move  enter select  esc cancel
-";
-        wince::assert_eq!(dump_picker(&mut app), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump_picker(&mut app),
+            "<#c0c5ce|#4f5b66|->> Refresh now                           \n",
+            "<#c0c5ce|#2b303b|->  Keep the current diff                 \n",
+            "<-|#2b303b|->                                        \n",
+            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
+        );
     }
 
     #[test]
@@ -3776,13 +3793,14 @@ mod tests {
         let mut app = App::reviewing(versioned_review(1), 8, &Theme::dark());
         app.offer_compare_after_refresh(None, None);
         wince::assert_eq!(app.picking(), true);
-        let expected = "\
-<#c0c5ce|#4f5b66|->> the latest diff (v1) (showing now)    
-<#c0c5ce|#2b303b|->  changes since v0                      
-<-|#2b303b|->                                        
-<#767b84|#2b303b|->  up/down move  enter select  esc cancel
-";
-        wince::assert_eq!(dump_picker(&mut app), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump_picker(&mut app),
+            "<#c0c5ce|#4f5b66|->> the latest diff (v1) (showing now)    \n",
+            "<#c0c5ce|#2b303b|->  changes since v0                      \n",
+            "<-|#2b303b|->                                        \n",
+            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
+        );
     }
 
     #[test]
@@ -3792,14 +3810,15 @@ mod tests {
         let mut app = App::reviewing(versioned_review(2), 8, &Theme::dark());
         app.offer_compare_after_refresh(Some(1), None);
         wince::assert_eq!(app.picking(), true);
-        let expected = "\
-<#c0c5ce|#2b303b|->  the latest diff (v2)                  
-<#c0c5ce|#4f5b66|->> changes since v1 (showing now)        
-<#c0c5ce|#2b303b|->  changes since v0                      
-<-|#2b303b|->                                        
-<#767b84|#2b303b|->  up/down move  enter select  esc cancel
-";
-        wince::assert_eq!(dump_picker(&mut app), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump_picker(&mut app),
+            "<#c0c5ce|#2b303b|->  the latest diff (v2)                  \n",
+            "<#c0c5ce|#4f5b66|->> changes since v1 (showing now)        \n",
+            "<#c0c5ce|#2b303b|->  changes since v0                      \n",
+            "<-|#2b303b|->                                        \n",
+            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
+        );
     }
 
     #[test]
@@ -3810,14 +3829,15 @@ mod tests {
         let mut app = App::reviewing(versioned_review(2), 8, &Theme::dark());
         app.offer_compare_after_refresh(None, Some(1));
         wince::assert_eq!(app.picking(), true);
-        let expected = "\
-<#c0c5ce|#4f5b66|->> the latest diff (v2) (showing now)    
-<#c0c5ce|#2b303b|->  changes since v1 (your last comments) 
-<#c0c5ce|#2b303b|->  changes since v0                      
-<-|#2b303b|->                                        
-<#767b84|#2b303b|->  up/down move  enter select  esc cancel
-";
-        wince::assert_eq!(dump_picker(&mut app), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump_picker(&mut app),
+            "<#c0c5ce|#4f5b66|->> the latest diff (v2) (showing now)    \n",
+            "<#c0c5ce|#2b303b|->  changes since v1 (your last comments) \n",
+            "<#c0c5ce|#2b303b|->  changes since v0                      \n",
+            "<-|#2b303b|->                                        \n",
+            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
+        );
     }
 
     #[test]
@@ -3959,20 +3979,21 @@ mod tests {
         let (cursor, top, visible) = drive(folded_document(), 12, &[]);
         wince::assert_eq!(cursor, 0);
         wince::assert_eq!(top, 0);
-        let expected = "\
-<#cdd1d8|#4f5b66|b>modified  notes.txt<-|#4f5b66|->                     
-<#96b5b4|-|->@@ -1,17 +1,17 @@
-<#767b84|#3a3f4a|->            [5 unchanged lines]  ctx05<-|#3a3f4a|->  
-<#7d828c|-|->   6    6   <#c0c5ce|-|->ctx06
-<#7d828c|-|->   7    7   <#c0c5ce|-|->ctx07
-<#7d828c|-|->   8    8   <#c0c5ce|-|->ctx08
-<#9ea1a9|#414a4a|->        9 + <#c0c5ce|#414a4a|->change!<-|#414a4a|->                     
-<#7d828c|-|->  10   10   <#c0c5ce|-|->ctx09
-<#7d828c|-|->  11   11   <#c0c5ce|-|->ctx10
-<#7d828c|-|->  12   12   <#c0c5ce|-|->ctx11
-<#767b84|#3a3f4a|->            [5 unchanged lines]  ctx16<-|#3a3f4a|->  
-";
-        wince::assert_eq!(visible, expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            visible,
+            "<#cdd1d8|#4f5b66|b>modified  notes.txt<-|#4f5b66|->                     \n",
+            "<#96b5b4|-|->@@ -1,17 +1,17 @@\n",
+            "<#767b84|#3a3f4a|->            [5 unchanged lines]  ctx05<-|#3a3f4a|->  \n",
+            "<#7d828c|-|->   6    6   <#c0c5ce|-|->ctx06\n",
+            "<#7d828c|-|->   7    7   <#c0c5ce|-|->ctx07\n",
+            "<#7d828c|-|->   8    8   <#c0c5ce|-|->ctx08\n",
+            "<#9ea1a9|#414a4a|->        9 + <#c0c5ce|#414a4a|->change!<-|#414a4a|->                     \n",
+            "<#7d828c|-|->  10   10   <#c0c5ce|-|->ctx09\n",
+            "<#7d828c|-|->  11   11   <#c0c5ce|-|->ctx10\n",
+            "<#7d828c|-|->  12   12   <#c0c5ce|-|->ctx11\n",
+            "<#767b84|#3a3f4a|->            [5 unchanged lines]  ctx16<-|#3a3f4a|->  \n",
+        );
     }
 
     #[test]
@@ -3985,15 +4006,16 @@ mod tests {
         );
         wince::assert_eq!(cursor, 2);
         wince::assert_eq!(top, 0);
-        let expected = "\
-<#c0c5ce|-|b>modified  notes.txt
-<#96b5b4|-|->@@ -1,17 +1,17 @@
-<#b8bac0|#4f5b66|->   1    1   <#cdd1d8|#4f5b66|->ctx01<-|#4f5b66|->                       
-<#7d828c|-|->   2    2   <#c0c5ce|-|->ctx02
-<#7d828c|-|->   3    3   <#c0c5ce|-|->ctx03
-<#7d828c|-|->   4    4   <#c0c5ce|-|->ctx04
-";
-        wince::assert_eq!(visible, expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            visible,
+            "<#c0c5ce|-|b>modified  notes.txt\n",
+            "<#96b5b4|-|->@@ -1,17 +1,17 @@\n",
+            "<#b8bac0|#4f5b66|->   1    1   <#cdd1d8|#4f5b66|->ctx01<-|#4f5b66|->                       \n",
+            "<#7d828c|-|->   2    2   <#c0c5ce|-|->ctx02\n",
+            "<#7d828c|-|->   3    3   <#c0c5ce|-|->ctx03\n",
+            "<#7d828c|-|->   4    4   <#c0c5ce|-|->ctx04\n",
+        );
     }
 
     #[test]
@@ -4011,15 +4033,16 @@ mod tests {
         );
         wince::assert_eq!(cursor, 2);
         wince::assert_eq!(top, 0);
-        let expected = "\
-<#c0c5ce|-|b>modified  notes.txt
-<#96b5b4|-|->@@ -1,17 +1,17 @@
-<#adb0b5|#4f5b66|->            [5 unchanged lines]  ctx05<-|#4f5b66|->  
-<#7d828c|-|->   6    6   <#c0c5ce|-|->ctx06
-<#7d828c|-|->   7    7   <#c0c5ce|-|->ctx07
-<#7d828c|-|->   8    8   <#c0c5ce|-|->ctx08
-";
-        wince::assert_eq!(visible, expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            visible,
+            "<#c0c5ce|-|b>modified  notes.txt\n",
+            "<#96b5b4|-|->@@ -1,17 +1,17 @@\n",
+            "<#adb0b5|#4f5b66|->            [5 unchanged lines]  ctx05<-|#4f5b66|->  \n",
+            "<#7d828c|-|->   6    6   <#c0c5ce|-|->ctx06\n",
+            "<#7d828c|-|->   7    7   <#c0c5ce|-|->ctx07\n",
+            "<#7d828c|-|->   8    8   <#c0c5ce|-|->ctx08\n",
+        );
     }
 
     #[test]
@@ -4029,19 +4052,20 @@ mod tests {
         let (cursor, top, visible) = drive(commented_document(), 12, &[]);
         wince::assert_eq!(cursor, 0);
         wince::assert_eq!(top, 0);
-        let expected = "\
-<#ecce91|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,2 +1,2 @@
-<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐
-<#767b84|-|->└──────────────────────────────────────┘
-<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#767b84|-|->┌ <#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐
-<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│
-<#767b84|-|->└──────────────────────────────────────┘
-<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
-";
-        wince::assert_eq!(visible, expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            visible,
+            "<#ecce91|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->└──────────────────────────────────────┘\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│\n",
+            "<#767b84|-|->└──────────────────────────────────────┘\n",
+            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+        );
     }
 
     #[test]
@@ -4084,18 +4108,19 @@ mod tests {
         );
         wince::assert_eq!(cursor, 6);
         wince::assert_eq!(top, 0);
-        let expected = "\
-<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,2 +1,2 @@
-<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐
-<#767b84|-|->└──────────────────────────────────────┘
-<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#adb0b5|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#adb0b5|#4f5b66|-> <#adb0b5|#4f5b66|->┐
-<#767b84|-|->└──────────────────────────────────────┘
-<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
-";
-        wince::assert_eq!(visible, expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            visible,
+            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->└──────────────────────────────────────┘\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#adb0b5|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#adb0b5|#4f5b66|-> <#adb0b5|#4f5b66|->┐\n",
+            "<#767b84|-|->└──────────────────────────────────────┘\n",
+            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+        );
 
         let (cursor, _, visible) = drive(
             commented_document(),
@@ -4108,19 +4133,20 @@ mod tests {
             ],
         );
         wince::assert_eq!(cursor, 6);
-        let expected = "\
-<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,2 +1,2 @@
-<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐
-<#767b84|-|->└──────────────────────────────────────┘
-<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#adb0b5|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#adb0b5|#4f5b66|-> <#adb0b5|#4f5b66|->┐
-<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│
-<#767b84|-|->└──────────────────────────────────────┘
-<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
-";
-        wince::assert_eq!(visible, expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            visible,
+            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->└──────────────────────────────────────┘\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#adb0b5|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#adb0b5|#4f5b66|-> <#adb0b5|#4f5b66|->┐\n",
+            "<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│\n",
+            "<#767b84|-|->└──────────────────────────────────────┘\n",
+            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+        );
     }
 
     #[test]
@@ -4139,14 +4165,15 @@ mod tests {
         );
         wince::assert_eq!(cursor, 4);
         wince::assert_eq!(top, 0);
-        let expected = "\
-<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,2 +1,2 @@
-<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#cfd0d4|#4f5b66|->        2 + <#ddccda|#4f5b66|->let<#cdd1d8|#4f5b66|-> y <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#ebcdc3|#4f5b66|->2<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  
-";
-        wince::assert_eq!(visible, expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            visible,
+            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#cfd0d4|#4f5b66|->        2 + <#ddccda|#4f5b66|->let<#cdd1d8|#4f5b66|-> y <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#ebcdc3|#4f5b66|->2<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  \n",
+        );
 
         // Showing them again brings every box back; the cursor stays on the code.
         let (cursor, _, visible) = drive(
@@ -4160,19 +4187,20 @@ mod tests {
             ],
         );
         wince::assert_eq!(cursor, 9);
-        let restored = "\
-<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,2 +1,2 @@
-<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐
-<#767b84|-|->└──────────────────────────────────────┘
-<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#767b84|-|->┌ <#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐
-<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│
-<#767b84|-|->└──────────────────────────────────────┘
-<#cfd0d4|#4f5b66|->        2 + <#ddccda|#4f5b66|->let<#cdd1d8|#4f5b66|-> y <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#ebcdc3|#4f5b66|->2<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  
-";
-        wince::assert_eq!(visible, restored.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            visible,
+            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->└──────────────────────────────────────┘\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│\n",
+            "<#767b84|-|->└──────────────────────────────────────┘\n",
+            "<#cfd0d4|#4f5b66|->        2 + <#ddccda|#4f5b66|->let<#cdd1d8|#4f5b66|-> y <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#ebcdc3|#4f5b66|->2<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  \n",
+        );
     }
 
     #[test]
@@ -4190,19 +4218,20 @@ mod tests {
         );
         wince::assert_eq!(cursor, 6);
         wince::assert_eq!(top, 0);
-        let expected = "\
-<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,2 +1,2 @@
-<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐
-<#767b84|-|->└──────────────────────────────────────┘
-<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#c8d8ba|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#c8d8ba|#4f5b66|-> [draft]<#adb0b5|#4f5b66|-> [resolved by wez]<#adb0b5|#4f5b66|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#c8d8ba|#4f5b66|-> <#c8d8ba|#4f5b66|->┐
-<#a3be8c|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#a3be8c|-|->│
-<#a3be8c|-|->└──────────────────────────────────────┘
-<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
-";
-        wince::assert_eq!(visible, expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            visible,
+            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->└──────────────────────────────────────┘\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#c8d8ba|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#c8d8ba|#4f5b66|-> [draft]<#adb0b5|#4f5b66|-> [resolved by wez]<#adb0b5|#4f5b66|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#c8d8ba|#4f5b66|-> <#c8d8ba|#4f5b66|->┐\n",
+            "<#a3be8c|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#a3be8c|-|->│\n",
+            "<#a3be8c|-|->└──────────────────────────────────────┘\n",
+            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+        );
     }
 
     #[test]
@@ -4221,18 +4250,19 @@ mod tests {
         );
         wince::assert_eq!(cursor, 6);
         wince::assert_eq!(top, 0);
-        let expected = "\
-<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,2 +1,2 @@
-<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐
-<#767b84|-|->└──────────────────────────────────────┘
-<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#c8d8ba|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#c8d8ba|#4f5b66|-> [draft]<#adb0b5|#4f5b66|-> [deleted by wez]<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to undelete  tab to expand/collapse<#c8d8ba|#4f5b66|-> <#c8d8ba|#4f5b66|->┐
-<#a3be8c|-|->└──────────────────────────────────────┘
-<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
-";
-        wince::assert_eq!(visible, expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            visible,
+            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->└──────────────────────────────────────┘\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#c8d8ba|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#c8d8ba|#4f5b66|-> [draft]<#adb0b5|#4f5b66|-> [deleted by wez]<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to undelete  tab to expand/collapse<#c8d8ba|#4f5b66|-> <#c8d8ba|#4f5b66|->┐\n",
+            "<#a3be8c|-|->└──────────────────────────────────────┘\n",
+            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+        );
     }
 
     #[test]
@@ -4252,19 +4282,20 @@ mod tests {
         );
         wince::assert_eq!(cursor, 6);
         wince::assert_eq!(top, 0);
-        let expected = "\
-<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,2 +1,2 @@
-<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐
-<#767b84|-|->└──────────────────────────────────────┘
-<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#adb0b5|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#adb0b5|#4f5b66|-> <#adb0b5|#4f5b66|->┐
-<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│
-<#767b84|-|->└──────────────────────────────────────┘
-<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
-";
-        wince::assert_eq!(visible, expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            visible,
+            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->└──────────────────────────────────────┘\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#adb0b5|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#adb0b5|#4f5b66|-> <#adb0b5|#4f5b66|->┐\n",
+            "<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│\n",
+            "<#767b84|-|->└──────────────────────────────────────┘\n",
+            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+        );
     }
 
     #[test]
@@ -4303,17 +4334,18 @@ mod tests {
         typed(&mut app, "why 2?");
         app.compose_key(submit());
         wince::assert_eq!(app.composing(), false);
-        let expected = "\
-<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,2 +1,2 @@
-<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#c8d8ba|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#c8d8ba|#4f5b66|-> [draft]<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#c8d8ba|#4f5b66|-> <#c8d8ba|#4f5b66|->┐
-<#a3be8c|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#a3be8c|-|->│
-<#a3be8c|-|->└──────────────────────────────────────┘
-<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
-";
-        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#c8d8ba|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#c8d8ba|#4f5b66|-> [draft]<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#c8d8ba|#4f5b66|-> <#c8d8ba|#4f5b66|->┐\n",
+            "<#a3be8c|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#a3be8c|-|->│\n",
+            "<#a3be8c|-|->└──────────────────────────────────────┘\n",
+            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+        );
     }
 
     #[test]
@@ -4327,17 +4359,18 @@ mod tests {
         app.update(Action::AddComment);
         typed(&mut app, "why 2?");
         let view = app.compose_view(TEST_WIDTH).expect("composing");
-        let expected = "\
-<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,2 +1,2 @@
-<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
---editor cursor 6,0--
-<#c0c5ce|-|->why 2?
---below--
-<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
-";
-        wince::assert_eq!(dump_compose(&view), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump_compose(&view),
+            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "--editor cursor 6,0--\n",
+            "<#c0c5ce|-|->why 2?\n",
+            "--below--\n",
+            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+        );
     }
 
     #[test]
@@ -4354,9 +4387,11 @@ mod tests {
         let view = app.compose_view(TEST_WIDTH).expect("composing");
         // The cursor rests at the end of the last wrapped row (column 8 of
         // "lazy dog" on row 1).
-        wince::assert_eq!(
+        #[rustfmt::skip]
+        wince::snapshot_display!(
             dump(&view.editor_rows),
-            "<#c0c5ce|-|->the quick brown fox jumps over the \n<#c0c5ce|-|->lazy dog\n".to_string()
+            "<#c0c5ce|-|->the quick brown fox jumps over the \n",
+            "<#c0c5ce|-|->lazy dog\n",
         );
         wince::assert_eq!(view.editor_cursor, Some((8, 1)));
     }
@@ -4375,9 +4410,11 @@ mod tests {
         typed(&mut app, "the quick brown fox jumps over the lazy dog");
         app.compose_key(KeyPress::new(Key::Up));
         let view = app.compose_view(TEST_WIDTH).expect("composing");
-        wince::assert_eq!(
+        #[rustfmt::skip]
+        wince::snapshot_display!(
             dump(&view.editor_rows),
-            "<#c0c5ce|-|->the quick brown fox jumps over the \n<#c0c5ce|-|->lazy dog\n".to_string()
+            "<#c0c5ce|-|->the quick brown fox jumps over the \n",
+            "<#c0c5ce|-|->lazy dog\n",
         );
         wince::assert_eq!(view.editor_cursor, Some((8, 0)));
     }
@@ -4401,10 +4438,13 @@ mod tests {
             }
         }
         let view = app.compose_view(TEST_WIDTH).expect("composing");
-        wince::assert_eq!(
+        #[rustfmt::skip]
+        wince::snapshot_display!(
             dump(&view.editor_rows),
-            "<#c0c5ce|-|->line 5\n<#c0c5ce|-|->line 6\n<#c0c5ce|-|->line 7\n<#c0c5ce|-|->line 8\n"
-                .to_string()
+            "<#c0c5ce|-|->line 5\n",
+            "<#c0c5ce|-|->line 6\n",
+            "<#c0c5ce|-|->line 7\n",
+            "<#c0c5ce|-|->line 8\n",
         );
         wince::assert_eq!(view.editor_cursor, Some((6, 3)));
         wince::assert_eq!(
@@ -4484,17 +4524,18 @@ mod tests {
         wince::assert_eq!(app.compose_view(TEST_WIDTH).is_none(), true);
         wince::assert_eq!(float_top(&app), Some(4));
         wince::assert_eq!(float_has_cursor(&app), false);
-        let expected = "\
-<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,2 +1,2 @@
-<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
---float row 4 cursor off--
-<#c0c5ce|-|->why 2?
---float end--
-
-";
-        wince::assert_eq!(dump_detached(&app, TEST_WIDTH, 8), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump_detached(&app, TEST_WIDTH, 8),
+            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "--float row 4 cursor off--\n",
+            "<#c0c5ce|-|->why 2?\n",
+            "--float end--\n",
+            "\n",
+        );
     }
 
     #[test]
@@ -4685,17 +4726,18 @@ mod tests {
         wince::assert_eq!(float_has_cursor(&app), true);
         app.compose_key(submit());
         wince::assert_eq!(app.composing(), false);
-        let expected = "\
-<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,2 +1,2 @@
-<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#c8d8ba|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#c8d8ba|#4f5b66|-> [draft]<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#c8d8ba|#4f5b66|-> <#c8d8ba|#4f5b66|->┐
-<#a3be8c|-|->│<#c0c5ce|-|->why 2?2<-|-|->                               <#a3be8c|-|->│
-<#a3be8c|-|->└──────────────────────────────────────┘
-<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
-";
-        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#c8d8ba|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#c8d8ba|#4f5b66|-> [draft]<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#c8d8ba|#4f5b66|-> <#c8d8ba|#4f5b66|->┐\n",
+            "<#a3be8c|-|->│<#c0c5ce|-|->why 2?2<-|-|->                               <#a3be8c|-|->│\n",
+            "<#a3be8c|-|->└──────────────────────────────────────┘\n",
+            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+        );
     }
 
     #[test]
@@ -4765,7 +4807,7 @@ mod tests {
             app.update(Action::LineDown);
         }
         app.update(Action::AddComment);
-        wince::assert_eq!(app.editor_hint(), "ctrl-g submit  esc cancel".to_string());
+        wince::snapshot_display!(app.editor_hint(), "ctrl-g submit  esc cancel");
         typed(&mut app, "why 2?");
         // The former submit key is now ordinary input, so the editor stays open.
         app.compose_key(submit());
@@ -4773,17 +4815,18 @@ mod tests {
         // The configured key confirms the comment as a draft above its line.
         app.compose_key(KeyPress::with_modifiers(Key::Char('g'), true, false, false));
         wince::assert_eq!(app.composing(), false);
-        let expected = "\
-<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,2 +1,2 @@
-<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#c8d8ba|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#c8d8ba|#4f5b66|-> [draft]<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#c8d8ba|#4f5b66|-> <#c8d8ba|#4f5b66|->┐
-<#a3be8c|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#a3be8c|-|->│
-<#a3be8c|-|->└──────────────────────────────────────┘
-<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
-";
-        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#c8d8ba|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#c8d8ba|#4f5b66|-> [draft]<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#c8d8ba|#4f5b66|-> <#c8d8ba|#4f5b66|->┐\n",
+            "<#a3be8c|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#a3be8c|-|->│\n",
+            "<#a3be8c|-|->└──────────────────────────────────────┘\n",
+            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+        );
     }
 
     #[test]
@@ -4793,16 +4836,16 @@ mod tests {
         // the diff (the key returns it to the editor) and `navigate` once it is
         // back in the editor (the key hands it to the diff).
         let mut app = composing_on_added_line(8, "why 2?");
-        wince::assert_eq!(app.editor_hint(), "ctrl-d submit  esc cancel".to_string());
+        wince::snapshot_display!(app.editor_hint(), "ctrl-d submit  esc cancel");
         app.compose_key(detach());
-        wince::assert_eq!(
+        wince::snapshot_display!(
             app.editor_hint(),
-            "ctrl-d submit  [ctrl-o edit]  esc cancel".to_string()
+            "ctrl-d submit  [ctrl-o edit]  esc cancel"
         );
         app.compose_key(ch('e'));
-        wince::assert_eq!(
+        wince::snapshot_display!(
             app.editor_hint(),
-            "ctrl-d submit  [ctrl-o navigate]  esc cancel".to_string()
+            "ctrl-d submit  [ctrl-o navigate]  esc cancel"
         );
     }
 
@@ -4817,9 +4860,11 @@ mod tests {
         let view = app.compose_view(TEST_WIDTH).expect("composing");
         // The editor opens seeded with the current body and the cursor resting
         // past its end, on column 8 of the second row.
-        wince::assert_eq!(
+        #[rustfmt::skip]
+        wince::snapshot_display!(
             dump(&view.editor_rows),
-            "<#c0c5ce|-|->why 2?\n<#c0c5ce|-|->say more\n".to_string()
+            "<#c0c5ce|-|->why 2?\n",
+            "<#c0c5ce|-|->say more\n",
         );
         wince::assert_eq!(view.editor_cursor, Some((8, 1)));
         drop(view);
@@ -4830,19 +4875,20 @@ mod tests {
         typed(&mut app, "use a constant");
         app.compose_key(submit());
         wince::assert_eq!(app.composing(), false);
-        let expected = "\
-<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,2 +1,2 @@
-<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐
-<#767b84|-|->└──────────────────────────────────────┘
-<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#c8d8ba|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#c8d8ba|#4f5b66|-> [draft]<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#c8d8ba|#4f5b66|-> <#c8d8ba|#4f5b66|->┐
-<#a3be8c|-|->│<#c0c5ce|-|->use a constant<-|-|->                        <#a3be8c|-|->│
-<#a3be8c|-|->└──────────────────────────────────────┘
-<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
-";
-        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->└──────────────────────────────────────┘\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#c8d8ba|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#c8d8ba|#4f5b66|-> [draft]<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#c8d8ba|#4f5b66|-> <#c8d8ba|#4f5b66|->┐\n",
+            "<#a3be8c|-|->│<#c0c5ce|-|->use a constant<-|-|->                        <#a3be8c|-|->│\n",
+            "<#a3be8c|-|->└──────────────────────────────────────┘\n",
+            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+        );
     }
 
     #[test]
@@ -4855,20 +4901,21 @@ mod tests {
         app.update(Action::NextComment);
         app.update(Action::EditComment);
         let view = app.compose_view(TEST_WIDTH).expect("composing");
-        let expected = "\
-<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,2 +1,2 @@
-<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐
-<#767b84|-|->└──────────────────────────────────────┘
-<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
---editor cursor 8,1--
-<#c0c5ce|-|->why 2?
-<#c0c5ce|-|->say more
---below--
-<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
-";
-        wince::assert_eq!(dump_compose(&view), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump_compose(&view),
+            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->└──────────────────────────────────────┘\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "--editor cursor 8,1--\n",
+            "<#c0c5ce|-|->why 2?\n",
+            "<#c0c5ce|-|->say more\n",
+            "--below--\n",
+            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+        );
     }
 
     #[test]
@@ -4884,21 +4931,22 @@ mod tests {
         app.update(Action::AddComment);
         typed(&mut app, "second");
         let view = app.compose_view(TEST_WIDTH).expect("composing");
-        let expected = "\
-<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
-<#a3be8c|-|->┌ <#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#a3be8c|-|-> <#a3be8c|-|->┐
-<#a3be8c|-|->│<#c0c5ce|-|->first<-|-|->                                 <#a3be8c|-|->│
-<#a3be8c|-|->└──────────────────────────────────────┘
---editor cursor 6,0--
-<#c0c5ce|-|->second
---below--
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,2 +1,2 @@
-<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐
-<#767b84|-|->└──────────────────────────────────────┘
-<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-";
-        wince::assert_eq!(dump_compose(&view), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump_compose(&view),
+            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#a3be8c|-|->┌ <#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#a3be8c|-|-> <#a3be8c|-|->┐\n",
+            "<#a3be8c|-|->│<#c0c5ce|-|->first<-|-|->                                 <#a3be8c|-|->│\n",
+            "<#a3be8c|-|->└──────────────────────────────────────┘\n",
+            "--editor cursor 6,0--\n",
+            "<#c0c5ce|-|->second\n",
+            "--below--\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->└──────────────────────────────────────┘\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+        );
     }
 
     /// The status-line text an app currently shows at `width`.
@@ -4944,19 +4992,20 @@ mod tests {
 
         wince::assert_eq!(app.cursor(), 4);
         wince::assert_eq!(app.top(), 0);
-        let expected = "\
-<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,3 +1,3 @@
-<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#cfd0d4|#4f5b66|->        2 + <#ddccda|#4f5b66|->let<#cdd1d8|#4f5b66|-> y <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#ebcdc3|#4f5b66|->2<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  
-<#9ea1a9|#414a4a|->        3 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> z <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->3<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
-";
-        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,3 +1,3 @@\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#cfd0d4|#4f5b66|->        2 + <#ddccda|#4f5b66|->let<#cdd1d8|#4f5b66|-> y <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#ebcdc3|#4f5b66|->2<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  \n",
+            "<#9ea1a9|#414a4a|->        3 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> z <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->3<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+        );
         // The status line truncates the note to the screen width.
-        wince::assert_eq!(
+        wince::snapshot_display!(
             status_text(&app),
-            "captured v1; rebased 0 comments: 0 exact".to_string()
+            "captured v1; rebased 0 comments: 0 exact"
         );
     }
 
@@ -5006,18 +5055,19 @@ mod tests {
 
         // The drafted comment sits above the added `let y = 2;`, which has moved
         // to the third line, and still wears its uncommitted draft badge.
-        let expected = "\
-<#ecce91|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,3 +1,3 @@
-<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> a <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->0<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
-<#7d828c|-|->   2    2   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#a3be8c|-|->┌ <#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#a3be8c|-|-> <#a3be8c|-|->┐
-<#a3be8c|-|->│<#c0c5ce|-|->why?<-|-|->                                  <#a3be8c|-|->│
-<#a3be8c|-|->└──────────────────────────────────────┘
-<#9ea1a9|#414a4a|->        3 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
-";
-        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#ecce91|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,3 +1,3 @@\n",
+            "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> a <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->0<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+            "<#7d828c|-|->   2    2   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#a3be8c|-|->┌ <#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#a3be8c|-|-> <#a3be8c|-|->┐\n",
+            "<#a3be8c|-|->│<#c0c5ce|-|->why?<-|-|->                                  <#a3be8c|-|->│\n",
+            "<#a3be8c|-|->└──────────────────────────────────────┘\n",
+            "<#9ea1a9|#414a4a|->        3 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+        );
     }
 
     #[test]
@@ -5042,13 +5092,14 @@ mod tests {
 
         wince::assert_eq!(app.cursor(), 3);
         wince::assert_eq!(app.top(), 0);
-        let expected = "\
-<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,1 +1,1 @@
-<#b8bac0|#4f5b66|->   1    1   <#ddccda|#4f5b66|->let<#cdd1d8|#4f5b66|-> x <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#eac9bf|#4f5b66|->1<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  
-";
-        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
+            "<#b8bac0|#4f5b66|->   1    1   <#ddccda|#4f5b66|->let<#cdd1d8|#4f5b66|-> x <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#eac9bf|#4f5b66|->1<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  \n",
+        );
     }
 
     /// Open a search in `direction` and type `pattern` into the prompt.
@@ -5067,25 +5118,26 @@ mod tests {
         // keys.
         let mut app = App::new(document(), 9, &Theme::dark());
         search_for(&mut app, Action::SearchForward, "hello");
-        wince::assert_eq!(
+        wince::snapshot_display!(
             status_text(&app),
-            "/hello  1/1 matches                 100%".to_string()
+            "/hello  1/1 matches                 100%"
         );
-        let expected = "\
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,2 +1,2 @@
-<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
-<#c0c5ce|-|b>added  notes.txt
-<#96b5b4|-|->@@ -1,1 +1,1 @@
-<#cfd0d4|#4f5b66|->        1 + <#dcdfe4|#686255|->hello<-|#4f5b66|->                       
-";
-        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+            "<#c0c5ce|-|b>added  notes.txt\n",
+            "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
+            "<#cfd0d4|#4f5b66|->        1 + <#dcdfe4|#686255|->hello<-|#4f5b66|->                       \n",
+        );
         app.search_key(KeyPress::new(Key::Enter));
         wince::assert_eq!(app.searching(), false);
-        wince::assert_eq!(
+        wince::snapshot_display!(
             status_text(&app),
-            "/hello  n next  N prev  1/1 matches 100%".to_string()
+            "/hello  n next  N prev  1/1 matches 100%"
         );
     }
 
@@ -5096,16 +5148,17 @@ mod tests {
         // the match color while the rest of its row keeps its own tint.
         let mut app = App::new(document(), 9, &Theme::dark());
         search_for(&mut app, Action::SearchForward, "let");
-        let expected = "\
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,2 +1,2 @@
-<#b8bac0|#4f5b66|->   1    1   <#e7dbe5|#686255|->let<#cdd1d8|#4f5b66|-> x <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#eac9bf|#4f5b66|->1<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  
-<#9ea1a9|#414a4a|->        2 + <#e8dbe5|#686255|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
-<#c0c5ce|-|b>added  notes.txt
-<#96b5b4|-|->@@ -1,1 +1,1 @@
-<#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->hello<-|#414a4a|->                       
-";
-        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#b8bac0|#4f5b66|->   1    1   <#e7dbe5|#686255|->let<#cdd1d8|#4f5b66|-> x <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#eac9bf|#4f5b66|->1<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  \n",
+            "<#9ea1a9|#414a4a|->        2 + <#e8dbe5|#686255|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+            "<#c0c5ce|-|b>added  notes.txt\n",
+            "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
+            "<#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->hello<-|#414a4a|->                       \n",
+        );
     }
 
     #[test]
@@ -5114,9 +5167,9 @@ mod tests {
         // the cursor stays where the search opened.
         let mut app = App::new(document(), 9, &Theme::dark());
         search_for(&mut app, Action::SearchForward, "absent");
-        wince::assert_eq!(
+        wince::snapshot_display!(
             status_text(&app),
-            "/absent  no matches                   0%".to_string()
+            "/absent  no matches                   0%"
         );
     }
 
@@ -5127,20 +5180,21 @@ mod tests {
         // and highlights every occurrence in view while the tally counts them.
         let mut app = App::new(document(), 9, &Theme::dark());
         search_for(&mut app, Action::SearchForward, "l.t");
-        wince::assert_eq!(
+        wince::snapshot_display!(
             status_text(&app),
-            "/l.t  1/2 matches                    33%".to_string()
+            "/l.t  1/2 matches                    33%"
         );
-        let expected = "\
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,2 +1,2 @@
-<#b8bac0|#4f5b66|->   1    1   <#e7dbe5|#686255|->let<#cdd1d8|#4f5b66|-> x <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#eac9bf|#4f5b66|->1<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  
-<#9ea1a9|#414a4a|->        2 + <#e8dbe5|#686255|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
-<#c0c5ce|-|b>added  notes.txt
-<#96b5b4|-|->@@ -1,1 +1,1 @@
-<#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->hello<-|#414a4a|->                       
-";
-        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#b8bac0|#4f5b66|->   1    1   <#e7dbe5|#686255|->let<#cdd1d8|#4f5b66|-> x <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#eac9bf|#4f5b66|->1<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  \n",
+            "<#9ea1a9|#414a4a|->        2 + <#e8dbe5|#686255|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+            "<#c0c5ce|-|b>added  notes.txt\n",
+            "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
+            "<#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->hello<-|#414a4a|->                       \n",
+        );
     }
 
     #[test]
@@ -5149,9 +5203,9 @@ mod tests {
         // so and the cursor stays where the search opened rather than jumping.
         let mut app = App::new(document(), 9, &Theme::dark());
         search_for(&mut app, Action::SearchForward, "(let");
-        wince::assert_eq!(
+        wince::snapshot_display!(
             status_text(&app),
-            "/(let  bad pattern                    0%".to_string()
+            "/(let  bad pattern                    0%"
         );
     }
 
@@ -5161,20 +5215,21 @@ mod tests {
         // cursor stays where the search opened.
         let mut app = App::new(folded_document(), 20, &Theme::dark());
         search_for(&mut app, Action::SearchForward, "ctx03");
-        let expected = "\
-<#cdd1d8|#4f5b66|b>modified  notes.txt<-|#4f5b66|->                     
-<#96b5b4|-|->@@ -1,17 +1,17 @@
-<#767b84|#3a3f4a|->            [5 unchanged lines]  ctx05<-|#3a3f4a|->  
-<#7d828c|-|->   6    6   <#c0c5ce|-|->ctx06
-<#7d828c|-|->   7    7   <#c0c5ce|-|->ctx07
-<#7d828c|-|->   8    8   <#c0c5ce|-|->ctx08
-<#9ea1a9|#414a4a|->        9 + <#c0c5ce|#414a4a|->change!<-|#414a4a|->                     
-<#7d828c|-|->  10   10   <#c0c5ce|-|->ctx09
-<#7d828c|-|->  11   11   <#c0c5ce|-|->ctx10
-<#7d828c|-|->  12   12   <#c0c5ce|-|->ctx11
-<#767b84|#3a3f4a|->            [5 unchanged lines]  ctx16<-|#3a3f4a|->  
-";
-        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#cdd1d8|#4f5b66|b>modified  notes.txt<-|#4f5b66|->                     \n",
+            "<#96b5b4|-|->@@ -1,17 +1,17 @@\n",
+            "<#767b84|#3a3f4a|->            [5 unchanged lines]  ctx05<-|#3a3f4a|->  \n",
+            "<#7d828c|-|->   6    6   <#c0c5ce|-|->ctx06\n",
+            "<#7d828c|-|->   7    7   <#c0c5ce|-|->ctx07\n",
+            "<#7d828c|-|->   8    8   <#c0c5ce|-|->ctx08\n",
+            "<#9ea1a9|#414a4a|->        9 + <#c0c5ce|#414a4a|->change!<-|#414a4a|->                     \n",
+            "<#7d828c|-|->  10   10   <#c0c5ce|-|->ctx09\n",
+            "<#7d828c|-|->  11   11   <#c0c5ce|-|->ctx10\n",
+            "<#7d828c|-|->  12   12   <#c0c5ce|-|->ctx11\n",
+            "<#767b84|#3a3f4a|->            [5 unchanged lines]  ctx16<-|#3a3f4a|->  \n",
+        );
     }
 
     #[test]
@@ -5182,20 +5237,21 @@ mod tests {
         // A context line kept visible beside the change is matched and focused.
         let mut app = App::new(folded_document(), 20, &Theme::dark());
         search_for(&mut app, Action::SearchForward, "ctx07");
-        let expected = "\
-<#c0c5ce|-|b>modified  notes.txt
-<#96b5b4|-|->@@ -1,17 +1,17 @@
-<#767b84|#3a3f4a|->            [5 unchanged lines]  ctx05<-|#3a3f4a|->  
-<#7d828c|-|->   6    6   <#c0c5ce|-|->ctx06
-<#b8bac0|#4f5b66|->   7    7   <#dcdfe4|#686255|->ctx07<-|#4f5b66|->                       
-<#7d828c|-|->   8    8   <#c0c5ce|-|->ctx08
-<#9ea1a9|#414a4a|->        9 + <#c0c5ce|#414a4a|->change!<-|#414a4a|->                     
-<#7d828c|-|->  10   10   <#c0c5ce|-|->ctx09
-<#7d828c|-|->  11   11   <#c0c5ce|-|->ctx10
-<#7d828c|-|->  12   12   <#c0c5ce|-|->ctx11
-<#767b84|#3a3f4a|->            [5 unchanged lines]  ctx16<-|#3a3f4a|->  
-";
-        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#c0c5ce|-|b>modified  notes.txt\n",
+            "<#96b5b4|-|->@@ -1,17 +1,17 @@\n",
+            "<#767b84|#3a3f4a|->            [5 unchanged lines]  ctx05<-|#3a3f4a|->  \n",
+            "<#7d828c|-|->   6    6   <#c0c5ce|-|->ctx06\n",
+            "<#b8bac0|#4f5b66|->   7    7   <#dcdfe4|#686255|->ctx07<-|#4f5b66|->                       \n",
+            "<#7d828c|-|->   8    8   <#c0c5ce|-|->ctx08\n",
+            "<#9ea1a9|#414a4a|->        9 + <#c0c5ce|#414a4a|->change!<-|#414a4a|->                     \n",
+            "<#7d828c|-|->  10   10   <#c0c5ce|-|->ctx09\n",
+            "<#7d828c|-|->  11   11   <#c0c5ce|-|->ctx10\n",
+            "<#7d828c|-|->  12   12   <#c0c5ce|-|->ctx11\n",
+            "<#767b84|#3a3f4a|->            [5 unchanged lines]  ctx16<-|#3a3f4a|->  \n",
+        );
     }
 
     #[test]
@@ -5205,20 +5261,21 @@ mod tests {
         // matched line.
         let mut app = App::reviewing(commented_review(), 14, &Theme::dark());
         search_for(&mut app, Action::SearchForward, "ok");
-        let expected = "\
-<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,2 +1,2 @@
-<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐
-<#adb0b5|#4f5b66|->│<#dcdfe4|#686255|->ok<-|#4f5b66|->                                    <#adb0b5|#4f5b66|->│
-<#767b84|-|->└──────────────────────────────────────┘
-<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#767b84|-|->┌ <#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐
-<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│
-<#767b84|-|->└──────────────────────────────────────┘
-<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
-";
-        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#adb0b5|#4f5b66|->│<#dcdfe4|#686255|->ok<-|#4f5b66|->                                    <#adb0b5|#4f5b66|->│\n",
+            "<#767b84|-|->└──────────────────────────────────────┘\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│\n",
+            "<#767b84|-|->└──────────────────────────────────────┘\n",
+            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+        );
     }
 
     #[test]
@@ -5231,16 +5288,17 @@ mod tests {
         search_for(&mut app, Action::SearchForward, "hello");
         app.search_key(KeyPress::new(Key::Escape));
         wince::assert_eq!(app.searching(), false);
-        let expected = "\
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,2 +1,2 @@
-<#b8bac0|#4f5b66|->   1    1   <#ddccda|#4f5b66|->let<#cdd1d8|#4f5b66|-> x <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#eac9bf|#4f5b66|->1<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  
-<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
-<#c0c5ce|-|b>added  notes.txt
-<#96b5b4|-|->@@ -1,1 +1,1 @@
-<#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->hello<-|#414a4a|->                       
-";
-        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#b8bac0|#4f5b66|->   1    1   <#ddccda|#4f5b66|->let<#cdd1d8|#4f5b66|-> x <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#eac9bf|#4f5b66|->1<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  \n",
+            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+            "<#c0c5ce|-|b>added  notes.txt\n",
+            "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
+            "<#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->hello<-|#414a4a|->                       \n",
+        );
     }
 
     #[test]
@@ -5254,20 +5312,21 @@ mod tests {
         search_for(&mut app, Action::SearchForward, "hello");
         app.search_key(KeyPress::new(Key::Enter));
         app.update(Action::SearchNext);
-        wince::assert_eq!(
+        wince::snapshot_display!(
             status_text_at(&app, 60),
-            "/hello  n next  N prev  1/1 matches  wrapped to top     100%".to_string()
+            "/hello  n next  N prev  1/1 matches  wrapped to top     100%"
         );
-        let expected = "\
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,2 +1,2 @@
-<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
-<#c0c5ce|-|b>added  notes.txt
-<#96b5b4|-|->@@ -1,1 +1,1 @@
-<#cfd0d4|#4f5b66|->        1 + <#dcdfe4|#686255|->hello<-|#4f5b66|->                       
-";
-        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+            "<#c0c5ce|-|b>added  notes.txt\n",
+            "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
+            "<#cfd0d4|#4f5b66|->        1 + <#dcdfe4|#686255|->hello<-|#4f5b66|->                       \n",
+        );
     }
 
     #[test]
@@ -5279,20 +5338,21 @@ mod tests {
         search_for(&mut app, Action::SearchForward, "let");
         app.search_key(KeyPress::new(Key::Enter));
         app.update(Action::SearchNext);
-        wince::assert_eq!(
+        wince::snapshot_display!(
             status_text(&app),
-            "/let  n next  N prev  2/2 matches    50%".to_string()
+            "/let  n next  N prev  2/2 matches    50%"
         );
-        let expected = "\
-<#c0c5ce|-|b>modified  src/lib.rs
-<#96b5b4|-|->@@ -1,2 +1,2 @@
-<#7d828c|-|->   1    1   <#e9dde6|#686255|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
-<#cfd0d4|#4f5b66|->        2 + <#e7dbe5|#686255|->let<#cdd1d8|#4f5b66|-> y <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#ebcdc3|#4f5b66|->2<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  
-<#c0c5ce|-|b>added  notes.txt
-<#96b5b4|-|->@@ -1,1 +1,1 @@
-<#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->hello<-|#414a4a|->                       
-";
-        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#7d828c|-|->   1    1   <#e9dde6|#686255|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#cfd0d4|#4f5b66|->        2 + <#e7dbe5|#686255|->let<#cdd1d8|#4f5b66|-> y <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#ebcdc3|#4f5b66|->2<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  \n",
+            "<#c0c5ce|-|b>added  notes.txt\n",
+            "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
+            "<#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->hello<-|#414a4a|->                       \n",
+        );
     }
 
     /// The plain text a reviewer sees on `app`'s screen at `width`: each visible
@@ -5417,20 +5477,21 @@ mod tests {
         app.show_comparison(comparison_diff(), Some((1, from_v1_before_origin())));
 
         wince::assert_eq!(app.comparing_from(), Some(1));
-        let expected = "\
-Review [press c here to draft the review comment]
-modified  f.txt
-@@ -1,3 +1,4 @@
-   1    1   alpha
-   2      - beta
-        2 + BETA
-   3    3   gamma
-┌ opus (agent)  press e to edit  r to resolve  d to delete  tab to expand/collapse ┐
-│why delta?                                                                    │
-└──────────────────────────────────────────────────────────────────────────────┘
-        4 + delta
-";
-        wince::assert_eq!(plain(&app, 80), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            plain(&app, 80),
+            "Review [press c here to draft the review comment]\n",
+            "modified  f.txt\n",
+            "@@ -1,3 +1,4 @@\n",
+            "   1    1   alpha\n",
+            "   2      - beta\n",
+            "        2 + BETA\n",
+            "   3    3   gamma\n",
+            "┌ opus (agent)  press e to edit  r to resolve  d to delete  tab to expand/collapse ┐\n",
+            "│why delta?                                                                    │\n",
+            "└──────────────────────────────────────────────────────────────────────────────┘\n",
+            "        4 + delta\n",
+        );
     }
 
     #[test]
@@ -5523,42 +5584,22 @@ modified  f.txt
             0,
             Vec::new(),
         );
-        const BEFORE: &str = "\
-Review [press c here to draft the review comment]
-modified  notes.txt
-@@ -1,21 +1,21 @@
-            [17 unchanged lines]  ctx17
-  18   18   ctx18
-  19   19   ctx19
-  20   20   ctx20
-       21 + change!
-";
-        const AFTER: &str = "\
-Review [press c here to draft the review comment]
-modified  notes.txt
-@@ -1,21 +1,21 @@
-            [4 unchanged lines]  ctx04
-   5    5   ctx05
-   6    6   ctx06
-   7    7   ctx07
-┌ opus (agent)  press e to edit  r to resolve  d to delete  tab to expand/collapse ┐
-│why?                                  │
-└──────────────────────────────────────┘
-   8    8   ctx08
-   9    9   ctx09
-  10   10   ctx10
-  11   11   ctx11
-            [6 unchanged lines]  ctx17
-  18   18   ctx18
-  19   19   ctx19
-  20   20   ctx20
-       21 + change!
-";
         // Opening with no comments, the one change buried at the end leaves a
         // single leading fold over the whole unchanged run.
         let mut app = App::reviewing(review, 24, &Theme::dark());
         app.set_width(TEST_WIDTH);
-        wince::assert_eq!(plain(&app, TEST_WIDTH), BEFORE.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            plain(&app, TEST_WIDTH),
+            "Review [press c here to draft the review comment]\n",
+            "modified  notes.txt\n",
+            "@@ -1,21 +1,21 @@\n",
+            "            [17 unchanged lines]  ctx17\n",
+            "  18   18   ctx18\n",
+            "  19   19   ctx19\n",
+            "  20   20   ctx20\n",
+            "       21 + change!\n",
+        );
 
         // A comment far enough into the run that its kept context does not reach
         // the file top splits that one fold into a fold above and below it.
@@ -5572,6 +5613,28 @@ modified  notes.txt
         )];
         app.reload_comments(comments);
 
-        wince::assert_eq!(plain(&app, TEST_WIDTH), AFTER.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            plain(&app, TEST_WIDTH),
+            "Review [press c here to draft the review comment]\n",
+            "modified  notes.txt\n",
+            "@@ -1,21 +1,21 @@\n",
+            "            [4 unchanged lines]  ctx04\n",
+            "   5    5   ctx05\n",
+            "   6    6   ctx06\n",
+            "   7    7   ctx07\n",
+            "┌ opus (agent)  press e to edit  r to resolve  d to delete  tab to expand/collapse ┐\n",
+            "│why?                                  │\n",
+            "└──────────────────────────────────────┘\n",
+            "   8    8   ctx08\n",
+            "   9    9   ctx09\n",
+            "  10   10   ctx10\n",
+            "  11   11   ctx11\n",
+            "            [6 unchanged lines]  ctx17\n",
+            "  18   18   ctx18\n",
+            "  19   19   ctx19\n",
+            "  20   20   ctx20\n",
+            "       21 + change!\n",
+        );
     }
 }
