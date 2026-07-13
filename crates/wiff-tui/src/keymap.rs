@@ -159,10 +159,11 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
         (Action::ToggleFold, vec![chord("enter")]),
         (Action::ToggleComment, vec![chord("tab")]),
         (Action::ToggleWrap, vec![chord("w")]),
-        (Action::HideComments, vec![chord("V")]),
+        (Action::HideComments, vec![chord("H")]),
         (Action::PickFile, vec![chord("t")]),
         (Action::PickComment, vec![chord("C")]),
         (Action::PickTheme, vec![chord("T")]),
+        (Action::SelectLines, vec![chord("v")]),
         (Action::AddComment, vec![chord("c")]),
         (Action::EditComment, vec![chord("e")]),
         (Action::ResolveComment, vec![chord("r")]),
@@ -178,7 +179,7 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
         (Action::SearchNext, vec![chord("n")]),
         (Action::SearchPrev, vec![chord("N")]),
         (Action::Refresh, vec![chord("R")]),
-        (Action::CompareVersions, vec![chord("v")]),
+        (Action::CompareVersions, vec![chord("V")]),
         (Action::OpenInEditor, vec![chord("o")]),
         (Action::Quit, vec![chord("q")]),
     ]
@@ -244,8 +245,16 @@ mod tests {
         );
         wince::assert_eq!(map.resolve(&presses("q")), Resolution::Action(Action::Quit));
         wince::assert_eq!(
-            map.resolve(&presses("V")),
+            map.resolve(&presses("H")),
             Resolution::Action(Action::HideComments)
+        );
+        wince::assert_eq!(
+            map.resolve(&presses("V")),
+            Resolution::Action(Action::CompareVersions)
+        );
+        wince::assert_eq!(
+            map.resolve(&presses("v")),
+            Resolution::Action(Action::SelectLines)
         );
         wince::assert_eq!(
             map.resolve(&presses("/")),

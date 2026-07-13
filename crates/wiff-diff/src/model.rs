@@ -10,7 +10,7 @@ use crate::line::LineNo;
 
 /// Which side of a change a line or anchor belongs to: the content before the
 /// change (removed and context lines) or after it (added and context lines).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Side {
     /// The pre-change content.

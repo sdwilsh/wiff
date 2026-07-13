@@ -93,6 +93,10 @@ impl Compose {
         mut highlighter: LiveHighlighter,
         tab_width: usize,
     ) -> Self {
+        // The editor sets its tab stops through a u8 API, so bound the width to
+        // that range and expand the seed at the same value, keeping typed tabs
+        // and the seeded text on the same stops.
+        let tab_width = tab_width.min(u8::MAX as usize);
         let seed = expand_tabs(seed, tab_width);
         let lines: Vec<String> = if seed.is_empty() {
             vec![String::new()]
@@ -317,6 +321,15 @@ impl Compose {
         match self.kind {
             ComposeKind::Edit(id) => Some(id),
             ComposeKind::Add(_) => None,
+        }
+    }
+
+    /// The target a new comment is being authored on, or `None` when revising an
+    /// existing one.
+    pub fn add_target(&self) -> Option<&CommentTarget> {
+        match &self.kind {
+            ComposeKind::Add(target) => Some(target),
+            ComposeKind::Edit(_) => None,
         }
     }
 

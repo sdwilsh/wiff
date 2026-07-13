@@ -34,7 +34,7 @@ use crate::exit::{Exit, ExitDefault, ExitPlan, plan_exit};
 use crate::key::{Key, KeyPress};
 use crate::keymap::{Keymap, Resolution};
 use crate::picker::{Picker, PickerColors, PickerRow, RowSpan};
-use crate::render::{Document, RowKind, ViewLayout, color};
+use crate::render::{Document, RAIL_COLUMN, RAIL_TEE, RailCell, RowKind, ViewLayout, color};
 use crate::review::{CommentSync, Review};
 use crate::search::{Direction, Matcher, Search, SearchInput};
 use crate::theme::{Theme, legible_over};
@@ -366,6 +366,37 @@ impl PickerRow<App> for ExitRow {
     }
 }
 
+/// A live linewise selection while the reviewer marks a range to anchor a
+/// comment to. Held within one file and one side; the anchor stays where the
+/// selection began and the head follows the cursor as it moves.
+struct Selection {
+    /// The file the selection is confined to, indexing [`Document::files`].
+    file: usize,
+    /// The side the selected line numbers belong to.
+    side: Side,
+    /// The line the selection began on.
+    anchor: LineNo,
+    /// The line the cursor last extended the selection to.
+    head: LineNo,
+}
+
+impl Selection {
+    /// The inclusive line-number range the selection spans, low to high.
+    fn range(&self) -> (LineNo, LineNo) {
+        if self.anchor <= self.head {
+            (self.anchor, self.head)
+        } else {
+            (self.head, self.anchor)
+        }
+    }
+
+    /// Whether the selection covers content line `(file, side, lineno)`.
+    fn covers(&self, file: usize, side: Side, lineno: LineNo) -> bool {
+        let (start, end) = self.range();
+        self.file == file && self.side == side && start <= lineno && lineno <= end
+    }
+}
+
 /// The review view over a rendered diff.
 pub struct App {
     document: Document,
@@ -405,6 +436,9 @@ pub struct App {
     /// Whether every comment is dropped from the view, leaving only the code, so
     /// rounds of review annotation do not crowd out the diff.
     comments_hidden: bool,
+    /// The live linewise selection, present while the reviewer marks a range to
+    /// anchor a comment to.
+    selection: Option<Selection>,
     /// The visible lines in order, resolved from the collapse state.
     view: Vec<ViewRow>,
     cursor: usize,
@@ -484,6 +518,7 @@ impl App {
             collapsed,
             comment_collapsed,
             comments_hidden: false,
+            selection: None,
             view: Vec::new(),
             cursor: 0,
             top: 0,
@@ -546,8 +581,7 @@ impl App {
         self
     }
 
-    /// Set the comment editor's tab width, from the reviewer's configured
-    /// default.
+    /// Set the comment editor's tab width.
     pub fn with_tab_width(mut self, tab_width: usize) -> Self {
         self.tab_width = tab_width;
         self
@@ -725,6 +759,17 @@ impl App {
         self.message = None;
         self.active_search = None;
         self.search_note = None;
+        // Movement extends a live selection; other actions abandon it, except
+        // the ones that start, consume, or cancel it below.
+        let extends = Self::extends_selection(action);
+        if !(extends
+            || matches!(
+                action,
+                Action::SelectLines | Action::AddComment | Action::CancelComment
+            ))
+        {
+            self.selection = None;
+        }
         match action {
             Action::LineDown => self.move_to(self.cursor + 1),
             Action::LineUp => self.move_to(self.cursor.saturating_sub(1)),
@@ -748,6 +793,8 @@ impl App {
             Action::CompareVersions => self.open_compare_picker(),
             Action::ResolveComment => return self.resolve_comment(),
             Action::DeleteComment => return self.delete_comment(),
+            Action::SelectLines => self.start_selection(),
+            Action::CancelComment => return self.cancel_selection(),
             Action::AddComment => return self.start_add_comment(),
             Action::EditComment => return self.start_edit_comment(),
             Action::SearchForward => self.start_search(Direction::Forward),
@@ -759,7 +806,107 @@ impl App {
             }
             other => return Update::Passed(other),
         }
+        if extends {
+            self.extend_selection_to_cursor();
+        }
         Update::Handled
+    }
+
+    /// Whether `action` moves the cursor, so a live selection extends its head
+    /// to follow rather than being abandoned.
+    fn extends_selection(action: Action) -> bool {
+        matches!(
+            action,
+            Action::LineDown
+                | Action::LineUp
+                | Action::PageDown
+                | Action::PageUp
+                | Action::Top
+                | Action::Bottom
+                | Action::NextFile
+                | Action::PrevFile
+                | Action::NextHunk
+                | Action::PrevHunk
+                | Action::NextComment
+                | Action::PrevComment
+        )
+    }
+
+    /// The file, side, and line number of the content line at view row `index`,
+    /// or `None` when that row is not an addressable content line.
+    fn content_at(&self, index: usize) -> Option<(usize, Side, LineNo)> {
+        let ViewRow::Row(row) = *self.view.get(index)? else {
+            return None;
+        };
+        match self.document.rows[row].kind {
+            RowKind::Content {
+                side,
+                lineno: Some(lineno),
+            } => Some((self.document.rows[row].file, side, lineno)),
+            _ => None,
+        }
+    }
+
+    /// The first view row showing content line `(file, side, lineno)`, or `None`
+    /// when that line is not currently in view (folded away or off this side).
+    fn content_row_in_view(&self, file: usize, side: Side, lineno: LineNo) -> Option<usize> {
+        let index =
+            (0..self.view.len()).find(|&i| self.content_at(i) == Some((file, side, lineno)))?;
+        Some(self.content_line_top(index))
+    }
+
+    /// Whether view row `index` is a content line inside the live selection.
+    fn row_selected(&self, index: usize) -> bool {
+        let Some(sel) = &self.selection else {
+            return false;
+        };
+        self.content_at(index)
+            .is_some_and(|(file, side, lineno)| sel.covers(file, side, lineno))
+    }
+
+    /// Start a linewise selection at the cursor's content line, replacing any
+    /// selection already open. Does nothing on a row that is not a content line.
+    fn start_selection(&mut self) {
+        if let Some((file, side, lineno)) = self.content_at(self.cursor) {
+            self.selection = Some(Selection {
+                file,
+                side,
+                anchor: lineno,
+                head: lineno,
+            });
+        }
+    }
+
+    /// Extend the open selection's head to the cursor's content line. A move that
+    /// leaves the selection's file abandons it, since a selection is held within
+    /// one file; within the file, a move onto the opposite side or a non-content
+    /// row leaves the head where it was.
+    fn extend_selection_to_cursor(&mut self) {
+        let Some((sel_file, sel_side)) = self.selection.as_ref().map(|sel| (sel.file, sel.side))
+        else {
+            return;
+        };
+        if self.cursor_file() != Some(sel_file) {
+            self.selection = None;
+            return;
+        }
+        if let Some((file, side, lineno)) = self.content_at(self.cursor)
+            && file == sel_file
+            && side == sel_side
+            && let Some(sel) = self.selection.as_mut()
+        {
+            sel.head = lineno;
+        }
+    }
+
+    /// Cancel a live selection. Passes [`Action::CancelComment`] back to the host
+    /// when there is no selection to cancel, so the key keeps its other meaning.
+    fn cancel_selection(&mut self) -> Update {
+        if self.selection.take().is_some() {
+            Update::Handled
+        } else {
+            Update::Passed(Action::CancelComment)
+        }
     }
 
     /// Toggle the resolved state of the comment the cursor is on, buffering the
@@ -817,6 +964,8 @@ impl App {
                 highlighter,
                 self.tab_width,
             ));
+            // The selection has become the new comment's anchor, so retire it.
+            self.selection = None;
         }
         Update::Handled
     }
@@ -857,6 +1006,25 @@ impl App {
     /// file header, or a review comment on the summary row. `None` on a row that
     /// anchors no comment.
     fn add_target_at_cursor(&self) -> Option<(CommentTarget, usize, String)> {
+        // A live selection defines the target directly: a range comment whose
+        // box sits above the span's first line, wherever the cursor rests.
+        if let Some(sel) = &self.selection {
+            let (start, end) = sel.range();
+            let path = self.document.files.get(sel.file)?.clone();
+            let anchor = self.content_row_in_view(sel.file, sel.side, start)?;
+            let label = if start == end {
+                format!("new comment  {path}:{}", start.get())
+            } else {
+                format!("new comment  {path}:{}-{}", start.get(), end.get())
+            };
+            let target = CommentTarget::Lines {
+                file: path,
+                side: sel.side,
+                start_line: start,
+                end_line: end,
+            };
+            return Some((target, anchor, label));
+        }
         match self.kind_at(self.cursor)? {
             RowKind::ReviewSummary => Some((
                 CommentTarget::Review,
@@ -1169,11 +1337,12 @@ impl App {
                 .map_or(0, |id| self.comment_rows(anchor, id));
         let below_count = doc_shown - (anchor - above_start);
         let below_end = (below_start + below_count).min(self.view.len());
+        let compose_span = self.compose_rail_span();
         let above = (above_start..anchor)
-            .map(|i| self.decorate(i, width))
+            .map(|i| self.decorate(i, width, compose_span))
             .collect();
         let below = (below_start..below_end)
-            .map(|i| self.decorate(i, width))
+            .map(|i| self.decorate(i, width, compose_span))
             .collect();
         Some(ComposeView {
             above,
@@ -2188,10 +2357,13 @@ impl App {
     pub fn visible(&self, width: usize) -> Vec<Line<'static>> {
         let end = (self.top + self.height).min(self.view.len());
         let matcher = self.highlight_pattern().and_then(Matcher::new);
+        let compose_span = self.compose_rail_span();
         (self.top..end)
             .map(|i| {
-                let mut line = self.decorate(i, width);
-                if i == self.cursor {
+                let mut line = self.decorate(i, width, compose_span);
+                // The cursor row, and every row of a live selection, wash in the
+                // cursor color so the marked span reads as one block.
+                if i == self.cursor || self.row_selected(i) {
                     line = wash(line, self.cursor_bg, width, self.background);
                 }
                 if let (Some(matcher), ViewRow::Row(row)) = (&matcher, &self.view[i]) {
@@ -2251,7 +2423,12 @@ impl App {
     /// The fully drawn line for view row `index` at `width`, before any cursor
     /// wash: a comment's box edges, a diff row's role tint filled to the edge, or
     /// the fold marker on the plain background.
-    fn decorate(&self, index: usize, width: usize) -> Line<'static> {
+    fn decorate(
+        &self,
+        index: usize,
+        width: usize,
+        compose_span: Option<(usize, usize)>,
+    ) -> Line<'static> {
         match self.view[index] {
             ViewRow::Fold(fold) => {
                 let marker = self.document.folds[fold].marker.clone();
@@ -2263,7 +2440,20 @@ impl App {
                 match self.document.rows[row].kind {
                     RowKind::CommentHeader { .. } => box_top(line, fill, width),
                     RowKind::CommentBody { .. } => box_side(line, fill, width),
-                    RowKind::CommentBottom { .. } => box_bottom(fill, width),
+                    RowKind::CommentBottom { id } => {
+                        box_bottom(fill, width, self.box_anchors_rail(id))
+                    }
+                    RowKind::Content { .. } => {
+                        let line = fill_line(line, fill, width);
+                        // The rail is comment chrome, so it shows only while
+                        // comments do and is dropped when they are hidden.
+                        match self.rail_at(row, compose_span) {
+                            Some(cell) if !self.comments_hidden => {
+                                overlay_rail(line, cell.glyph, fill, cell.color, self.background)
+                            }
+                            _ => line,
+                        }
+                    }
                     _ => fill_line(line, fill, width),
                 }
             }
@@ -2302,6 +2492,88 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Whether the comment `id` anchors a line range, so its box bottom drops the
+    /// anchor rail into the gutter.
+    fn box_anchors_rail(&self, id: Ulid) -> bool {
+        self.document
+            .comments
+            .iter()
+            .any(|region| region.id == id && region.anchor_rail)
+    }
+
+    /// The anchor rail document `row` draws: the one baked in by the render, or,
+    /// while a range comment is being authored, a preview of the rail its target
+    /// will keep, so the reviewer sees the covered span before saving.
+    /// `compose_span` is the covered row span from [`compose_rail_span`], passed
+    /// in so a full render resolves it once rather than for every drawn row.
+    fn rail_at(&self, row: usize, compose_span: Option<(usize, usize)>) -> Option<RailCell> {
+        self.compose_rail(row, compose_span)
+            .or(self.document.rails[row])
+    }
+
+    /// The inclusive document-row span the in-progress range comment previews its
+    /// rail over. `None` when not authoring a range comment or when its lines are
+    /// not currently rendered. Resolved once per render and handed to
+    /// [`rail_at`] so the per-row preview does not rescan the document.
+    fn compose_rail_span(&self) -> Option<(usize, usize)> {
+        let CommentTarget::Lines {
+            file,
+            side,
+            start_line,
+            end_line,
+        } = self.compose.as_ref()?.add_target()?
+        else {
+            return None;
+        };
+        let start_row = self.first_content_row(file, *side, start_line.get())?;
+        let end_row = self.first_content_row(file, *side, end_line.get())?;
+        Some((start_row, end_row))
+    }
+
+    /// The preview rail cell for document `row` within `compose_span`, the covered
+    /// span of the in-progress range comment: the draft-colored body glyph down
+    /// the span, closing with the corner on its last row. Every content row in
+    /// the span draws it, including the opposite-side rows a unified diff
+    /// interleaves, so the preview reads as one unbroken stroke. `None` outside
+    /// the span or on a non-content row.
+    fn compose_rail(&self, row: usize, compose_span: Option<(usize, usize)>) -> Option<RailCell> {
+        let (start_row, end_row) = compose_span?;
+        if row < start_row || row > end_row {
+            return None;
+        }
+        if !matches!(self.document.rows[row].kind, RowKind::Content { .. }) {
+            return None;
+        }
+        // The corner closes the rail on the first display row of the end line;
+        // its wrapped continuations sit past `end_row` and stay blank.
+        let glyph = if row == end_row {
+            '\u{2514}'
+        } else {
+            '\u{2502}'
+        };
+        Some(RailCell {
+            glyph,
+            color: self.compose_border,
+        })
+    }
+
+    /// The first display row of the content line `(file, side, lineno)` addresses,
+    /// or `None` when no rendered line matches.
+    fn first_content_row(&self, file: &str, side: Side, lineno: u32) -> Option<usize> {
+        self.document.rows.iter().position(|row| {
+            let RowKind::Content {
+                side: row_side,
+                lineno: Some(n),
+            } = row.kind
+            else {
+                return false;
+            };
+            row_side == side
+                && n.get() == lineno
+                && self.document.files.get(row.file).map(String::as_str) == Some(file)
+        })
     }
 
     /// Whether document `row` is part of a comment box: its header, a body line,
@@ -2747,15 +3019,54 @@ fn box_side(content: Line<'static>, border: Option<Rgb>, width: usize) -> Line<'
 }
 
 /// Draw the bottom edge of a comment box out to `width`: the corners joined by a
-/// rule.
-fn box_bottom(border: Option<Rgb>, width: usize) -> Line<'static> {
+/// rule. When `rail` is set the box anchors a line range, so the rule drops a tee
+/// at the rail column to join the anchor rail tracing the lines below.
+fn box_bottom(border: Option<Rgb>, width: usize, rail: bool) -> Line<'static> {
     let style = border_style(border);
-    let mut text = String::from("\u{2514}");
+    let mut chars = vec!['\u{2514}'];
     if width > 2 {
-        text.push_str(&"\u{2500}".repeat(width - 2));
+        chars.extend(std::iter::repeat_n('\u{2500}', width - 2));
     }
-    text.push('\u{2518}');
-    Line::from(Span::styled(text, style))
+    chars.push('\u{2518}');
+    if rail && width > RAIL_COLUMN + 1 {
+        chars[RAIL_COLUMN] = RAIL_TEE;
+    }
+    Line::from(Span::styled(chars.into_iter().collect::<String>(), style))
+}
+
+/// Overlay the anchor rail on a content line's gutter: swap the last gutter cell
+/// for `glyph` in the rail color, lifted to read over any row tint, leaving the
+/// rest of the gutter untouched.
+fn overlay_rail(
+    line: Line<'static>,
+    glyph: char,
+    fill: Option<Rgb>,
+    rail: Rgb,
+    base: Rgb,
+) -> Line<'static> {
+    let mut spans = line.spans;
+    if spans.is_empty() {
+        return Line::from(spans);
+    }
+    let gutter = spans.remove(0);
+    let chars: Vec<char> = gutter.content.chars().collect();
+    if chars.len() <= RAIL_COLUMN {
+        spans.insert(0, gutter);
+        return Line::from(spans);
+    }
+    let fg = match fill {
+        Some(bg) => legible_over(rail, bg, base),
+        None => rail,
+    };
+    let before: String = chars[..RAIL_COLUMN].iter().collect();
+    let after: String = chars[RAIL_COLUMN + 1..].iter().collect();
+    let mut out = vec![
+        Span::styled(before, gutter.style),
+        Span::styled(glyph.to_string(), gutter.style.fg(color(fg))),
+        Span::styled(after, gutter.style),
+    ];
+    out.extend(spans);
+    Line::from(out)
 }
 
 /// Return `line` padded with blank cells in `fill` out to `width`, so a row that
@@ -3285,7 +3596,7 @@ mod tests {
         app.update(Action::HideComments);
         wince::snapshot_display!(
             dump(&[app.status(60)]),
-            "<#cdd1d8|#4f5b66|b>src/lib.rs               comments hidden, toggle with V  75%\n"
+            "<#cdd1d8|#4f5b66|b>src/lib.rs               comments hidden, toggle with H  75%\n"
         );
         app.update(Action::HideComments);
         wince::snapshot_display!(
@@ -3335,8 +3646,8 @@ mod tests {
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#767b84|-|->│<#c0c5ce|-|->this comment runs well past the width<-|-|-> <#767b84|-|->│\n",
             "<#767b84|-|->│<#c0c5ce|-|->of the box and must wrap<-|-|->              <#767b84|-|->│\n",
-            "<#767b84|-|->└──────────────────────────────────────┘\n",
-            "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+            "<#767b84|-|->└──────────┬───────────────────────────┘\n",
+            "<#9ea1a9|#414a4a|->        1 +<#989ca3|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
         );
     }
 
@@ -3447,7 +3758,7 @@ mod tests {
             "--editor cursor 4,0--\n",
             "<#c0c5ce|-|->why?\n",
             "--below--\n",
-            "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> total = alpha plus beta<-|#414a4a|-> \n",
+            "<#9ea1a9|#414a4a|->        1 +<#a8c192|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> total = alpha plus beta<-|#414a4a|-> \n",
             "<#9ea1a9|#414a4a|->            <#c0c5ce|#414a4a|->plus gamma;<-|#414a4a|->                 \n",
         );
     }
@@ -4068,12 +4379,12 @@ mod tests {
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
-            "<#767b84|-|->└──────────────────────────────────────┘\n",
-            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#767b84|-|->└──────────┬───────────────────────────┘\n",
+            "<#7d828c|-|->   1    1  <#767b84|-|->└<#7d828c|-|-><#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│\n",
-            "<#767b84|-|->└──────────────────────────────────────┘\n",
-            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+            "<#767b84|-|->└──────────┬───────────────────────────┘\n",
+            "<#9ea1a9|#414a4a|->        2 +<#989ca3|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
         );
     }
 
@@ -4124,11 +4435,11 @@ mod tests {
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
-            "<#767b84|-|->└──────────────────────────────────────┘\n",
-            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#767b84|-|->└──────────┬───────────────────────────┘\n",
+            "<#7d828c|-|->   1    1  <#767b84|-|->└<#7d828c|-|-><#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
             "<#cfd1d4|#65737e|->┌ <#f9fafb|#65737e|->wez (human)<#cfd1d4|#65737e|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#cfd1d4|#65737e|-> <#cfd1d4|#65737e|->┐\n",
-            "<#767b84|-|->└──────────────────────────────────────┘\n",
-            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+            "<#767b84|-|->└──────────┬───────────────────────────┘\n",
+            "<#9ea1a9|#414a4a|->        2 +<#989ca3|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
         );
 
         let (cursor, _, visible) = drive(
@@ -4149,12 +4460,12 @@ mod tests {
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
-            "<#767b84|-|->└──────────────────────────────────────┘\n",
-            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#767b84|-|->└──────────┬───────────────────────────┘\n",
+            "<#7d828c|-|->   1    1  <#767b84|-|->└<#7d828c|-|-><#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
             "<#cfd1d4|#65737e|->┌ <#f9fafb|#65737e|->wez (human)<#cfd1d4|#65737e|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#cfd1d4|#65737e|-> <#cfd1d4|#65737e|->┐\n",
             "<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│\n",
-            "<#767b84|-|->└──────────────────────────────────────┘\n",
-            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+            "<#767b84|-|->└──────────┬───────────────────────────┘\n",
+            "<#9ea1a9|#414a4a|->        2 +<#989ca3|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
         );
     }
 
@@ -4203,12 +4514,12 @@ mod tests {
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
-            "<#767b84|-|->└──────────────────────────────────────┘\n",
-            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#767b84|-|->└──────────┬───────────────────────────┘\n",
+            "<#7d828c|-|->   1    1  <#767b84|-|->└<#7d828c|-|-><#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│\n",
-            "<#767b84|-|->└──────────────────────────────────────┘\n",
-            "<#f5f6f6|#65737e|->        2 + <#faf7f9|#65737e|->let<#f6f6f8|#65737e|-> y <#f6f6f8|#65737e|->=<#f6f6f8|#65737e|-> <#fcf7f5|#65737e|->2<#f6f6f8|#65737e|->;<-|#65737e|->                  \n",
+            "<#767b84|-|->└──────────┬───────────────────────────┘\n",
+            "<#f5f6f6|#65737e|->        2 +<#fafafa|#65737e|->└<#f5f6f6|#65737e|-><#faf7f9|#65737e|->let<#f6f6f8|#65737e|-> y <#f6f6f8|#65737e|->=<#f6f6f8|#65737e|-> <#fcf7f5|#65737e|->2<#f6f6f8|#65737e|->;<-|#65737e|->                  \n",
         );
     }
 
@@ -4234,12 +4545,12 @@ mod tests {
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
-            "<#767b84|-|->└──────────────────────────────────────┘\n",
-            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#767b84|-|->└──────────┬───────────────────────────┘\n",
+            "<#7d828c|-|->   1    1  <#767b84|-|->└<#7d828c|-|-><#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
             "<#f6f9f4|#65737e|->┌ <#f9fafb|#65737e|->wez (human)<#f6f9f4|#65737e|-> [draft]<#cfd1d4|#65737e|-> [resolved by wez]<#cfd1d4|#65737e|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#f6f9f4|#65737e|-> <#f6f9f4|#65737e|->┐\n",
             "<#a3be8c|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#a3be8c|-|->│\n",
-            "<#a3be8c|-|->└──────────────────────────────────────┘\n",
-            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+            "<#a3be8c|-|->└──────────┬───────────────────────────┘\n",
+            "<#9ea1a9|#414a4a|->        2 +<#a8c192|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
         );
     }
 
@@ -4266,11 +4577,11 @@ mod tests {
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
-            "<#767b84|-|->└──────────────────────────────────────┘\n",
-            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#767b84|-|->└──────────┬───────────────────────────┘\n",
+            "<#7d828c|-|->   1    1  <#767b84|-|->└<#7d828c|-|-><#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
             "<#f6f9f4|#65737e|->┌ <#f9fafb|#65737e|->wez (human)<#f6f9f4|#65737e|-> [draft]<#cfd1d4|#65737e|-> [deleted by wez]<#cfd1d4|#65737e|->  press e to edit  r to resolve  d to undelete  tab to expand/collapse<#f6f9f4|#65737e|-> <#f6f9f4|#65737e|->┐\n",
-            "<#a3be8c|-|->└──────────────────────────────────────┘\n",
-            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+            "<#a3be8c|-|->└──────────┬───────────────────────────┘\n",
+            "<#9ea1a9|#414a4a|->        2 +<#a8c192|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
         );
     }
 
@@ -4298,12 +4609,12 @@ mod tests {
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
-            "<#767b84|-|->└──────────────────────────────────────┘\n",
-            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#767b84|-|->└──────────┬───────────────────────────┘\n",
+            "<#7d828c|-|->   1    1  <#767b84|-|->└<#7d828c|-|-><#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
             "<#cfd1d4|#65737e|->┌ <#f9fafb|#65737e|->wez (human)<#cfd1d4|#65737e|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#cfd1d4|#65737e|-> <#cfd1d4|#65737e|->┐\n",
             "<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│\n",
-            "<#767b84|-|->└──────────────────────────────────────┘\n",
-            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+            "<#767b84|-|->└──────────┬───────────────────────────┘\n",
+            "<#9ea1a9|#414a4a|->        2 +<#989ca3|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
         );
     }
 
@@ -4352,8 +4663,201 @@ mod tests {
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
             "<#f6f9f4|#65737e|->┌ <#f9fafb|#65737e|->wez (human)<#f6f9f4|#65737e|-> [draft]<#cfd1d4|#65737e|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#f6f9f4|#65737e|-> <#f6f9f4|#65737e|->┐\n",
             "<#a3be8c|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#a3be8c|-|->│\n",
-            "<#a3be8c|-|->└──────────────────────────────────────┘\n",
+            "<#a3be8c|-|->└──────────┬───────────────────────────┘\n",
+            "<#9ea1a9|#414a4a|->        2 +<#a8c192|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+        );
+    }
+
+    #[test]
+    fn a_line_selection_washes_the_marked_span() {
+        // Start a selection on the third line and extend it down two more: the
+        // three marked lines wash in the cursor color as one block, while the
+        // lines outside the selection keep their plain tint.
+        let (cursor, top, visible) = drive_review(
+            tall_review(6),
+            16,
+            &[
+                Action::Top,
+                Action::LineDown,
+                Action::LineDown,
+                Action::LineDown,
+                Action::SelectLines,
+                Action::LineDown,
+                Action::LineDown,
+            ],
+        );
+        wince::assert_eq!(cursor, 5);
+        wince::assert_eq!(top, 0);
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            visible,
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,6 +1,6 @@\n",
+            "<#f5f6f6|#65737e|->        1 + <#faf7f9|#65737e|->let<#f6f6f8|#65737e|-> v1 <#f6f6f8|#65737e|->=<#f6f6f8|#65737e|-> <#fcf7f5|#65737e|->1<#f6f6f8|#65737e|->;<-|#65737e|->                 \n",
+            "<#f5f6f6|#65737e|->        2 + <#faf7f9|#65737e|->let<#f6f6f8|#65737e|-> v2 <#f6f6f8|#65737e|->=<#f6f6f8|#65737e|-> <#fcf7f5|#65737e|->2<#f6f6f8|#65737e|->;<-|#65737e|->                 \n",
+            "<#f5f6f6|#65737e|->        3 + <#faf7f9|#65737e|->let<#f6f6f8|#65737e|-> v3 <#f6f6f8|#65737e|->=<#f6f6f8|#65737e|-> <#fcf7f5|#65737e|->3<#f6f6f8|#65737e|->;<-|#65737e|->                 \n",
+            "<#9ea1a9|#414a4a|->        4 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> v4 <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->4<#c0c5ce|#414a4a|->;<-|#414a4a|->                 \n",
+            "<#9ea1a9|#414a4a|->        5 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> v5 <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->5<#c0c5ce|#414a4a|->;<-|#414a4a|->                 \n",
+            "<#9ea1a9|#414a4a|->        6 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> v6 <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->6<#c0c5ce|#414a4a|->;<-|#414a4a|->                 \n",
+        );
+    }
+
+    #[test]
+    fn a_cross_file_jump_abandons_the_selection() {
+        // A selection is held within one file. Starting one in the first file
+        // and then jumping to the next file abandons it: the marked line no
+        // longer washes, and the cursor wash sits only on the second file's
+        // header, where the cursor now rests.
+        let (cursor, top, visible) = drive(
+            document(),
+            6,
+            &[
+                Action::LineDown,
+                Action::LineDown,
+                Action::SelectLines,
+                Action::NextFile,
+            ],
+        );
+        wince::assert_eq!(cursor, 4);
+        wince::assert_eq!(top, 1);
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            visible,
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
             "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+            "<#f6f6f8|#65737e|b>added  notes.txt<-|#65737e|->                        \n",
+            "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
+            "<#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->hello<-|#414a4a|->                       \n",
+        );
+    }
+
+    #[test]
+    fn a_comment_over_a_selection_anchors_the_whole_range() {
+        // Mark a three-line selection and author a comment: it anchors to the
+        // whole span, its box tee joins the anchor rail, and the rail traces the
+        // body glyph down the covered lines to the closing corner on the last.
+        let mut app = App::reviewing(tall_review(6), 16, &theme());
+        app.update(Action::Top);
+        for _ in 0..3 {
+            app.update(Action::LineDown);
+        }
+        app.update(Action::SelectLines);
+        app.update(Action::LineDown);
+        app.update(Action::LineDown);
+        app.update(Action::AddComment);
+        typed(&mut app, "extract a helper");
+        app.compose_key(submit());
+        wince::assert_eq!(app.composing(), false);
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,6 +1,6 @@\n",
+            "<#f6f9f4|#65737e|->┌ <#f9fafb|#65737e|->wez (human)<#f6f9f4|#65737e|-> [draft]<#cfd1d4|#65737e|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#f6f9f4|#65737e|-> <#f6f9f4|#65737e|->┐\n",
+            "<#a3be8c|-|->│<#c0c5ce|-|->extract a helper<-|-|->                      <#a3be8c|-|->│\n",
+            "<#a3be8c|-|->└──────────┬───────────────────────────┘\n",
+            "<#9ea1a9|#414a4a|->        1 +<#a8c192|#414a4a|->│<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> v1 <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->1<#c0c5ce|#414a4a|->;<-|#414a4a|->                 \n",
+            "<#9ea1a9|#414a4a|->        2 +<#a8c192|#414a4a|->│<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> v2 <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                 \n",
+            "<#9ea1a9|#414a4a|->        3 +<#a8c192|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> v3 <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->3<#c0c5ce|#414a4a|->;<-|#414a4a|->                 \n",
+            "<#9ea1a9|#414a4a|->        4 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> v4 <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->4<#c0c5ce|#414a4a|->;<-|#414a4a|->                 \n",
+            "<#9ea1a9|#414a4a|->        5 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> v5 <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->5<#c0c5ce|#414a4a|->;<-|#414a4a|->                 \n",
+            "<#9ea1a9|#414a4a|->        6 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> v6 <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->6<#c0c5ce|#414a4a|->;<-|#414a4a|->                 \n",
+        );
+    }
+
+    #[test]
+    fn drafting_over_a_selection_previews_the_rail_before_saving() {
+        // With the editor open over a three-line selection, the anchored lines
+        // below it already trace the draft-colored rail down to the closing
+        // corner, so the reviewer sees the covered span before saving.
+        let mut app = App::reviewing(tall_review(6), 16, &theme());
+        app.set_width(TEST_WIDTH);
+        app.update(Action::Top);
+        for _ in 0..3 {
+            app.update(Action::LineDown);
+        }
+        app.update(Action::SelectLines);
+        app.update(Action::LineDown);
+        app.update(Action::LineDown);
+        app.update(Action::AddComment);
+        typed(&mut app, "extract a helper");
+        wince::assert_eq!(app.composing(), true);
+        let view = app.compose_view(TEST_WIDTH).expect("composing");
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump_compose(&view),
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,6 +1,6 @@\n",
+            "--editor cursor 16,0--\n",
+            "<#c0c5ce|-|->extract a helper\n",
+            "--below--\n",
+            "<#9ea1a9|#414a4a|->        1 +<#a8c192|#414a4a|->│<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> v1 <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->1<#c0c5ce|#414a4a|->;<-|#414a4a|->                 \n",
+            "<#9ea1a9|#414a4a|->        2 +<#a8c192|#414a4a|->│<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> v2 <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                 \n",
+            "<#9ea1a9|#414a4a|->        3 +<#a8c192|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> v3 <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->3<#c0c5ce|#414a4a|->;<-|#414a4a|->                 \n",
+            "<#9ea1a9|#414a4a|->        4 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> v4 <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->4<#c0c5ce|#414a4a|->;<-|#414a4a|->                 \n",
+            "<#9ea1a9|#414a4a|->        5 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> v5 <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->5<#c0c5ce|#414a4a|->;<-|#414a4a|->                 \n",
+            "<#9ea1a9|#414a4a|->        6 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> v6 <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->6<#c0c5ce|#414a4a|->;<-|#414a4a|->                 \n",
+        );
+    }
+
+    #[test]
+    fn drafting_over_an_interleaved_removed_line_previews_an_unbroken_rail() {
+        // The selected after-side span has a removed line woven through it. The
+        // preview rail traces the body glyph through that removed row too, so
+        // the covered span reads as one unbroken stroke before saving.
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[
+                    (LineKind::Added, "let a = 1;", 1),
+                    (LineKind::Removed, "let gone = 0;", 2),
+                    (LineKind::Added, "let b = 2;", 2),
+                    (LineKind::Added, "let c = 3;", 3),
+                ],
+            )],
+        };
+        let review = Review::new(
+            DiffView::new(theme()).unwrap(),
+            diff,
+            Author {
+                name: "wez".to_string(),
+                kind: AuthorKind::Human,
+            },
+            0,
+            Vec::new(),
+        );
+        let mut app = App::reviewing(review, 16, &theme());
+        app.set_width(TEST_WIDTH);
+        app.update(Action::Top);
+        for _ in 0..3 {
+            app.update(Action::LineDown);
+        }
+        app.update(Action::SelectLines);
+        for _ in 0..3 {
+            app.update(Action::LineDown);
+        }
+        app.update(Action::AddComment);
+        typed(&mut app, "extract a helper");
+        wince::assert_eq!(app.composing(), true);
+        let view = app.compose_view(TEST_WIDTH).expect("composing");
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump_compose(&view),
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,4 +1,4 @@\n",
+            "--editor cursor 16,0--\n",
+            "<#c0c5ce|-|->extract a helper\n",
+            "--below--\n",
+            "<#9ea1a9|#414a4a|->        1 +<#a8c192|#414a4a|->│<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> a <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->1<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+            "<#91959d|#463943|->   2      -<#a3be8c|#463943|->│<#91959d|#463943|-><#bf9fb9|#463943|->let<#c0c5ce|#463943|-> <#c0c5ce|#66444e|->gone<#c0c5ce|#463943|-> <#c0c5ce|#463943|->=<#c0c5ce|#463943|-> <#e3b7a9|#66444e|->0<#c0c5ce|#66444e|->;<-|#463943|->               \n",
+            "<#9ea1a9|#414a4a|->        2 +<#a8c192|#414a4a|->│<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> <#e3e5e9|#5b695b|->b<#c0c5ce|#414a4a|-> <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#f3e1db|#5b695b|->2<#e3e5e9|#5b695b|->;<-|#414a4a|->                  \n",
+            "<#9ea1a9|#414a4a|->        3 +<#a8c192|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> c <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->3<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
         );
     }
 
@@ -4378,7 +4882,7 @@ mod tests {
             "--editor cursor 6,0--\n",
             "<#c0c5ce|-|->why 2?\n",
             "--below--\n",
-            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+            "<#9ea1a9|#414a4a|->        2 +<#a8c192|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
         );
     }
 
@@ -4744,8 +5248,8 @@ mod tests {
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
             "<#f6f9f4|#65737e|->┌ <#f9fafb|#65737e|->wez (human)<#f6f9f4|#65737e|-> [draft]<#cfd1d4|#65737e|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#f6f9f4|#65737e|-> <#f6f9f4|#65737e|->┐\n",
             "<#a3be8c|-|->│<#c0c5ce|-|->why 2?2<-|-|->                               <#a3be8c|-|->│\n",
-            "<#a3be8c|-|->└──────────────────────────────────────┘\n",
-            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+            "<#a3be8c|-|->└──────────┬───────────────────────────┘\n",
+            "<#9ea1a9|#414a4a|->        2 +<#a8c192|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
         );
     }
 
@@ -4833,8 +5337,8 @@ mod tests {
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
             "<#f6f9f4|#65737e|->┌ <#f9fafb|#65737e|->wez (human)<#f6f9f4|#65737e|-> [draft]<#cfd1d4|#65737e|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#f6f9f4|#65737e|-> <#f6f9f4|#65737e|->┐\n",
             "<#a3be8c|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#a3be8c|-|->│\n",
-            "<#a3be8c|-|->└──────────────────────────────────────┘\n",
-            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+            "<#a3be8c|-|->└──────────┬───────────────────────────┘\n",
+            "<#9ea1a9|#414a4a|->        2 +<#a8c192|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
         );
     }
 
@@ -4891,12 +5395,12 @@ mod tests {
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
-            "<#767b84|-|->└──────────────────────────────────────┘\n",
-            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#767b84|-|->└──────────┬───────────────────────────┘\n",
+            "<#7d828c|-|->   1    1  <#767b84|-|->└<#7d828c|-|-><#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
             "<#f6f9f4|#65737e|->┌ <#f9fafb|#65737e|->wez (human)<#f6f9f4|#65737e|-> [draft]<#cfd1d4|#65737e|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#f6f9f4|#65737e|-> <#f6f9f4|#65737e|->┐\n",
             "<#a3be8c|-|->│<#c0c5ce|-|->use a constant<-|-|->                        <#a3be8c|-|->│\n",
-            "<#a3be8c|-|->└──────────────────────────────────────┘\n",
-            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+            "<#a3be8c|-|->└──────────┬───────────────────────────┘\n",
+            "<#9ea1a9|#414a4a|->        2 +<#a8c192|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
         );
     }
 
@@ -4917,13 +5421,13 @@ mod tests {
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
-            "<#767b84|-|->└──────────────────────────────────────┘\n",
-            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#767b84|-|->└──────────┬───────────────────────────┘\n",
+            "<#7d828c|-|->   1    1  <#767b84|-|->└<#7d828c|-|-><#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
             "--editor cursor 8,1--\n",
             "<#c0c5ce|-|->why 2?\n",
             "<#c0c5ce|-|->say more\n",
             "--below--\n",
-            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+            "<#9ea1a9|#414a4a|->        2 +<#989ca3|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
         );
     }
 
@@ -4953,8 +5457,8 @@ mod tests {
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
-            "<#767b84|-|->└──────────────────────────────────────┘\n",
-            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#767b84|-|->└──────────┬───────────────────────────┘\n",
+            "<#7d828c|-|->   1    1  <#767b84|-|->└<#7d828c|-|-><#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
         );
     }
 
@@ -5074,8 +5578,8 @@ mod tests {
             "<#7d828c|-|->   2    2   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
             "<#a3be8c|-|->┌ <#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#a3be8c|-|-> <#a3be8c|-|->┐\n",
             "<#a3be8c|-|->│<#c0c5ce|-|->why?<-|-|->                                  <#a3be8c|-|->│\n",
-            "<#a3be8c|-|->└──────────────────────────────────────┘\n",
-            "<#9ea1a9|#414a4a|->        3 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+            "<#a3be8c|-|->└──────────┬───────────────────────────┘\n",
+            "<#9ea1a9|#414a4a|->        3 +<#a8c192|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
         );
     }
 
@@ -5278,12 +5782,12 @@ mod tests {
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#cfd1d4|#65737e|->│<#f6f6f8|#686255|->ok<-|#65737e|->                                    <#cfd1d4|#65737e|->│\n",
-            "<#767b84|-|->└──────────────────────────────────────┘\n",
-            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#767b84|-|->└──────────┬───────────────────────────┘\n",
+            "<#7d828c|-|->   1    1  <#767b84|-|->└<#7d828c|-|-><#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│\n",
-            "<#767b84|-|->└──────────────────────────────────────┘\n",
-            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+            "<#767b84|-|->└──────────┬───────────────────────────┘\n",
+            "<#9ea1a9|#414a4a|->        2 +<#989ca3|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
         );
     }
 
@@ -5498,8 +6002,8 @@ mod tests {
             "   3    3   gamma\n",
             "┌ opus (agent)  press e to edit  r to resolve  d to delete  tab to expand/collapse ┐\n",
             "│why delta?                                                                    │\n",
-            "└──────────────────────────────────────────────────────────────────────────────┘\n",
-            "        4 + delta\n",
+            "└──────────┬───────────────────────────────────────────────────────────────────┘\n",
+            "        4 +└delta\n",
         );
     }
 
@@ -5634,8 +6138,8 @@ mod tests {
             "   7    7   ctx07\n",
             "┌ opus (agent)  press e to edit  r to resolve  d to delete  tab to expand/collapse ┐\n",
             "│why?                                  │\n",
-            "└──────────────────────────────────────┘\n",
-            "   8    8   ctx08\n",
+            "└──────────┬───────────────────────────┘\n",
+            "   8    8  └ctx08\n",
             "   9    9   ctx09\n",
             "  10   10   ctx10\n",
             "  11   11   ctx11\n",

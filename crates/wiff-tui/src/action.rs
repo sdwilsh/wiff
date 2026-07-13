@@ -50,6 +50,9 @@ pub enum Action {
     PickComment,
     /// Open the modal list of color themes to switch to one.
     PickTheme,
+    /// Start a linewise selection for anchoring a comment to a range, seeding
+    /// from a draft comment's range when the cursor is on one.
+    SelectLines,
     /// Add a comment at the cursor.
     AddComment,
     /// Edit the focused comment.
@@ -117,6 +120,7 @@ impl Action {
             Action::PickFile => "pick_file",
             Action::PickComment => "pick_comment",
             Action::PickTheme => "pick_theme",
+            Action::SelectLines => "select_lines",
             Action::AddComment => "add_comment",
             Action::EditComment => "edit_comment",
             Action::ResolveComment => "resolve_comment",

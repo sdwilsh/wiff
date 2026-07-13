@@ -298,7 +298,7 @@ no thousand-line nested match driving the UI.
 Input is decoded into an **action** (an enum of intents: page up/down, next/prev
 file, next/prev hunk, next/prev comment, toggle fold, toggle comment, hide
 comments, toggle
-wrap, pick file, pick comment, pick theme, add comment, edit comment, resolve
+wrap, pick file, pick comment, pick theme, select lines, add comment, edit comment, resolve
 comment, delete comment, submit comment, cancel
 comment, save, search forward/backward, search next/prev, refresh,
 `open_in_editor`, `quit`, `quit_keep`, `quit_remove`, etc.). Nothing in the UI
@@ -320,8 +320,10 @@ reassignable and keeps the update logic small.
   at the top of the document, so the existing top jump (`g`, and `<` as a
   `less`-style alias) reaches it; there is no separate jump-to-review action.
   `t` opens the file picker, `C` the comment picker, and `T` the theme picker
-  (see below). `V` hides and shows all comments. `v` opens the compare-versions
-  picker and `R` refreshes (see Version comparison and refresh).
+  (see below). `v` starts a line selection for anchoring a comment to a range
+  (see Comments), `V` opens the compare-versions picker, `H` hides and shows all
+  comments, and `R` refreshes (see Version comparison and refresh). Lowercase
+  `h` is left unbound for a planned help modal.
 
 ### Modal pickers
 
@@ -337,13 +339,13 @@ each group kept in document order -- with a status marker, its location, its
 author, and the start of its body, and jumps to the chosen comment; `pick_theme`
 (`T`) lists the built-in color themes,
 opening on the one in effect, and recolors the whole view to the chosen theme;
-`compare_versions` (`v`) lists the captured versions to view the change against
+`compare_versions` (`V`) lists the captured versions to view the change against
 (see Version comparison and refresh).
 
 ### Version comparison and refresh
 
 The review normally shows the latest captured diff. The compare-versions picker
-(`v`) views the change since an earlier captured version instead: the right side
+(`V`) views the change since an earlier captured version instead: the right side
 stays the latest, the left is the chosen version, so the reviewer sees only what
 moved since then. The list opens on the version in effect, and choosing the
 latest returns to the full diff.
@@ -428,8 +430,16 @@ anchored snippet: the real code sits directly below.
 
 Anchoring by target:
 
-- **Line range**: the block sits above `start_line`; the anchored line span is
-  marked in the margin across `start..=end`.
+- **Line range**: the block sits above `start_line`, and a rail in the gutter
+  marks the span it anchors. The comment box spans the full width; its bottom
+  border drops a `┬` into a reserved gutter column, a `│` runs down that column
+  across the anchored lines, and a `└` closes it on the last line (shown even for
+  a single-line span). The rail lives in the last gutter cell, so it adds no
+  width. Overlapping spans currently share that one column, closing together at
+  their furthest line. Giving nested spans their own column, outermost leftmost,
+  so the enclosing rail resumes below an inner box and the offset reads as the
+  nesting depth, is designed but not yet wired; it is what would widen the gutter
+  by one cell per depth of overlap.
 - **File**: the block sits under the file header.
 - **Review**: a review summary row is always present at the top of the document,
   even with no review comment yet, so it is a stable target for a review-level
@@ -472,6 +482,26 @@ is committed. Drafts render distinctly (a `draft` badge) so pending work is
 obvious. Reviews are not heavily concurrent (typically one human and sometimes
 one agent), so buffering the whole review and flushing on commit is acceptable;
 a crash loses only uncommitted drafts, like an editor's unsaved buffer.
+
+Anchoring a comment to a range is a linewise selection. The `select_lines`
+action (default `v`) starts a selection at the cursor's line; the navigation
+bindings then extend it, held within one file and one side. `add_comment` with a
+selection active anchors the new comment to the selected `start_line..=end_line`
+rather than the single cursor line; without a selection it anchors the one line.
+While a selection is open the marked lines wash as one block, so the reviewer
+sees the span before committing to it.
+
+Re-ranging an existing comment is designed but not yet wired: starting a
+selection on a draft comment is meant to seed it from that comment's current
+range so confirming edits the draft's anchor. Editing a range stays limited to
+drafts; re-anchoring an already committed comment by hand is deferred to the
+same path.
+
+The detached editor still insets its floating box a couple of columns while it
+roams the diff, keeping the reviewer's cursor visible beside it. That inset is a
+property of the floating overlay alone; the gutter rail belongs to the inline
+comment box and the document gutter beneath, so the two coexist without either
+widening the other.
 
 The inline comment editor is a separate input mode: while it is open the app
 hands most presses to the text buffer and honors only two actions,
@@ -586,3 +616,9 @@ A cargo workspace under `crates/`:
   whole-tree, and feeding editor changes back into the review are deferred.
 - Additional `wiff render` output formats.
 - Leader-key and multi-key chords (schema already accommodates them).
+- First-class comment replies and threads. Today an agent replies by adding a
+  separate comment on the same line; a reply construct would render indented
+  inside the thread without taking a gutter rail column of its own.
+- Manual re-anchoring of an already committed comment's line range. In v0 a
+  draft's range can be edited by re-selecting; a committed comment's range is
+  fixed once written.

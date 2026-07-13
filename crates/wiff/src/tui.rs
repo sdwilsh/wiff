@@ -675,8 +675,8 @@ modified  f.txt
    3    4   gamma
 ┌ wez (human)  press e to edit  r to resolve  d to delete  tab to expand/collapse ┐
 │why delta?                                                                    │
-└──────────────────────────────────────────────────────────────────────────────┘
-        5 + delta
+└──────────┬───────────────────────────────────────────────────────────────────┘
+        5 +└delta
 ---
 captured v1; rebased 1 comment: 1 exact, 0 shifted, 0 outdated
 ";
@@ -969,8 +969,8 @@ added  f.txt
 @@ -0,0 +1,4 @@
 ┌ wez (human)  press e to edit  r to resolve  d to delete  tab to expand/collapse ┐
 │why alpha?                                                                    │
-└──────────────────────────────────────────────────────────────────────────────┘
-        1 + alpha
+└──────────┬───────────────────────────────────────────────────────────────────┘
+        1 +└alpha
         2 + beta
         3 + gamma
         4 + delta
@@ -1083,8 +1083,8 @@ added  f.txt
 @@ -0,0 +1,4 @@
 ┌ assistant (agent)  press e to edit  r to resolve  d to delete  tab to expand/collapse ┐
 │alpha looks off                                                               │
-└──────────────────────────────────────────────────────────────────────────────┘
-        1 + alpha
+└──────────┬───────────────────────────────────────────────────────────────────┘
+        1 +└alpha
         2 + beta
         3 + gamma
         4 + delta

@@ -57,12 +57,38 @@ const FOLD_EXPANDED: char = '\u{25be}';
 /// fold, tracing how far the collapsible region reaches.
 const FOLD_BODY: char = '\u{2502}';
 
+/// The anchor-rail glyph tracing a comment's line range down the last gutter
+/// column, and the corner closing it on the range's final line.
+const RAIL_BODY: char = '\u{2502}';
+const RAIL_END: char = '\u{2514}';
+
+/// The gutter column the anchor rail occupies: the last gutter cell, just left
+/// of the content, where a comment box's bottom edge drops its tee.
+pub(crate) const RAIL_COLUMN: usize = GUTTER_WIDTH - 1;
+
+/// The tee joining a comment box's bottom edge down into the anchor rail.
+pub(crate) const RAIL_TEE: char = '\u{252c}';
+
+/// The anchor rail a content row draws in its last gutter cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RailCell {
+    /// The rail glyph: the body tracing the range down, or the corner closing it
+    /// on the range's final line.
+    pub glyph: char,
+    /// The comment-box border color, matching the rail to its box.
+    pub color: Rgb,
+}
+
 /// The file index for rows not tied to a file: the review summary and its
 /// comments, which resolve to no path in the status line.
 const NO_FILE: usize = usize::MAX;
 
 /// The context lines kept on each side of a change when nothing overrides it.
 pub const DEFAULT_DISPLAY_CONTEXT: usize = 3;
+
+/// One rendered display row of a diff line: its styled line and the plain text
+/// for search.
+type ContentRow = (Line<'static>, String);
 
 /// A rendered diff: the styled lines to draw, paired one-to-one with the [`Row`]
 /// metadata that says what each line is, plus the runs of unchanged lines that
@@ -80,6 +106,10 @@ pub struct Document {
     /// rows that carry nothing worth matching, such as hunk headers and box
     /// edges.
     pub text: Vec<String>,
+    /// The anchor rail each row draws in the last gutter cell, parallel to
+    /// `lines`; `None` for a row no comment range covers. Applied when comments
+    /// are shown and dropped with them, since the rail is annotation chrome.
+    pub rails: Vec<Option<RailCell>>,
     /// The foldable runs of unchanged rows, in row order, non-overlapping.
     pub folds: Vec<Fold>,
     /// The collapsible comment bodies, in row order.
@@ -100,6 +130,9 @@ pub struct CommentRegion {
     pub body: Range<usize>,
     /// Whether the comment starts collapsed (resolved comments do).
     pub collapsed_default: bool,
+    /// Whether the box anchors a line range, so its bottom edge drops the anchor
+    /// rail into the gutter and the covered lines below trace it.
+    pub anchor_rail: bool,
 }
 
 /// The view width a render targets and whether the diff content wraps to it.
@@ -211,6 +244,7 @@ impl Document {
         self.fills.push(fill);
         self.rows.push(Row { file, kind });
         self.text.push(text);
+        self.rails.push(None);
     }
 }
 
@@ -510,6 +544,7 @@ impl DiffView {
         } = inputs;
         let mut doc = Document {
             lines: Vec::new(),
+            rails: Vec::new(),
             fills: Vec::new(),
             rows: Vec::new(),
             text: Vec::new(),
@@ -537,6 +572,7 @@ impl DiffView {
                     comment,
                     pending.contains(&comment.id),
                     layout.width,
+                    false,
                 );
             }
         }
@@ -583,7 +619,14 @@ impl DiffView {
             self.file_header(file),
         );
         for comment in &placement.header {
-            self.push_comment(doc, index, comment, pending.contains(&comment.id), width);
+            self.push_comment(
+                doc,
+                index,
+                comment,
+                pending.contains(&comment.id),
+                width,
+                false,
+            );
         }
         // Paint from the cached highlight when it has arrived; render plain
         // while it is still being computed; or, when no cache is kept, run the
@@ -606,6 +649,9 @@ impl DiffView {
                 (&computed.before, &computed.after)
             }
         };
+        // The first display row of each content line, keyed by side and number,
+        // so the rail post-pass can walk a comment's line range in display order.
+        let mut first_row: HashMap<(Side, u32), usize> = HashMap::new();
         for (hunk_index, hunk) in file.hunks.iter().enumerate() {
             doc.push(
                 index,
@@ -656,10 +702,17 @@ impl DiffView {
                             comment,
                             pending.contains(&comment.id),
                             width,
+                            true,
                         );
                     }
                 }
                 line_row.push(doc.rows.len());
+                // Remember the first display row of each content line, keyed by
+                // side and number, so the rail post-pass can walk a comment's
+                // covered span in document order.
+                if let Some(n) = lineno {
+                    first_row.entry((side, n.get())).or_insert(doc.rows.len());
+                }
                 let (fill, rows) = self.content_rows(
                     line,
                     highlighted,
@@ -687,6 +740,46 @@ impl DiffView {
                     marker: self.fold_marker(run.end - run.start, scope),
                     fill: None,
                 });
+            }
+        }
+        self.trace_rails(doc, placement, pending, &first_row);
+    }
+
+    /// Draw each line comment's anchor rail into `doc.rails`. A comment's rail
+    /// runs from the first display row of its start line down to the first
+    /// display row of its end line, closing with the corner there; every row
+    /// between traces the body glyph, including the opposite-side rows a unified
+    /// diff interleaves, so the rail reads as one unbroken stroke down the
+    /// gutter. Where spans overlap the one column, the box reaching deepest wins
+    /// the row: its color and, at its last line, the closing corner.
+    fn trace_rails(
+        &self,
+        doc: &mut Document,
+        placement: &FilePlacement,
+        pending: &[Ulid],
+        first_row: &HashMap<(Side, u32), usize>,
+    ) {
+        // The deepest closing row recorded for each railed row, so a shallower
+        // comment does not overwrite a deeper one sharing the column.
+        let mut reach: HashMap<usize, usize> = HashMap::new();
+        for lc in &placement.lines {
+            let (Some(&start_row), Some(&end_row)) = (
+                first_row.get(&(lc.side, lc.start)),
+                first_row.get(&(lc.side, lc.end)),
+            ) else {
+                continue;
+            };
+            let color = self.comment_border(pending.contains(&lc.comment.id));
+            for row in start_row..=end_row {
+                if !matches!(doc.rows[row].kind, RowKind::Content { .. }) {
+                    continue;
+                }
+                if reach.get(&row).is_some_and(|&deepest| deepest >= end_row) {
+                    continue;
+                }
+                reach.insert(row, end_row);
+                let glyph = if row == end_row { RAIL_END } else { RAIL_BODY };
+                doc.rails[row] = Some(RailCell { glyph, color });
             }
         }
     }
@@ -734,6 +827,7 @@ impl DiffView {
         comment: &CommentState,
         pending: bool,
         width: usize,
+        rail: bool,
     ) {
         let border = self.comment_border(pending);
         let header = doc.rows.len();
@@ -777,6 +871,7 @@ impl DiffView {
             header,
             body: body_start..body_end,
             collapsed_default: comment.resolved || comment.deleted,
+            anchor_rail: rail,
         });
     }
 
@@ -901,7 +996,7 @@ impl DiffView {
         ranges: &[Range<usize>],
         wrap: Option<usize>,
         fold_mark: Option<char>,
-    ) -> (Option<Rgb>, Vec<(Line<'static>, String)>) {
+    ) -> (Option<Rgb>, Vec<ContentRow>) {
         let (marker, row_bg, emphasis_bg) = match line.kind {
             LineKind::Context => (fold_mark.unwrap_or(' '), None, None),
             LineKind::Added => (
@@ -1771,6 +1866,79 @@ mod tests {
             "\n",
             "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;\n",
         );
+    }
+
+    #[test]
+    fn a_multi_line_range_traces_the_anchor_rail_down_the_gutter() {
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[
+                    (LineKind::Added, "let a = 1;", 1),
+                    (LineKind::Added, "let b = 2;", 2),
+                    (LineKind::Added, "let c = 3;", 3),
+                ],
+            )],
+        };
+        let comments = vec![comment(
+            1,
+            ("wez", AuthorKind::Human),
+            on_lines("src/lib.rs", 1, 3),
+            "extract a helper",
+        )];
+        let doc = DiffView::new(theme()).unwrap().render_review(
+            &diff,
+            &comments,
+            &[],
+            ViewLayout::default(),
+        );
+        // The rail runs down the last gutter cell of the covered lines: the body
+        // glyph on the first two and the closing corner on the last; every other
+        // row leaves the cell empty. The app layer paints it in at draw time.
+        let rail: String = doc
+            .rails
+            .iter()
+            .map(|cell| cell.map_or('.', |c| c.glyph))
+            .collect();
+        wince::assert_eq!(rail, "......\u{2502}\u{2502}\u{2514}");
+    }
+
+    #[test]
+    fn the_anchor_rail_runs_unbroken_through_an_interleaved_removed_line() {
+        // A removed line sits between the after-side lines the comment covers.
+        // The rail traces the body glyph through it too, so the covered span
+        // reads as one unbroken stroke rather than breaking at the deletion.
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[
+                    (LineKind::Added, "let a = 1;", 1),
+                    (LineKind::Removed, "let gone = 0;", 5),
+                    (LineKind::Added, "let b = 2;", 2),
+                    (LineKind::Added, "let c = 3;", 3),
+                ],
+            )],
+        };
+        let comments = vec![comment(
+            1,
+            ("wez", AuthorKind::Human),
+            on_lines("src/lib.rs", 1, 3),
+            "extract a helper",
+        )];
+        let doc = DiffView::new(theme()).unwrap().render_review(
+            &diff,
+            &comments,
+            &[],
+            ViewLayout::default(),
+        );
+        let rail: String = doc
+            .rails
+            .iter()
+            .map(|cell| cell.map_or('.', |c| c.glyph))
+            .collect();
+        wince::assert_eq!(rail, "......\u{2502}\u{2502}\u{2502}\u{2514}");
     }
 
     #[test]
