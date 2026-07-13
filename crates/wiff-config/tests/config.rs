@@ -110,21 +110,27 @@ fn the_configured_keymap_overlays_the_defaults() {
 #[test]
 fn an_unknown_field_is_rejected() {
     let error = Config::parse("wibble = true\n").unwrap_err();
-    let message = error.to_string();
-    k9::assert_equal!(
-        message,
-        "could not parse config: TOML parse error at line 1, column 1\n  |\n1 | wibble = true\n  | ^^^^^^\nunknown field `wibble`, expected one of `on_exit`, `display_context`, `editor`, `wrap_lines`, `nudge_to_detach`, `author`, `section`, `disable_default_keymap`, `keymap`\n"
-            .to_string()
+    #[rustfmt::skip]
+    wince::snapshot_display!(
+        error,
+        "could not parse config: TOML parse error at line 1, column 1\n",
+        "  |\n",
+        "1 | wibble = true\n",
+        "  | ^^^^^^\n",
+        "unknown field `wibble`, expected one of `on_exit`, `display_context`, `editor`, `wrap_lines`, `nudge_to_detach`, `author`, `section`, `disable_default_keymap`, `keymap`\n",
     );
 }
 
 #[test]
 fn an_invalid_chord_is_a_parse_error() {
     let error = Config::parse("[keymap]\nquit = [\"ctrl-nope\"]\n").unwrap_err();
-    let message = error.to_string();
-    k9::assert_equal!(
-        message,
-        "could not parse config: TOML parse error at line 2, column 9\n  |\n2 | quit = [\"ctrl-nope\"]\n  |         ^^^^^^^^^^^\nunknown key \"nope\"\n"
-            .to_string()
+    #[rustfmt::skip]
+    wince::snapshot_display!(
+        error,
+        "could not parse config: TOML parse error at line 2, column 9\n",
+        "  |\n",
+        "2 | quit = [\"ctrl-nope\"]\n",
+        "  |         ^^^^^^^^^^^\n",
+        "unknown key \"nope\"\n",
     );
 }

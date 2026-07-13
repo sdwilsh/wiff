@@ -226,11 +226,9 @@ fn a_mutation_referencing_an_unknown_comment_is_a_corrupt_log() {
 
     let error = fold(&records).unwrap_err();
     k9::assert_equal!(matches!(error, Error::InconsistentLog(_)), true);
-    k9::assert_equal!(
-        error.to_string(),
-        "inconsistent session log: record at seq 1 references unknown comment \
-         00000000000000000000000000"
-            .to_string()
+    wince::snapshot_display!(
+        error,
+        "inconsistent session log: record at seq 1 references unknown comment 00000000000000000000000000"
     );
 }
 
@@ -243,9 +241,9 @@ fn an_unrecognized_record_type_is_a_corrupt_log() {
 
     let error = fold(&records).unwrap_err();
     k9::assert_equal!(matches!(error, Error::InconsistentLog(_)), true);
-    k9::assert_equal!(
-        error.to_string(),
-        "inconsistent session log: unrecognized record type at seq 1".to_string()
+    wince::snapshot_display!(
+        error,
+        "inconsistent session log: unrecognized record type at seq 1"
     );
 }
 
@@ -261,9 +259,9 @@ fn a_newer_format_version_is_refused() {
             if found == FORMAT_VERSION + 1 && supported == FORMAT_VERSION),
         true
     );
-    k9::assert_equal!(
-        error.to_string(),
-        "session format version 2 is newer than supported version 1".to_string()
+    wince::snapshot_display!(
+        error,
+        "session format version 2 is newer than supported version 1"
     );
 }
 
@@ -271,8 +269,5 @@ fn a_newer_format_version_is_refused() {
 fn a_log_without_a_header_cannot_be_folded() {
     let error = fold(&[]).unwrap_err();
     k9::assert_equal!(matches!(error, Error::MissingHeader), true);
-    k9::assert_equal!(
-        error.to_string(),
-        "session has no header record".to_string()
-    );
+    wince::snapshot_display!(error, "session has no header record");
 }

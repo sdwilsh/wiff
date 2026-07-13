@@ -350,8 +350,8 @@ fn a_file_outside_the_diff_cannot_be_anchored() {
     .append(&mut log)
     .unwrap_err();
     k9::assert_equal!(matches!(error, Error::Anchor(_)), true);
-    k9::assert_equal!(
-        error.to_string(),
-        "cannot anchor comment: nope.rs is not part of diff v0".to_string()
+    wince::snapshot_display!(
+        error,
+        "cannot anchor comment: nope.rs is not part of diff v0"
     );
 }

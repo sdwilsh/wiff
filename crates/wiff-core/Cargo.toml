@@ -25,3 +25,4 @@ wiff-diff.workspace = true
 [dev-dependencies]
 k9.workspace = true
 tempfile.workspace = true
+wince.workspace = true
