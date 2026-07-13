@@ -19,6 +19,15 @@ use wiff_tui::{
 
 use crate::command::recapture_diff;
 
+/// Parse unified diff `text` and expand its tabs to spaces at `tab_width` column
+/// stops. Raw tabs are never rendered, since they would break the review's
+/// fixed-column alignment.
+fn parse_diff(text: &str, tab_width: usize) -> Result<wiff_diff::Diff, wiff_diff::ParseError> {
+    let mut diff = wiff_diff::parse(text)?;
+    diff.expand_tabs(tab_width);
+    Ok(diff)
+}
+
 /// Open `session_path` in the review TUI, then keep or remove the session per
 /// the reviewer's choice and the configured `on_exit` default. When
 /// `offer_refresh` is set and recapturing the source would produce a diff
@@ -31,7 +40,7 @@ pub fn open(session_path: &Path, config: &Config, offer_refresh: bool) -> anyhow
         .latest_version()
         .context("this session has no captured diff to review")?;
     let text = log.read_diff(version.number)?;
-    let diff = wiff_diff::parse(&text)?;
+    let diff = parse_diff(&text, config.tab_width)?;
 
     let theme = Theme::dark();
     let sections = wiff_diff::SectionMatchers::new(&config.section)
@@ -57,6 +66,7 @@ pub fn open(session_path: &Path, config: &Config, offer_refresh: bool) -> anyhow
         .with_exit_default(exit_default(config.on_exit))
         .with_keymap(keymap.clone())
         .with_wrap_content(config.wrap_lines)
+        .with_tab_width(config.tab_width)
         .with_nudge_to_detach(config.nudge_to_detach);
     // A resumed session whose source has moved on opens over the existing state
     // with a prompt to recapture it, rather than silently showing a stale diff.
@@ -68,7 +78,7 @@ pub fn open(session_path: &Path, config: &Config, offer_refresh: bool) -> anyhow
     // pending drafts and keeps the review open. Any failure is reported in the
     // status line rather than tearing down the review.
     let refresh = |app: &mut App| {
-        if let Err(err) = refresh_in_place(session_path, &author, app) {
+        if let Err(err) = refresh_in_place(session_path, &author, config.tab_width, app) {
             app.set_message(format!("refresh failed: {err}"));
         }
     };
@@ -78,7 +88,7 @@ pub fn open(session_path: &Path, config: &Config, offer_refresh: bool) -> anyhow
         }
     };
     let compare = |app: &mut App, request: CompareRequest| {
-        if let Err(err) = compare_in_place(session_path, app, request) {
+        if let Err(err) = compare_in_place(session_path, config.tab_width, app, request) {
             app.set_message(format!("compare failed: {err}"));
         }
     };
@@ -114,6 +124,7 @@ pub fn open(session_path: &Path, config: &Config, offer_refresh: bool) -> anyhow
 /// Reports what is shown in the status line.
 fn compare_in_place(
     session_path: &Path,
+    tab_width: usize,
     app: &mut App,
     request: CompareRequest,
 ) -> anyhow::Result<()> {
@@ -123,14 +134,14 @@ fn compare_in_place(
         .context("this session has no captured diff to compare")?
         .number;
     let log = SessionLog::open(session_path)?;
-    let latest_diff = wiff_diff::parse(&log.read_diff(latest)?)?;
+    let latest_diff = parse_diff(&log.read_diff(latest)?, tab_width)?;
     match request {
         CompareRequest::Latest => {
             app.show_comparison(latest_diff, None);
             app.set_message(format!("showing the latest diff (v{latest})"));
         }
         CompareRequest::Version(from) => {
-            let from_diff = wiff_diff::parse(&log.read_diff(from)?)?;
+            let from_diff = parse_diff(&log.read_diff(from)?, tab_width)?;
             let comparison = compare_versions(&latest_diff, latest, &from_diff, from);
             app.show_comparison(comparison.diff, Some((from, comparison.before_origin)));
             app.set_message(format!("comparing v{from} against v{latest}"));
@@ -144,7 +155,12 @@ fn compare_in_place(
 /// diff, reporting the tally in the status line and offering the
 /// version-comparison list to narrow the view, opened on where the reviewer last
 /// left comments. A no-op capture (nothing changed) says so instead.
-fn refresh_in_place(session_path: &Path, author: &Author, app: &mut App) -> anyhow::Result<()> {
+fn refresh_in_place(
+    session_path: &Path,
+    author: &Author,
+    tab_width: usize,
+    app: &mut App,
+) -> anyhow::Result<()> {
     // The reference version the reviewer was comparing against before the
     // recapture, or none when they were on the latest diff. The recapture resets
     // the view, but the picker below marks this as where they were.
@@ -174,7 +190,7 @@ fn refresh_in_place(session_path: &Path, author: &Author, app: &mut App) -> anyh
         .latest_version()
         .context("the refreshed session has no captured diff")?
         .number;
-    let latest_diff = wiff_diff::parse(&log.read_diff(latest)?)?;
+    let latest_diff = parse_diff(&log.read_diff(latest)?, tab_width)?;
     let comments: Vec<_> = state
         .comments
         .iter()
@@ -182,7 +198,7 @@ fn refresh_in_place(session_path: &Path, author: &Author, app: &mut App) -> anyh
         .cloned()
         .collect();
     app.refresh(latest_diff, comments, latest, |authored_version| {
-        Ok(wiff_diff::parse(&log.read_diff(authored_version)?)?)
+        parse_diff(&log.read_diff(authored_version)?, tab_width).map_err(Into::into)
     })?;
     app.set_message(refresh_report(&outcome));
     // Offer the version list from the reviewer's pre-refresh perspective: their
@@ -636,7 +652,13 @@ mod tests {
             name: "wez".to_string(),
             kind: AuthorKind::Human,
         };
-        refresh_in_place(&session_path, &author, &mut app).expect("refresh in place");
+        refresh_in_place(
+            &session_path,
+            &author,
+            wiff_diff::DEFAULT_TAB_WIDTH,
+            &mut app,
+        )
+        .expect("refresh in place");
 
         // The reloaded review shows the full recaptured v1 diff, with the comment
         // rebased above the added delta on its new line, and the status line
@@ -723,9 +745,21 @@ captured v1; rebased 1 comment: 1 exact, 0 shifted, 0 outdated
             name: "wez".to_string(),
             kind: AuthorKind::Human,
         };
-        refresh_in_place(&session_path, &author, &mut app).expect("refresh to v1");
+        refresh_in_place(
+            &session_path,
+            &author,
+            wiff_diff::DEFAULT_TAB_WIDTH,
+            &mut app,
+        )
+        .expect("refresh to v1");
 
-        compare_in_place(&session_path, &mut app, CompareRequest::Version(0)).expect("compare");
+        compare_in_place(
+            &session_path,
+            wiff_diff::DEFAULT_TAB_WIDTH,
+            &mut app,
+            CompareRequest::Version(0),
+        )
+        .expect("compare");
 
         // The review now shows only what changed between v0 and v1: beta on the
         // left, BETA on the right, with the unchanged lines as context, and the
@@ -746,7 +780,13 @@ comparing v0 against v1
 
         // Returning to the latest diff shows v1's own captured change against
         // its baseline again.
-        compare_in_place(&session_path, &mut app, CompareRequest::Latest).expect("back to latest");
+        compare_in_place(
+            &session_path,
+            wiff_diff::DEFAULT_TAB_WIDTH,
+            &mut app,
+            CompareRequest::Latest,
+        )
+        .expect("back to latest");
         let latest = "\
 Review [press c here to draft the review comment]
 modified  f.txt

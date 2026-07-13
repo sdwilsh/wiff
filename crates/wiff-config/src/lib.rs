@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use wiff_core::AuthorDefaults;
+use wiff_diff::DEFAULT_TAB_WIDTH;
 use wiff_tui::keymap::Keymap;
 use wiff_tui::render::DEFAULT_DISPLAY_CONTEXT;
 use wiff_tui::{KeymapError, KeymapOverrides};
@@ -42,6 +43,8 @@ pub struct Config {
     /// runs fold away. This is a display choice, independent of how much context
     /// the diff was captured with.
     pub display_context: usize,
+    /// Columns per tab stop for diff display and comment editing.
+    pub tab_width: usize,
     /// The editor command template for `open_in_editor`, with `{file}` and
     /// `{line}` placeholders; falls back to `$VISUAL`/`$EDITOR` when unset.
     pub editor: Option<String>,
@@ -71,6 +74,7 @@ impl Default for Config {
         Self {
             on_exit: OnExit::default(),
             display_context: DEFAULT_DISPLAY_CONTEXT,
+            tab_width: DEFAULT_TAB_WIDTH,
             editor: None,
             wrap_lines: true,
             nudge_to_detach: true,

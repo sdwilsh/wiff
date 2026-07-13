@@ -13,6 +13,7 @@ serde = { workspace = true }
 thiserror.workspace = true
 toml.workspace = true
 wiff-core.workspace = true
+wiff-diff.workspace = true
 wiff-tui.workspace = true
 
 [dev-dependencies]

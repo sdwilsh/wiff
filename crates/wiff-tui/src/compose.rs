@@ -20,7 +20,7 @@ use ratatui::widgets::{Block, Borders};
 use tui_textarea::{CursorMove, Input, Key as EditorKey, TextArea};
 use ulid::Ulid;
 use wiff_core::record::CommentTarget;
-use wiff_diff::{LiveHighlighter, Rgb};
+use wiff_diff::{LiveHighlighter, Rgb, expand_tabs};
 
 use crate::editor_wrap::{CursorBias, VisualRow, WrapMap};
 use crate::key::{Key, KeyPress};
@@ -80,9 +80,10 @@ pub struct Compose {
 
 impl Compose {
     /// An editor for `kind`, rendered above view row `anchor`, seeded with
-    /// `seed` (empty when authoring), titled `label`, and bordered in `border`.
-    /// The key hint beside the label is supplied to [`block`](Self::block) at
-    /// render time, since it depends on whether the editor is floating.
+    /// `seed` (empty when authoring), titled `label`, and bordered in `border`,
+    /// with tab stops `tab_width` columns apart. The key hint beside the label
+    /// is supplied to [`block`](Self::block) at render time, since it depends on
+    /// whether the editor is floating.
     pub fn new(
         kind: ComposeKind,
         anchor: usize,
@@ -90,7 +91,9 @@ impl Compose {
         label: String,
         border: Rgb,
         mut highlighter: LiveHighlighter,
+        tab_width: usize,
     ) -> Self {
+        let seed = expand_tabs(seed, tab_width);
         let lines: Vec<String> = if seed.is_empty() {
             vec![String::new()]
         } else {
@@ -98,6 +101,7 @@ impl Compose {
         };
         highlighter.update(&lines);
         let mut textarea = TextArea::new(lines);
+        textarea.set_tab_length(tab_width as u8);
         // The editor otherwise underlines the whole line the cursor is on, which
         // reads as emphasis on the text rather than a cursor.
         textarea.set_cursor_line_style(Style::default());
@@ -396,5 +400,45 @@ fn to_input(press: KeyPress) -> Input {
         ctrl: press.ctrl,
         alt: press.alt,
         shift: press.shift,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wiff_core::record::CommentTarget;
+    use wiff_diff::Rgb;
+
+    use super::{Compose, ComposeKind};
+    use crate::key::{Key, KeyPress};
+    use crate::render::DiffView;
+    use crate::render::testutil::theme;
+
+    /// An editor authoring a review comment seeded with `seed`, its tab key set
+    /// to `tab_width` columns.
+    fn editor(seed: &str, tab_width: usize) -> Compose {
+        let view = DiffView::new(theme()).expect("view");
+        Compose::new(
+            ComposeKind::Add(CommentTarget::Review),
+            0,
+            seed,
+            "comment".to_string(),
+            Rgb { r: 0, g: 0, b: 0 },
+            view.live_highlighter("md"),
+            tab_width,
+        )
+    }
+
+    #[test]
+    fn a_seeded_tab_expands_to_the_next_stop() {
+        let compose = editor("a\tb", 4);
+        wince::assert_eq!(compose.body(), "a   b".to_string());
+    }
+
+    #[test]
+    fn the_tab_key_inserts_spaces_to_the_next_stop() {
+        let mut compose = editor("ab", 4);
+        compose.input(KeyPress::new(Key::Tab), 80);
+        compose.input(KeyPress::new(Key::Char('c')), 80);
+        wince::assert_eq!(compose.body(), "ab  c".to_string());
     }
 }

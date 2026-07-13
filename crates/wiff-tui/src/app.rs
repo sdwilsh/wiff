@@ -416,6 +416,8 @@ pub struct App {
     /// Whether diff content lines wrap to the viewport width rather than being
     /// clipped at the edge, toggled by [`Action::ToggleWrap`].
     wrap: bool,
+    /// Columns per tab stop for the comment editor.
+    tab_width: usize,
     /// Whether the initial cursor has been centered in the viewport, which
     /// happens once the first real height is known.
     positioned: bool,
@@ -488,6 +490,7 @@ impl App {
             height,
             width: 0,
             wrap: false,
+            tab_width: wiff_diff::DEFAULT_TAB_WIDTH,
             positioned: false,
             background: theme.background,
             theme_name: theme.syntax_theme.clone(),
@@ -540,6 +543,13 @@ impl App {
     /// only records the choice; the first draw reflows to it.
     pub fn with_wrap_content(mut self, wrap: bool) -> Self {
         self.wrap = wrap;
+        self
+    }
+
+    /// Set the comment editor's tab width, from the reviewer's configured
+    /// default.
+    pub fn with_tab_width(mut self, tab_width: usize) -> Self {
+        self.tab_width = tab_width;
         self
     }
 
@@ -805,6 +815,7 @@ impl App {
                 label,
                 self.compose_border,
                 highlighter,
+                self.tab_width,
             ));
         }
         Update::Handled
@@ -835,6 +846,7 @@ impl App {
                 "edit comment".to_string(),
                 self.compose_border,
                 highlighter,
+                self.tab_width,
             ));
         }
         Update::Handled
