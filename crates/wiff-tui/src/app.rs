@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Block;
 use ulid::Ulid;
@@ -2238,7 +2238,7 @@ impl App {
 
     /// The fully drawn line for view row `index` at `width`, before any cursor
     /// wash: a comment's box edges, a diff row's role tint filled to the edge, or
-    /// the fold marker filled with the status color.
+    /// the fold marker on the plain background.
     fn decorate(&self, index: usize, width: usize) -> Line<'static> {
         match self.view[index] {
             ViewRow::Fold(fold) => {
@@ -2573,7 +2573,8 @@ impl App {
             format!("{text:<width$}"),
             Style::default()
                 .fg(color(self.status_fg))
-                .bg(color(self.status_bg)),
+                .bg(color(self.status_bg))
+                .add_modifier(Modifier::BOLD),
         ))
     }
 
@@ -3171,7 +3172,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             visible,
-            "<#cdd1d8|#4f5b66|b>modified  src/lib.rs<-|#4f5b66|->                    \n",
+            "<#f6f6f8|#65737e|b>modified  src/lib.rs<-|#65737e|->                    \n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
         );
@@ -3192,7 +3193,7 @@ mod tests {
             "<#96b5b4|-|->@@ -1,20 +1,20 @@\n",
             "<#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->row01<-|#414a4a|->                       \n",
             "<#9ea1a9|#414a4a|->        2 + <#c0c5ce|#414a4a|->row02<-|#414a4a|->                       \n",
-            "<#cfd0d4|#4f5b66|->        3 + <#cdd1d8|#4f5b66|->row03<-|#4f5b66|->                       \n",
+            "<#f5f6f6|#65737e|->        3 + <#f6f6f8|#65737e|->row03<-|#65737e|->                       \n",
             "<#9ea1a9|#414a4a|->        4 + <#c0c5ce|#414a4a|->row04<-|#414a4a|->                       \n",
             "<#9ea1a9|#414a4a|->        5 + <#c0c5ce|#414a4a|->row05<-|#414a4a|->                       \n",
             "<#9ea1a9|#414a4a|->        6 + <#c0c5ce|#414a4a|->row06<-|#414a4a|->                       \n",
@@ -3217,7 +3218,7 @@ mod tests {
             "<#9ea1a9|#414a4a|->        8 + <#c0c5ce|#414a4a|->row08<-|#414a4a|->                       \n",
             "<#9ea1a9|#414a4a|->        9 + <#c0c5ce|#414a4a|->row09<-|#414a4a|->                       \n",
             "<#9ea1a9|#414a4a|->       10 + <#c0c5ce|#414a4a|->row10<-|#414a4a|->                       \n",
-            "<#cfd0d4|#4f5b66|->       11 + <#cdd1d8|#4f5b66|->row11<-|#4f5b66|->                       \n",
+            "<#f5f6f6|#65737e|->       11 + <#f6f6f8|#65737e|->row11<-|#65737e|->                       \n",
             "<#9ea1a9|#414a4a|->       12 + <#c0c5ce|#414a4a|->row12<-|#414a4a|->                       \n",
             "<#9ea1a9|#414a4a|->       13 + <#c0c5ce|#414a4a|->row13<-|#414a4a|->                       \n",
             "<#9ea1a9|#414a4a|->       14 + <#c0c5ce|#414a4a|->row14<-|#414a4a|->                       \n",
@@ -3231,12 +3232,12 @@ mod tests {
         let mut app = App::new(document(), 10, &theme());
         wince::snapshot_display!(
             dump(&[app.status(28)]),
-            "<#c0c5ce|#3a3f4a|->src/lib.rs        0 open  0%\n"
+            "<#cdd1d8|#4f5b66|b>src/lib.rs        0 open  0%\n"
         );
         app.update(Action::NextFile);
         wince::snapshot_display!(
             dump(&[app.status(28)]),
-            "<#c0c5ce|#3a3f4a|->notes.txt        0 open  66%\n"
+            "<#cdd1d8|#4f5b66|b>notes.txt        0 open  66%\n"
         );
     }
 
@@ -3252,12 +3253,12 @@ mod tests {
         }
         wince::snapshot_display!(
             dump(&[app.status(28)]),
-            "<#c0c5ce|#3a3f4a|->src/lib.rs       1 open  33%\n"
+            "<#cdd1d8|#4f5b66|b>src/lib.rs       1 open  33%\n"
         );
         app.update(Action::ResolveComment);
         wince::snapshot_display!(
             dump(&[app.status(28)]),
-            "<#c0c5ce|#3a3f4a|->src/lib.rs     * 2 open  33%\n"
+            "<#cdd1d8|#4f5b66|b>src/lib.rs     * 2 open  33%\n"
         );
     }
 
@@ -3272,12 +3273,12 @@ mod tests {
         app.update(Action::HideComments);
         wince::snapshot_display!(
             dump(&[app.status(60)]),
-            "<#c0c5ce|#3a3f4a|->src/lib.rs               comments hidden, toggle with V  75%\n"
+            "<#cdd1d8|#4f5b66|b>src/lib.rs               comments hidden, toggle with V  75%\n"
         );
         app.update(Action::HideComments);
         wince::snapshot_display!(
             dump(&[app.status(60)]),
-            "<#c0c5ce|#3a3f4a|->src/lib.rs                                       1 open  55%\n"
+            "<#cdd1d8|#4f5b66|b>src/lib.rs                                       1 open  55%\n"
         );
     }
 
@@ -3316,7 +3317,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             visible,
-            "<#ecce91|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#fcf7ee|#65737e|b>Review<#f7f7f8|#65737e|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
@@ -3359,7 +3360,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump(&app.visible(TEST_WIDTH)),
-            "<#ecce91|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#fcf7ee|#65737e|b>Review<#f7f7f8|#65737e|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
             "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> total <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> alpha plus beta plus gamma<#c0c5ce|#414a4a|->;\n",
@@ -3369,7 +3370,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump(&app.visible(TEST_WIDTH)),
-            "<#ecce91|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#fcf7ee|#65737e|b>Review<#f7f7f8|#65737e|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
             "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> total = alpha plus beta<-|#414a4a|-> \n",
@@ -3380,7 +3381,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump(&app.visible(TEST_WIDTH)),
-            "<#ecce91|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#fcf7ee|#65737e|b>Review<#f7f7f8|#65737e|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
             "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> total <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> alpha plus beta plus gamma<#c0c5ce|#414a4a|->;\n",
@@ -3428,7 +3429,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump_compose(&view),
-            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
             "--editor cursor 4,0--\n",
@@ -3473,7 +3474,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump_picker(&mut app),
-            "<#c0c5ce|#4f5b66|->> src/lib.rs                            \n",
+            "<#c0c5ce|#65737e|->> src/lib.rs                            \n",
             "<#c0c5ce|#2b303b|->  notes.txt                             \n",
             "<-|#2b303b|->                                        \n",
             "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
@@ -3516,8 +3517,8 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_str!(
             dump_picker(&mut app),
-            "<#c0c5ce|#4f5b66|->> <#c0c5ce|#4f5b66|->  <#c0c5ce|#4f5b66|->src/lib.rs:2  wez   why 2?<#c0c5ce|#4f5b66|->          \n",
-            "<#c0c5ce|#2b303b|->  <#767b84|#2b303b|->\u{2713} <#c0c5ce|#2b303b|->src/lib.rs:1  opus  ok<#c0c5ce|#2b303b|->              \n",
+            "<#c0c5ce|#65737e|->> <#c0c5ce|#65737e|->  <#c0c5ce|#65737e|->src/lib.rs:2  wez   why 2?<#c0c5ce|#65737e|->          \n",
+            "<#c0c5ce|#2b303b|->  <#767b84|#2b303b|->✓ <#c0c5ce|#2b303b|->src/lib.rs:1  opus  ok<#c0c5ce|#2b303b|->              \n",
             "<-|#2b303b|->                                        \n",
             "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
         );
@@ -3592,10 +3593,10 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_str!(
             dump_picker(&mut app),
-            "<#c0c5ce|#4f5b66|->> <#a3be8c|#4f5b66|->* <#767b84|#4f5b66|s>src/lib.rs:4  wez   withdrawn one<#c0c5ce|#4f5b66|->   \n",
+            "<#c0c5ce|#65737e|->> <#a3be8c|#65737e|->* <#767b84|#65737e|s>src/lib.rs:4  wez   withdrawn one<#c0c5ce|#65737e|->   \n",
             "<#c0c5ce|#2b303b|->  <#c0c5ce|#2b303b|->  <#c0c5ce|#2b303b|->src/lib.rs:1  wez   open one<#c0c5ce|#2b303b|->        \n",
             "<#c0c5ce|#2b303b|->  <#d08770|#2b303b|->! <#c0c5ce|#2b303b|->src/lib.rs:3  wez   shifted one<#c0c5ce|#2b303b|->     \n",
-            "<#c0c5ce|#2b303b|->  <#767b84|#2b303b|->\u{2713} <#c0c5ce|#2b303b|->src/lib.rs:2  opus  resolved one<#c0c5ce|#2b303b|->    \n",
+            "<#c0c5ce|#2b303b|->  <#767b84|#2b303b|->✓ <#c0c5ce|#2b303b|->src/lib.rs:2  opus  resolved one<#c0c5ce|#2b303b|->    \n",
             "<-|#2b303b|->                                        \n",
             "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
         );
@@ -3620,8 +3621,8 @@ mod tests {
     #[test]
     fn the_theme_picker_lists_every_theme_with_the_current_one_highlighted() {
         // Opening the picker over a review lists the bundled themes in name
-        // order, opening on the one in effect (the default dark theme) rather
-        // than the first, then a spacer and the key hint.
+        // order, opening on the one in effect rather than the first, then a
+        // spacer and the key hint.
         let mut app = App::reviewing(commented_review(), 8, &theme());
         app.update(Action::PickTheme);
         wince::assert_eq!(app.picking(), true);
@@ -3633,8 +3634,9 @@ mod tests {
             "<#c0c5ce|#2b303b|->  Solarized (light)                     \n",
             "<#c0c5ce|#2b303b|->  base16-eighties.dark                  \n",
             "<#c0c5ce|#2b303b|->  base16-mocha.dark                     \n",
-            "<#c0c5ce|#4f5b66|->> base16-ocean.dark                     \n",
+            "<#c0c5ce|#65737e|->> base16-ocean.dark                     \n",
             "<#c0c5ce|#2b303b|->  base16-ocean.light                    \n",
+            "<#c0c5ce|#2b303b|->  wez                                   \n",
             "<-|#2b303b|->                                        \n",
             "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
         );
@@ -3686,7 +3688,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump_picker(&mut app),
-            "<#c0c5ce|#4f5b66|->> the latest diff (v2) (showing now)    \n",
+            "<#c0c5ce|#65737e|->> the latest diff (v2) (showing now)    \n",
             "<#c0c5ce|#2b303b|->  changes since v1                      \n",
             "<#c0c5ce|#2b303b|->  changes since v0                      \n",
             "<-|#2b303b|->                                        \n",
@@ -3707,7 +3709,7 @@ mod tests {
         wince::snapshot_display!(
             dump_picker(&mut app),
             "<#c0c5ce|#2b303b|->  the latest diff (v2)                  \n",
-            "<#c0c5ce|#4f5b66|->> changes since v1 (showing now)        \n",
+            "<#c0c5ce|#65737e|->> changes since v1 (showing now)        \n",
             "<#c0c5ce|#2b303b|->  changes since v0                      \n",
             "<-|#2b303b|->                                        \n",
             "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
@@ -3752,7 +3754,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump_picker(&mut app),
-            "<#c0c5ce|#4f5b66|->> Refresh now                           \n",
+            "<#c0c5ce|#65737e|->> Refresh now                           \n",
             "<#c0c5ce|#2b303b|->  Keep the current diff                 \n",
             "<-|#2b303b|->                                        \n",
             "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
@@ -3793,7 +3795,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump_picker(&mut app),
-            "<#c0c5ce|#4f5b66|->> the latest diff (v1) (showing now)    \n",
+            "<#c0c5ce|#65737e|->> the latest diff (v1) (showing now)    \n",
             "<#c0c5ce|#2b303b|->  changes since v0                      \n",
             "<-|#2b303b|->                                        \n",
             "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
@@ -3811,7 +3813,7 @@ mod tests {
         wince::snapshot_display!(
             dump_picker(&mut app),
             "<#c0c5ce|#2b303b|->  the latest diff (v2)                  \n",
-            "<#c0c5ce|#4f5b66|->> changes since v1 (showing now)        \n",
+            "<#c0c5ce|#65737e|->> changes since v1 (showing now)        \n",
             "<#c0c5ce|#2b303b|->  changes since v0                      \n",
             "<-|#2b303b|->                                        \n",
             "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
@@ -3829,7 +3831,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump_picker(&mut app),
-            "<#c0c5ce|#4f5b66|->> the latest diff (v2) (showing now)    \n",
+            "<#c0c5ce|#65737e|->> the latest diff (v2) (showing now)    \n",
             "<#c0c5ce|#2b303b|->  changes since v1 (your last comments) \n",
             "<#c0c5ce|#2b303b|->  changes since v0                      \n",
             "<-|#2b303b|->                                        \n",
@@ -3977,9 +3979,9 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             visible,
-            "<#cdd1d8|#4f5b66|b>modified  notes.txt<-|#4f5b66|->                     \n",
+            "<#f6f6f8|#65737e|b>modified  notes.txt<-|#65737e|->                     \n",
             "<#96b5b4|-|->@@ -1,17 +1,17 @@\n",
-            "<#767b84|#3a3f4a|->            [5 unchanged lines]  ctx05<-|#3a3f4a|->  \n",
+            "<#767b84|-|->          ▸ [5 unchanged lines]  ctx05\n",
             "<#7d828c|-|->   6    6   <#c0c5ce|-|->ctx06\n",
             "<#7d828c|-|->   7    7   <#c0c5ce|-|->ctx07\n",
             "<#7d828c|-|->   8    8   <#c0c5ce|-|->ctx08\n",
@@ -3987,7 +3989,7 @@ mod tests {
             "<#7d828c|-|->  10   10   <#c0c5ce|-|->ctx09\n",
             "<#7d828c|-|->  11   11   <#c0c5ce|-|->ctx10\n",
             "<#7d828c|-|->  12   12   <#c0c5ce|-|->ctx11\n",
-            "<#767b84|#3a3f4a|->            [5 unchanged lines]  ctx16<-|#3a3f4a|->  \n",
+            "<#767b84|-|->          ▸ [5 unchanged lines]  ctx16\n",
         );
     }
 
@@ -4006,10 +4008,10 @@ mod tests {
             visible,
             "<#c0c5ce|-|b>modified  notes.txt\n",
             "<#96b5b4|-|->@@ -1,17 +1,17 @@\n",
-            "<#b8bac0|#4f5b66|->   1    1   <#cdd1d8|#4f5b66|->ctx01<-|#4f5b66|->                       \n",
-            "<#7d828c|-|->   2    2   <#c0c5ce|-|->ctx02\n",
-            "<#7d828c|-|->   3    3   <#c0c5ce|-|->ctx03\n",
-            "<#7d828c|-|->   4    4   <#c0c5ce|-|->ctx04\n",
+            "<#d8dadd|#65737e|->   1    1 ▾ <#f6f6f8|#65737e|->ctx01<-|#65737e|->                       \n",
+            "<#7d828c|-|->   2    2 │ <#c0c5ce|-|->ctx02\n",
+            "<#7d828c|-|->   3    3 │ <#c0c5ce|-|->ctx03\n",
+            "<#7d828c|-|->   4    4 │ <#c0c5ce|-|->ctx04\n",
         );
     }
 
@@ -4033,7 +4035,7 @@ mod tests {
             visible,
             "<#c0c5ce|-|b>modified  notes.txt\n",
             "<#96b5b4|-|->@@ -1,17 +1,17 @@\n",
-            "<#adb0b5|#4f5b66|->            [5 unchanged lines]  ctx05<-|#4f5b66|->  \n",
+            "<#cfd1d4|#65737e|->          ▸ [5 unchanged lines]  ctx05<-|#65737e|->  \n",
             "<#7d828c|-|->   6    6   <#c0c5ce|-|->ctx06\n",
             "<#7d828c|-|->   7    7   <#c0c5ce|-|->ctx07\n",
             "<#7d828c|-|->   8    8   <#c0c5ce|-|->ctx08\n",
@@ -4050,7 +4052,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             visible,
-            "<#ecce91|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#fcf7ee|#65737e|b>Review<#f7f7f8|#65737e|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
@@ -4106,13 +4108,13 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             visible,
-            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#767b84|-|->└──────────────────────────────────────┘\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
-            "<#adb0b5|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#adb0b5|#4f5b66|-> <#adb0b5|#4f5b66|->┐\n",
+            "<#cfd1d4|#65737e|->┌ <#f9fafb|#65737e|->wez (human)<#cfd1d4|#65737e|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#cfd1d4|#65737e|-> <#cfd1d4|#65737e|->┐\n",
             "<#767b84|-|->└──────────────────────────────────────┘\n",
             "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
         );
@@ -4131,13 +4133,13 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             visible,
-            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#767b84|-|->└──────────────────────────────────────┘\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
-            "<#adb0b5|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#adb0b5|#4f5b66|-> <#adb0b5|#4f5b66|->┐\n",
+            "<#cfd1d4|#65737e|->┌ <#f9fafb|#65737e|->wez (human)<#cfd1d4|#65737e|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#cfd1d4|#65737e|-> <#cfd1d4|#65737e|->┐\n",
             "<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│\n",
             "<#767b84|-|->└──────────────────────────────────────┘\n",
             "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
@@ -4163,11 +4165,11 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             visible,
-            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
-            "<#cfd0d4|#4f5b66|->        2 + <#ddccda|#4f5b66|->let<#cdd1d8|#4f5b66|-> y <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#ebcdc3|#4f5b66|->2<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  \n",
+            "<#f5f6f6|#65737e|->        2 + <#faf7f9|#65737e|->let<#f6f6f8|#65737e|-> y <#f6f6f8|#65737e|->=<#f6f6f8|#65737e|-> <#fcf7f5|#65737e|->2<#f6f6f8|#65737e|->;<-|#65737e|->                  \n",
         );
 
         // Showing them again brings every box back; the cursor stays on the code.
@@ -4185,7 +4187,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             visible,
-            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
@@ -4194,7 +4196,7 @@ mod tests {
             "<#767b84|-|->┌ <#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│\n",
             "<#767b84|-|->└──────────────────────────────────────┘\n",
-            "<#cfd0d4|#4f5b66|->        2 + <#ddccda|#4f5b66|->let<#cdd1d8|#4f5b66|-> y <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#ebcdc3|#4f5b66|->2<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  \n",
+            "<#f5f6f6|#65737e|->        2 + <#faf7f9|#65737e|->let<#f6f6f8|#65737e|-> y <#f6f6f8|#65737e|->=<#f6f6f8|#65737e|-> <#fcf7f5|#65737e|->2<#f6f6f8|#65737e|->;<-|#65737e|->                  \n",
         );
     }
 
@@ -4216,13 +4218,13 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             visible,
-            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#767b84|-|->└──────────────────────────────────────┘\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
-            "<#c8d8ba|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#c8d8ba|#4f5b66|-> [draft]<#adb0b5|#4f5b66|-> [resolved by wez]<#adb0b5|#4f5b66|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#c8d8ba|#4f5b66|-> <#c8d8ba|#4f5b66|->┐\n",
+            "<#f6f9f4|#65737e|->┌ <#f9fafb|#65737e|->wez (human)<#f6f9f4|#65737e|-> [draft]<#cfd1d4|#65737e|-> [resolved by wez]<#cfd1d4|#65737e|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#f6f9f4|#65737e|-> <#f6f9f4|#65737e|->┐\n",
             "<#a3be8c|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#a3be8c|-|->│\n",
             "<#a3be8c|-|->└──────────────────────────────────────┘\n",
             "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
@@ -4248,13 +4250,13 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             visible,
-            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#767b84|-|->└──────────────────────────────────────┘\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
-            "<#c8d8ba|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#c8d8ba|#4f5b66|-> [draft]<#adb0b5|#4f5b66|-> [deleted by wez]<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to undelete  tab to expand/collapse<#c8d8ba|#4f5b66|-> <#c8d8ba|#4f5b66|->┐\n",
+            "<#f6f9f4|#65737e|->┌ <#f9fafb|#65737e|->wez (human)<#f6f9f4|#65737e|-> [draft]<#cfd1d4|#65737e|-> [deleted by wez]<#cfd1d4|#65737e|->  press e to edit  r to resolve  d to undelete  tab to expand/collapse<#f6f9f4|#65737e|-> <#f6f9f4|#65737e|->┐\n",
             "<#a3be8c|-|->└──────────────────────────────────────┘\n",
             "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
         );
@@ -4280,13 +4282,13 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             visible,
-            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#767b84|-|->└──────────────────────────────────────┘\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
-            "<#adb0b5|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#adb0b5|#4f5b66|-> <#adb0b5|#4f5b66|->┐\n",
+            "<#cfd1d4|#65737e|->┌ <#f9fafb|#65737e|->wez (human)<#cfd1d4|#65737e|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#cfd1d4|#65737e|-> <#cfd1d4|#65737e|->┐\n",
             "<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│\n",
             "<#767b84|-|->└──────────────────────────────────────┘\n",
             "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
@@ -4332,11 +4334,11 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump(&app.visible(TEST_WIDTH)),
-            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
-            "<#c8d8ba|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#c8d8ba|#4f5b66|-> [draft]<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#c8d8ba|#4f5b66|-> <#c8d8ba|#4f5b66|->┐\n",
+            "<#f6f9f4|#65737e|->┌ <#f9fafb|#65737e|->wez (human)<#f6f9f4|#65737e|-> [draft]<#cfd1d4|#65737e|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#f6f9f4|#65737e|-> <#f6f9f4|#65737e|->┐\n",
             "<#a3be8c|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#a3be8c|-|->│\n",
             "<#a3be8c|-|->└──────────────────────────────────────┘\n",
             "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
@@ -4357,7 +4359,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump_compose(&view),
-            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
@@ -4522,7 +4524,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump_detached(&app, TEST_WIDTH, 8),
-            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
@@ -4724,11 +4726,11 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump(&app.visible(TEST_WIDTH)),
-            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
-            "<#c8d8ba|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#c8d8ba|#4f5b66|-> [draft]<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#c8d8ba|#4f5b66|-> <#c8d8ba|#4f5b66|->┐\n",
+            "<#f6f9f4|#65737e|->┌ <#f9fafb|#65737e|->wez (human)<#f6f9f4|#65737e|-> [draft]<#cfd1d4|#65737e|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#f6f9f4|#65737e|-> <#f6f9f4|#65737e|->┐\n",
             "<#a3be8c|-|->│<#c0c5ce|-|->why 2?2<-|-|->                               <#a3be8c|-|->│\n",
             "<#a3be8c|-|->└──────────────────────────────────────┘\n",
             "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
@@ -4813,11 +4815,11 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump(&app.visible(TEST_WIDTH)),
-            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
-            "<#c8d8ba|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#c8d8ba|#4f5b66|-> [draft]<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#c8d8ba|#4f5b66|-> <#c8d8ba|#4f5b66|->┐\n",
+            "<#f6f9f4|#65737e|->┌ <#f9fafb|#65737e|->wez (human)<#f6f9f4|#65737e|-> [draft]<#cfd1d4|#65737e|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#f6f9f4|#65737e|-> <#f6f9f4|#65737e|->┐\n",
             "<#a3be8c|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#a3be8c|-|->│\n",
             "<#a3be8c|-|->└──────────────────────────────────────┘\n",
             "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
@@ -4873,13 +4875,13 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump(&app.visible(TEST_WIDTH)),
-            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#767b84|-|->└──────────────────────────────────────┘\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
-            "<#c8d8ba|#4f5b66|->┌ <#cdd5dd|#4f5b66|->wez (human)<#c8d8ba|#4f5b66|-> [draft]<#adb0b5|#4f5b66|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#c8d8ba|#4f5b66|-> <#c8d8ba|#4f5b66|->┐\n",
+            "<#f6f9f4|#65737e|->┌ <#f9fafb|#65737e|->wez (human)<#f6f9f4|#65737e|-> [draft]<#cfd1d4|#65737e|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#f6f9f4|#65737e|-> <#f6f9f4|#65737e|->┐\n",
             "<#a3be8c|-|->│<#c0c5ce|-|->use a constant<-|-|->                        <#a3be8c|-|->│\n",
             "<#a3be8c|-|->└──────────────────────────────────────┘\n",
             "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
@@ -4899,7 +4901,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump_compose(&view),
-            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
@@ -4929,7 +4931,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump_compose(&view),
-            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#a3be8c|-|->┌ <#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#a3be8c|-|-> <#a3be8c|-|->┐\n",
             "<#a3be8c|-|->│<#c0c5ce|-|->first<-|-|->                                 <#a3be8c|-|->│\n",
             "<#a3be8c|-|->└──────────────────────────────────────┘\n",
@@ -4990,11 +4992,11 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump(&app.visible(TEST_WIDTH)),
-            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,3 +1,3 @@\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
-            "<#cfd0d4|#4f5b66|->        2 + <#ddccda|#4f5b66|->let<#cdd1d8|#4f5b66|-> y <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#ebcdc3|#4f5b66|->2<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  \n",
+            "<#f5f6f6|#65737e|->        2 + <#faf7f9|#65737e|->let<#f6f6f8|#65737e|-> y <#f6f6f8|#65737e|->=<#f6f6f8|#65737e|-> <#fcf7f5|#65737e|->2<#f6f6f8|#65737e|->;<-|#65737e|->                  \n",
             "<#9ea1a9|#414a4a|->        3 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> z <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->3<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
         );
         // The status line truncates the note to the screen width.
@@ -5053,7 +5055,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump(&app.visible(TEST_WIDTH)),
-            "<#ecce91|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#fcf7ee|#65737e|b>Review<#f7f7f8|#65737e|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,3 +1,3 @@\n",
             "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> a <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->0<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
@@ -5090,10 +5092,10 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump(&app.visible(TEST_WIDTH)),
-            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
-            "<#b8bac0|#4f5b66|->   1    1   <#ddccda|#4f5b66|->let<#cdd1d8|#4f5b66|-> x <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#eac9bf|#4f5b66|->1<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  \n",
+            "<#d8dadd|#65737e|->   1    1   <#fbf9fb|#65737e|->let<#f6f6f8|#65737e|-> x <#f6f6f8|#65737e|->=<#f6f6f8|#65737e|-> <#fdf9f8|#65737e|->1<#f6f6f8|#65737e|->;<-|#65737e|->                  \n",
         );
     }
 
@@ -5126,7 +5128,7 @@ mod tests {
             "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
             "<#c0c5ce|-|b>added  notes.txt\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
-            "<#cfd0d4|#4f5b66|->        1 + <#dcdfe4|#686255|->hello<-|#4f5b66|->                       \n",
+            "<#f5f6f6|#65737e|->        1 + <#f6f6f8|#686255|->hello<-|#65737e|->                       \n",
         );
         app.search_key(KeyPress::new(Key::Enter));
         wince::assert_eq!(app.searching(), false);
@@ -5148,7 +5150,7 @@ mod tests {
             dump(&app.visible(TEST_WIDTH)),
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
-            "<#b8bac0|#4f5b66|->   1    1   <#e7dbe5|#686255|->let<#cdd1d8|#4f5b66|-> x <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#eac9bf|#4f5b66|->1<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  \n",
+            "<#d8dadd|#65737e|->   1    1   <#fbf9fb|#686255|->let<#f6f6f8|#65737e|-> x <#f6f6f8|#65737e|->=<#f6f6f8|#65737e|-> <#fdf9f8|#65737e|->1<#f6f6f8|#65737e|->;<-|#65737e|->                  \n",
             "<#9ea1a9|#414a4a|->        2 + <#e8dbe5|#686255|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
             "<#c0c5ce|-|b>added  notes.txt\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
@@ -5184,7 +5186,7 @@ mod tests {
             dump(&app.visible(TEST_WIDTH)),
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
-            "<#b8bac0|#4f5b66|->   1    1   <#e7dbe5|#686255|->let<#cdd1d8|#4f5b66|-> x <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#eac9bf|#4f5b66|->1<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  \n",
+            "<#d8dadd|#65737e|->   1    1   <#fbf9fb|#686255|->let<#f6f6f8|#65737e|-> x <#f6f6f8|#65737e|->=<#f6f6f8|#65737e|-> <#fdf9f8|#65737e|->1<#f6f6f8|#65737e|->;<-|#65737e|->                  \n",
             "<#9ea1a9|#414a4a|->        2 + <#e8dbe5|#686255|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
             "<#c0c5ce|-|b>added  notes.txt\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
@@ -5213,9 +5215,9 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump(&app.visible(TEST_WIDTH)),
-            "<#cdd1d8|#4f5b66|b>modified  notes.txt<-|#4f5b66|->                     \n",
+            "<#f6f6f8|#65737e|b>modified  notes.txt<-|#65737e|->                     \n",
             "<#96b5b4|-|->@@ -1,17 +1,17 @@\n",
-            "<#767b84|#3a3f4a|->            [5 unchanged lines]  ctx05<-|#3a3f4a|->  \n",
+            "<#767b84|-|->          ▸ [5 unchanged lines]  ctx05\n",
             "<#7d828c|-|->   6    6   <#c0c5ce|-|->ctx06\n",
             "<#7d828c|-|->   7    7   <#c0c5ce|-|->ctx07\n",
             "<#7d828c|-|->   8    8   <#c0c5ce|-|->ctx08\n",
@@ -5223,7 +5225,7 @@ mod tests {
             "<#7d828c|-|->  10   10   <#c0c5ce|-|->ctx09\n",
             "<#7d828c|-|->  11   11   <#c0c5ce|-|->ctx10\n",
             "<#7d828c|-|->  12   12   <#c0c5ce|-|->ctx11\n",
-            "<#767b84|#3a3f4a|->            [5 unchanged lines]  ctx16<-|#3a3f4a|->  \n",
+            "<#767b84|-|->          ▸ [5 unchanged lines]  ctx16\n",
         );
     }
 
@@ -5237,15 +5239,15 @@ mod tests {
             dump(&app.visible(TEST_WIDTH)),
             "<#c0c5ce|-|b>modified  notes.txt\n",
             "<#96b5b4|-|->@@ -1,17 +1,17 @@\n",
-            "<#767b84|#3a3f4a|->            [5 unchanged lines]  ctx05<-|#3a3f4a|->  \n",
+            "<#767b84|-|->          ▸ [5 unchanged lines]  ctx05\n",
             "<#7d828c|-|->   6    6   <#c0c5ce|-|->ctx06\n",
-            "<#b8bac0|#4f5b66|->   7    7   <#dcdfe4|#686255|->ctx07<-|#4f5b66|->                       \n",
+            "<#d8dadd|#65737e|->   7    7   <#f6f6f8|#686255|->ctx07<-|#65737e|->                       \n",
             "<#7d828c|-|->   8    8   <#c0c5ce|-|->ctx08\n",
             "<#9ea1a9|#414a4a|->        9 + <#c0c5ce|#414a4a|->change!<-|#414a4a|->                     \n",
             "<#7d828c|-|->  10   10   <#c0c5ce|-|->ctx09\n",
             "<#7d828c|-|->  11   11   <#c0c5ce|-|->ctx10\n",
             "<#7d828c|-|->  12   12   <#c0c5ce|-|->ctx11\n",
-            "<#767b84|#3a3f4a|->            [5 unchanged lines]  ctx16<-|#3a3f4a|->  \n",
+            "<#767b84|-|->          ▸ [5 unchanged lines]  ctx16\n",
         );
     }
 
@@ -5259,11 +5261,11 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump(&app.visible(TEST_WIDTH)),
-            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
-            "<#adb0b5|#4f5b66|->│<#dcdfe4|#686255|->ok<-|#4f5b66|->                                    <#adb0b5|#4f5b66|->│\n",
+            "<#cfd1d4|#65737e|->│<#f6f6f8|#686255|->ok<-|#65737e|->                                    <#cfd1d4|#65737e|->│\n",
             "<#767b84|-|->└──────────────────────────────────────┘\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
@@ -5288,7 +5290,7 @@ mod tests {
             dump(&app.visible(TEST_WIDTH)),
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
-            "<#b8bac0|#4f5b66|->   1    1   <#ddccda|#4f5b66|->let<#cdd1d8|#4f5b66|-> x <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#eac9bf|#4f5b66|->1<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  \n",
+            "<#d8dadd|#65737e|->   1    1   <#fbf9fb|#65737e|->let<#f6f6f8|#65737e|-> x <#f6f6f8|#65737e|->=<#f6f6f8|#65737e|-> <#fdf9f8|#65737e|->1<#f6f6f8|#65737e|->;<-|#65737e|->                  \n",
             "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
             "<#c0c5ce|-|b>added  notes.txt\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
@@ -5320,7 +5322,7 @@ mod tests {
             "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
             "<#c0c5ce|-|b>added  notes.txt\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
-            "<#cfd0d4|#4f5b66|->        1 + <#dcdfe4|#686255|->hello<-|#4f5b66|->                       \n",
+            "<#f5f6f6|#65737e|->        1 + <#f6f6f8|#686255|->hello<-|#65737e|->                       \n",
         );
     }
 
@@ -5343,7 +5345,7 @@ mod tests {
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#7d828c|-|->   1    1   <#e9dde6|#686255|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
-            "<#cfd0d4|#4f5b66|->        2 + <#e7dbe5|#686255|->let<#cdd1d8|#4f5b66|-> y <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#ebcdc3|#4f5b66|->2<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  \n",
+            "<#f5f6f6|#65737e|->        2 + <#faf7f9|#686255|->let<#f6f6f8|#65737e|-> y <#f6f6f8|#65737e|->=<#f6f6f8|#65737e|-> <#fcf7f5|#65737e|->2<#f6f6f8|#65737e|->;<-|#65737e|->                  \n",
             "<#c0c5ce|-|b>added  notes.txt\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
             "<#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->hello<-|#414a4a|->                       \n",
@@ -5589,7 +5591,7 @@ mod tests {
             "Review [press c here to draft the review comment]\n",
             "modified  notes.txt\n",
             "@@ -1,21 +1,21 @@\n",
-            "            [17 unchanged lines]  ctx17\n",
+            "          ▸ [17 unchanged lines]  ctx17\n",
             "  18   18   ctx18\n",
             "  19   19   ctx19\n",
             "  20   20   ctx20\n",
@@ -5614,7 +5616,7 @@ mod tests {
             "Review [press c here to draft the review comment]\n",
             "modified  notes.txt\n",
             "@@ -1,21 +1,21 @@\n",
-            "            [4 unchanged lines]  ctx04\n",
+            "          ▸ [4 unchanged lines]  ctx04\n",
             "   5    5   ctx05\n",
             "   6    6   ctx06\n",
             "   7    7   ctx07\n",
@@ -5625,7 +5627,7 @@ mod tests {
             "   9    9   ctx09\n",
             "  10   10   ctx10\n",
             "  11   11   ctx11\n",
-            "            [6 unchanged lines]  ctx17\n",
+            "          ▸ [6 unchanged lines]  ctx17\n",
             "  18   18   ctx18\n",
             "  19   19   ctx19\n",
             "  20   20   ctx20\n",

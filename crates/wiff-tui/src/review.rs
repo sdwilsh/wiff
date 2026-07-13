@@ -568,7 +568,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_str!(
             plain,
-            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#7d828c|-|->   1    1   <#c0c5ce|-|->let x = 1;\n",

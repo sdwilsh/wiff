@@ -45,6 +45,18 @@ const GUTTER_WIDTH: usize = LINENO_WIDTH * 2 + 4;
 /// behind a one-line marker saves nothing, so only runs of two or more fold.
 const MIN_FOLD: usize = 2;
 
+/// The change-marker glyph for a collapsed fold, pointing right at the hidden
+/// rows the way a closed disclosure triangle does.
+const FOLD_COLLAPSED: char = '\u{25b8}';
+
+/// The change-marker glyph on the first line of an expanded fold, pointing down
+/// at the rows that would collapse behind it.
+const FOLD_EXPANDED: char = '\u{25be}';
+
+/// The change-marker glyph continuing down the remaining lines of an expanded
+/// fold, tracing how far the collapsible region reaches.
+const FOLD_BODY: char = '\u{2502}';
+
 /// The file index for rows not tied to a file: the review summary and its
 /// comments, which resolve to no path in the status line.
 const NO_FILE: usize = usize::MAX;
@@ -612,7 +624,18 @@ impl DiffView {
             } else {
                 None
             };
-            for (line, ranges) in hunk.lines.iter().zip(&emphasis) {
+            // Work out the foldable runs up front so each context line inside
+            // one can show a fold-column glyph, marking the region as
+            // collapsible even while it is expanded.
+            let kinds: Vec<LineKind> = hunk.lines.iter().map(|line| line.kind).collect();
+            let anchored: Vec<bool> = hunk
+                .lines
+                .iter()
+                .map(|line| line_anchor(line).is_some_and(|(s, n)| placement.covers(s, n)))
+                .collect();
+            let runs = foldable_runs(&kinds, self.display_context, &anchored);
+            let fold_marks = fold_column(&runs, hunk.lines.len());
+            for (line_index, (line, ranges)) in hunk.lines.iter().zip(&emphasis).enumerate() {
                 let (side, lineno, highlighted) = match line.kind {
                     LineKind::Removed => (
                         Side::Before,
@@ -637,7 +660,13 @@ impl DiffView {
                     }
                 }
                 line_row.push(doc.rows.len());
-                let (fill, rows) = self.content_rows(line, highlighted, ranges, content_wrap);
+                let (fill, rows) = self.content_rows(
+                    line,
+                    highlighted,
+                    ranges,
+                    content_wrap,
+                    fold_marks[line_index],
+                );
                 for (rendered, text) in rows {
                     doc.push(
                         index,
@@ -649,20 +678,14 @@ impl DiffView {
                 }
                 line_end.push(doc.rows.len());
             }
-            let kinds: Vec<LineKind> = hunk.lines.iter().map(|line| line.kind).collect();
-            let anchored: Vec<bool> = hunk
-                .lines
-                .iter()
-                .map(|line| line_anchor(line).is_some_and(|(s, n)| placement.covers(s, n)))
-                .collect();
             let section = self.sections.for_path(file.display_path());
-            for run in foldable_runs(&kinds, self.display_context, &anchored) {
+            for run in runs {
                 let scope = enclosing_scope(&hunk.lines, run.end, &section);
                 doc.folds.push(Fold {
                     start: line_row[run.start],
                     end: line_end[run.end - 1],
                     marker: self.fold_marker(run.end - run.start, scope),
-                    fill: Some(self.theme.status_bg),
+                    fill: None,
                 });
             }
         }
@@ -686,7 +709,13 @@ impl DiffView {
                     " [press {} here to draft the review comment]",
                     self.hints.add_comment
                 ),
-                Style::default().fg(color(self.theme.fold_fg)).bg(bg),
+                Style::default()
+                    .fg(color(legible_over(
+                        self.theme.fold_fg,
+                        self.theme.status_bg,
+                        self.theme.background,
+                    )))
+                    .bg(bg),
             ),
         ])
     }
@@ -808,10 +837,13 @@ impl DiffView {
     /// under the code column and naming the enclosing `scope` when one is known.
     fn fold_marker(&self, hidden: usize, scope: Option<&str>) -> Line<'static> {
         let plural = if hidden == 1 { "" } else { "s" };
+        // A chevron in the change-marker column marks the collapsed rows, so a
+        // fold reads as a fold from the gutter alone rather than from a tinted
+        // background that would band the view.
         let mut text = format!(
-            "{:indent$}[{hidden} unchanged line{plural}]",
+            "{:indent$}{FOLD_COLLAPSED} [{hidden} unchanged line{plural}]",
             "",
-            indent = GUTTER_WIDTH
+            indent = GUTTER_WIDTH - 2
         );
         if let Some(scope) = scope {
             text.push_str("  ");
@@ -819,9 +851,7 @@ impl DiffView {
         }
         Line::from(Span::styled(
             text,
-            Style::default()
-                .fg(color(self.theme.fold_fg))
-                .bg(color(self.theme.status_bg)),
+            Style::default().fg(color(self.theme.fold_fg)),
         ))
     }
 
@@ -859,18 +889,21 @@ impl DiffView {
     /// fills to its width, so the role tint reaches the screen edge. Each row
     /// pairs its styled line with its plain text for search. A row is the
     /// line-number gutter, the change marker, and the syntax-colored content with
-    /// changed characters emphasized. With `wrap` the content is broken to that
-    /// many columns beside the gutter, each continuation indented under the code
-    /// of the first row; without it the line stays a single row.
+    /// changed characters emphasized. A context line inside a foldable run shows
+    /// `fold_mark` in the change-marker column instead of a blank. With `wrap`
+    /// the content is broken to that many columns beside the gutter, each
+    /// continuation indented under the code of the first row; without it the
+    /// line stays a single row.
     fn content_rows(
         &self,
         line: &DiffLine,
         highlighted: Option<&HighlightedLine>,
         ranges: &[Range<usize>],
         wrap: Option<usize>,
+        fold_mark: Option<char>,
     ) -> (Option<Rgb>, Vec<(Line<'static>, String)>) {
         let (marker, row_bg, emphasis_bg) = match line.kind {
-            LineKind::Context => (' ', None, None),
+            LineKind::Context => (fold_mark.unwrap_or(' '), None, None),
             LineKind::Added => (
                 '+',
                 Some(self.theme.added_bg),
@@ -911,12 +944,12 @@ impl DiffView {
             // a diff tint it can dim below legibility, so lift it back to the
             // contrast it had on the plain background.
             let fg = match bg {
-                Some(bg) => legible_over(piece.fg, bg, self.theme.background),
-                None => piece.fg,
+                Some(bg) => legible_over(piece.style.fg, bg, self.theme.background),
+                None => piece.style.fg,
             };
             content.push(Span::styled(
                 piece.text,
-                with_bg(Style::default().fg(color(fg)), bg),
+                with_font(with_bg(Style::default().fg(color(fg)), bg), &piece.style),
             ));
         }
         // Flag trailing whitespace a change introduces, the way `git diff` warns
@@ -983,10 +1016,10 @@ fn mark_trailing_whitespace(spans: &mut Vec<Span<'static>>, text: &str, bg: Rgb)
     *spans = out;
 }
 
-/// A run of content sharing one foreground color and emphasis state.
+/// A run of content sharing one style and emphasis state.
 struct Piece {
     text: String,
-    fg: Rgb,
+    style: wiff_diff::Style,
     emphasized: bool,
 }
 
@@ -995,12 +1028,12 @@ struct Piece {
 /// spans (an empty content line), the raw text stands in with a neutral color.
 fn split_pieces(spans: &[StyledSpan], text: &str, ranges: &[Range<usize>]) -> Vec<Piece> {
     if spans.is_empty() {
-        return split_span(text, 0, NEUTRAL_FG, ranges);
+        return split_span(text, 0, NEUTRAL_STYLE, ranges);
     }
     let mut out = Vec::new();
     let mut offset = 0;
     for span in spans {
-        out.extend(split_span(&span.text, offset, span.style.fg, ranges));
+        out.extend(split_span(&span.text, offset, span.style, ranges));
         offset += span.text.len();
     }
     out
@@ -1008,7 +1041,12 @@ fn split_pieces(spans: &[StyledSpan], text: &str, ranges: &[Range<usize>]) -> Ve
 
 /// Split one span, starting at byte `start` within the line, into pieces cut at
 /// every emphasis-range boundary that falls inside it.
-fn split_span(text: &str, start: usize, fg: Rgb, ranges: &[Range<usize>]) -> Vec<Piece> {
+fn split_span(
+    text: &str,
+    start: usize,
+    style: wiff_diff::Style,
+    ranges: &[Range<usize>],
+) -> Vec<Piece> {
     let end = start + text.len();
     let mut cuts = vec![start, end];
     for range in ranges {
@@ -1026,7 +1064,7 @@ fn split_span(text: &str, start: usize, fg: Rgb, ranges: &[Range<usize>]) -> Vec
             let (from, to) = (pair[0], pair[1]);
             Piece {
                 text: text[from - start..to - start].to_string(),
-                fg,
+                style,
                 emphasized: ranges.iter().any(|r| r.start <= from && to <= r.end),
             }
         })
@@ -1040,6 +1078,15 @@ const NEUTRAL_FG: Rgb = Rgb {
     b: 0xce,
 };
 
+/// The neutral style for content when highlighting yields no spans: the neutral
+/// gray with no font emphasis.
+const NEUTRAL_STYLE: wiff_diff::Style = wiff_diff::Style {
+    fg: NEUTRAL_FG,
+    bold: false,
+    italic: false,
+    underline: false,
+};
+
 /// A right-aligned line number, or blank space when the line is absent on this
 /// side.
 fn lineno(number: Option<wiff_diff::LineNo>) -> String {
@@ -1047,6 +1094,21 @@ fn lineno(number: Option<wiff_diff::LineNo>) -> String {
         Some(n) => format!("{:>width$}", n.get(), width = LINENO_WIDTH),
         None => " ".repeat(LINENO_WIDTH),
     }
+}
+
+/// The fold-column glyph for each of a hunk's `len` lines, given its foldable
+/// `runs`: the first line of a run points down at the rows it collapses and the
+/// rest trace the vertical line down the region; lines outside every run have
+/// none.
+fn fold_column(runs: &[Range<usize>], len: usize) -> Vec<Option<char>> {
+    let mut marks = vec![None; len];
+    for run in runs {
+        marks[run.start] = Some(FOLD_EXPANDED);
+        for mark in &mut marks[run.start + 1..run.end] {
+            *mark = Some(FOLD_BODY);
+        }
+    }
+    marks
 }
 
 /// The runs of unchanged content lines to fold away, given `kinds` for one
@@ -1329,6 +1391,21 @@ fn with_bg(style: Style, bg: Option<Rgb>) -> Style {
     }
 }
 
+/// Apply a highlighted span's font emphasis (bold, italic, underline) to a
+/// ratatui style.
+fn with_font(mut style: Style, font: &wiff_diff::Style) -> Style {
+    if font.bold {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    if font.italic {
+        style = style.add_modifier(Modifier::ITALIC);
+    }
+    if font.underline {
+        style = style.add_modifier(Modifier::UNDERLINED);
+    }
+    style
+}
+
 /// Convert a wiff [`Rgb`] into a ratatui [`Color`].
 pub(crate) fn color(rgb: Rgb) -> Color {
     Color::Rgb(rgb.r, rgb.g, rgb.b)
@@ -1426,6 +1503,12 @@ pub(crate) mod testutil {
         let mut flags = String::new();
         if modifier.contains(Modifier::BOLD) {
             flags.push('b');
+        }
+        if modifier.contains(Modifier::ITALIC) {
+            flags.push('i');
+        }
+        if modifier.contains(Modifier::UNDERLINED) {
+            flags.push('u');
         }
         if modifier.contains(Modifier::CROSSED_OUT) {
             flags.push('s');
@@ -1601,7 +1684,7 @@ mod tests {
         let markers: Vec<Line<'static>> = doc.folds.iter().map(|f| f.marker.clone()).collect();
         wince::snapshot_str!(
             dump(&markers),
-            "<#767b84|#3a3f4a|->            [3 unchanged lines]  fn draw() {\n"
+            "<#767b84|-|->          ▸ [3 unchanged lines]  fn draw() {\n"
         );
     }
 
@@ -1650,7 +1733,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_str!(
             dump(&doc.lines),
-            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
@@ -1679,7 +1762,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_str!(
             dump(&cached.lines),
-            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
@@ -1714,7 +1797,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_str!(
             dump(&doc.lines),
-            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
             "<#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse\n",
@@ -1749,7 +1832,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_str!(
             dump(&doc.lines),
-            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
             "<#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse\n",
@@ -1787,7 +1870,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_str!(
             dump(&doc.lines),
-            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse\n",
             "<#c0c5ce|-|->looks good overall\n",
             "\n",
@@ -1827,8 +1910,8 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_str!(
             dump(&markers),
-            "<#767b84|#3a3f4a|->            [2 unchanged lines]  ctx02\n",
-            "<#767b84|#3a3f4a|->            [7 unchanged lines]  ctx16\n",
+            "<#767b84|-|->          ▸ [2 unchanged lines]  ctx02\n",
+            "<#767b84|-|->          ▸ [7 unchanged lines]  ctx16\n",
         );
     }
 
@@ -1858,7 +1941,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_str!(
             dump(&doc.lines),
-            "<#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#8fa1b3|-|->dev (human)<#d08770|-|-> [outdated]<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse\n",
             "<#c0c5ce|-|->stale\n",

@@ -20,10 +20,24 @@ use crate::model::{FileDiff, Side};
 use crate::reconstitute::{ReconLine, reconstitute};
 
 /// The default theme for a dark terminal.
-pub const DEFAULT_DARK_THEME: &str = "base16-ocean.dark";
+pub const DEFAULT_DARK_THEME: &str = "wez";
 
 /// The default theme for a light terminal.
 pub const DEFAULT_LIGHT_THEME: &str = "InspiredGitHub";
+
+/// The bundled "wez" theme, a dark palette translated from the author's vim
+/// colorscheme. It is the default dark theme, named by [`DEFAULT_DARK_THEME`].
+const WEZ_THEME: &str = include_str!("../assets/wez.tmTheme");
+
+/// The syntect themes wiff can choose between: syntect's own defaults plus the
+/// bundled [`WEZ_THEME`], keyed by [`DEFAULT_DARK_THEME`].
+fn theme_set() -> ThemeSet {
+    let mut themes = ThemeSet::load_defaults();
+    let wez = ThemeSet::load_from_reader(&mut std::io::Cursor::new(WEZ_THEME))
+        .expect("bundled wez theme parses");
+    themes.themes.insert(DEFAULT_DARK_THEME.to_string(), wez);
+    themes
+}
 
 /// The chrome-relevant colors of a syntax theme, taken from its editor settings
 /// and reduced to [`Rgb`] so a consumer can derive a matching interface palette
@@ -37,8 +51,12 @@ pub struct ThemeChrome {
     pub foreground: Option<Rgb>,
     /// The gutter text color, where line numbers are drawn.
     pub gutter_foreground: Option<Rgb>,
-    /// The background of selected text.
+    /// The background washed over the line the cursor is on.
+    pub line_highlight: Option<Rgb>,
+    /// The background of the active selection.
     pub selection: Option<Rgb>,
+    /// The text color over the active selection.
+    pub selection_foreground: Option<Rgb>,
     /// The background of a search match.
     pub find_highlight: Option<Rgb>,
 }
@@ -46,7 +64,7 @@ pub struct ThemeChrome {
 /// The names of the built-in syntax themes, sorted, for listing the choices a
 /// reviewer can switch between.
 pub fn theme_names() -> Vec<String> {
-    let mut names: Vec<String> = ThemeSet::load_defaults().themes.into_keys().collect();
+    let mut names: Vec<String> = theme_set().themes.into_keys().collect();
     names.sort();
     names
 }
@@ -54,13 +72,15 @@ pub fn theme_names() -> Vec<String> {
 /// The chrome colors of the built-in theme `name`, or `None` when no such theme
 /// is bundled.
 pub fn theme_chrome(name: &str) -> Option<ThemeChrome> {
-    let themes = ThemeSet::load_defaults();
+    let themes = theme_set();
     let settings = &themes.themes.get(name)?.settings;
     Some(ThemeChrome {
         background: settings.background.map(rgb_of),
         foreground: settings.foreground.map(rgb_of),
         gutter_foreground: settings.gutter_foreground.map(rgb_of),
+        line_highlight: settings.line_highlight.map(rgb_of),
         selection: settings.selection.map(rgb_of),
+        selection_foreground: settings.selection_foreground.map(rgb_of),
         find_highlight: settings.find_highlight.map(rgb_of),
     })
 }
@@ -199,7 +219,7 @@ impl Parser {
 impl Highlighter {
     /// Build a highlighter using the named built-in theme.
     pub fn with_theme(name: &str) -> Result<Self, HighlightError> {
-        let mut themes = ThemeSet::load_defaults();
+        let mut themes = theme_set();
         let theme = themes
             .themes
             .remove(name)
@@ -218,7 +238,7 @@ impl Highlighter {
     /// is not free end to end; what it saves is the syntax parse, not the theme
     /// load. On an unknown theme the highlighter is left unchanged.
     pub fn set_theme(&mut self, name: &str) -> Result<(), HighlightError> {
-        let mut themes = ThemeSet::load_defaults();
+        let mut themes = theme_set();
         self.theme = themes
             .themes
             .remove(name)
@@ -529,6 +549,19 @@ mod tests {
         }
     }
 
+    /// A colored span with font flags, for fixtures that assert emphasis.
+    fn styled(text: &str, hex: &str, bold: bool, italic: bool, underline: bool) -> StyledSpan {
+        StyledSpan {
+            text: text.to_string(),
+            style: Style {
+                fg: rgb(hex),
+                bold,
+                italic,
+                underline,
+            },
+        }
+    }
+
     /// A one-hunk file diff over `lines`, each `(kind, text, lineno)`.
     fn file(path: &str, lines: &[(LineKind, &str, u32)]) -> FileDiff {
         let diff_lines = lines
@@ -757,6 +790,58 @@ mod tests {
                     span("Title", "#8fa1b3"),
                 ],
                 vec![span("plain text", "#c0c5ce")],
+            ]
+        );
+    }
+
+    #[test]
+    fn the_wez_theme_colors_markdown_markup() {
+        // The bundled wez theme names the markdown markup scopes with the same
+        // colors the rendered-comment view draws, so composing a comment shows
+        // headings, emphasis, code, and links in color rather than flat
+        // foreground and previews how the saved comment will look.
+        let highlighter = Highlighter::with_theme("wez").unwrap();
+        let mut live = highlighter.live("markdown");
+        live.update(&[
+            "# Heading".to_string(),
+            "**bold** *italic* `code`".to_string(),
+            "[link](http://x.com)".to_string(),
+            "- item".to_string(),
+        ]);
+        wince::assert_eq!(
+            live_spans(&live, 4),
+            vec![
+                vec![
+                    styled("#", "#ebcb8b", true, false, false),
+                    styled(" ", "#ebcb8b", true, false, false),
+                    styled("Heading", "#ebcb8b", true, false, false),
+                ],
+                vec![
+                    styled("**", "#c3c3c3", true, false, false),
+                    styled("bold", "#c3c3c3", true, false, false),
+                    styled("**", "#c3c3c3", true, false, false),
+                    span(" ", "#c3c3c3"),
+                    styled("*", "#c3c3c3", false, true, false),
+                    styled("italic", "#c3c3c3", false, true, false),
+                    styled("*", "#c3c3c3", false, true, false),
+                    span(" ", "#c3c3c3"),
+                    span("`", "#96b5b4"),
+                    span("code", "#96b5b4"),
+                    span("`", "#96b5b4"),
+                ],
+                vec![
+                    span("[", "#c3c3c3"),
+                    span("link", "#c3c3c3"),
+                    span("]", "#c3c3c3"),
+                    span("(", "#c3c3c3"),
+                    styled("http://x.com", "#8fa1b3", false, false, true),
+                    span(")", "#c3c3c3"),
+                ],
+                vec![
+                    span("-", "#c3c3c3"),
+                    span(" ", "#c3c3c3"),
+                    span("item", "#c3c3c3"),
+                ],
             ]
         );
     }

@@ -74,8 +74,8 @@ const FALLBACK_DARK_BG: Rgb = rgb(0x1e, 0x1e, 0x1e);
 
 /// The fixed accent hues. Each keeps its meaning across every theme; only its
 /// lightness is adapted so it stays legible on the theme's background. The
-/// values are the base16-ocean accents, so the default dark theme reproduces
-/// that palette exactly.
+/// values are the base16-ocean accents, reused here regardless of the chosen
+/// syntax theme.
 const GOLD: Rgb = rgb(0xeb, 0xcb, 0x8b);
 const ORANGE: Rgb = rgb(0xd0, 0x87, 0x70);
 const GREEN: Rgb = rgb(0xa3, 0xbe, 0x8c);
@@ -99,7 +99,7 @@ impl Theme {
     /// The default palette for a dark terminal.
     pub fn dark() -> Self {
         Self::named(wiff_diff::highlight::DEFAULT_DARK_THEME)
-            .expect("bundled base16-ocean.dark theme is always available")
+            .expect("bundled wez theme is always available")
     }
 
     /// The default palette for a light terminal.
@@ -110,8 +110,9 @@ impl Theme {
 
     /// Derive the whole palette from syntax theme `name` and its `chrome`.
     ///
-    /// The background and text come from the theme; the selection and search
-    /// backgrounds too when it names them. The gutter and other structural text
+    /// The background and text come from the theme; the current-line wash, the
+    /// status bar, and the search background too when it names them. The gutter
+    /// and other structural text
     /// are dimmed out of the foreground toward the background and lifted back to
     /// a legible contrast. The added and removed tints blend a fixed green and
     /// red into the background, and the accents keep their hue with only their
@@ -123,6 +124,9 @@ impl Theme {
             .unwrap_or_else(|| readable(bg, bg, TEXT_CONTRAST));
         let dim = mix(fg, bg, 0.45);
         let dimmer = mix(fg, bg, 0.6);
+        // The theme's selection color stands in for the active status bar; a
+        // theme that does not name one keeps the muted derived bar.
+        let status_bg = chrome.selection.unwrap_or_else(|| mix(bg, fg, 0.1));
         Self {
             syntax_theme: name.to_string(),
             background: bg,
@@ -134,11 +138,13 @@ impl Theme {
             added_emphasis_bg: mix(bg, GREEN, 0.4),
             removed_emphasis_bg: mix(bg, RED, 0.4),
             whitespace_bg: mix(bg, RED, 0.55),
-            cursor_bg: chrome.selection.unwrap_or_else(|| mix(bg, fg, 0.22)),
+            cursor_bg: chrome.line_highlight.unwrap_or_else(|| mix(bg, fg, 0.22)),
             search_match_bg: chrome.find_highlight.unwrap_or_else(|| mix(bg, GOLD, 0.32)),
             fold_fg: readable(dimmer, bg, DIM_CONTRAST),
-            status_fg: readable(fg, mix(bg, fg, 0.1), TEXT_CONTRAST),
-            status_bg: mix(bg, fg, 0.1),
+            status_fg: chrome
+                .selection_foreground
+                .unwrap_or_else(|| readable(fg, status_bg, TEXT_CONTRAST)),
+            status_bg,
             review_fg: readable(GOLD, bg, TEXT_CONTRAST),
             comment_fg: readable(fg, bg, TEXT_CONTRAST),
             comment_author_fg: readable(BLUE, bg, TEXT_CONTRAST),
@@ -272,26 +278,26 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_str!(
             dump(&Theme::dark()),
-            "syntax_theme base16-ocean.dark\n",
-            "background #2b303b\n",
-            "gutter_fg #7d828c\n",
-            "file_header_fg #c0c5ce\n",
+            "syntax_theme wez\n",
+            "background #000000\n",
+            "gutter_fg #6b6b6b\n",
+            "file_header_fg #c3c3c3\n",
             "hunk_header_fg #96b5b4\n",
-            "added_bg #414a4a\n",
-            "removed_bg #463943\n",
-            "added_emphasis_bg #5b695b\n",
-            "removed_emphasis_bg #66444e\n",
-            "whitespace_bg #7c4b55\n",
-            "cursor_bg #4f5b66\n",
-            "search_match_bg #686255\n",
-            "fold_fg #767b84\n",
-            "status_fg #c0c5ce\n",
-            "status_bg #3a3f4a\n",
+            "added_bg #1d2219\n",
+            "removed_bg #221113\n",
+            "added_emphasis_bg #414c38\n",
+            "removed_emphasis_bg #4c272a\n",
+            "whitespace_bg #69353a\n",
+            "cursor_bg #2d2d54\n",
+            "search_match_bg #cc55cc\n",
+            "fold_fg #606060\n",
+            "status_fg #ffffff\n",
+            "status_bg #5455cb\n",
             "review_fg #ebcb8b\n",
-            "comment_fg #c0c5ce\n",
+            "comment_fg #c3c3c3\n",
             "comment_author_fg #8fa1b3\n",
-            "comment_border_fg #767b84\n",
-            "comment_flag_fg #767b84\n",
+            "comment_border_fg #606060\n",
+            "comment_flag_fg #606060\n",
             "comment_warn_fg #d08770\n",
             "comment_draft_fg #a3be8c",
         );
@@ -312,11 +318,11 @@ mod tests {
             "added_emphasis_bg #dae5d1\n",
             "removed_emphasis_bg #e5c0c3\n",
             "whitespace_bg #dca8ad\n",
-            "cursor_bg #f8eec7\n",
+            "cursor_bg #f5f5f5\n",
             "search_match_bg #f8eec7\n",
             "fold_fg #939393\n",
             "status_fg #323232\n",
-            "status_bg #ebebeb\n",
+            "status_bg #f8eec7\n",
             "review_fg #81704c\n",
             "comment_fg #323232\n",
             "comment_author_fg #64717d\n",
