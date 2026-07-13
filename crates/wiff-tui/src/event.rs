@@ -65,15 +65,15 @@ mod tests {
 
     #[test]
     fn translates_plain_named_and_modified_keys() {
-        k9::assert_equal!(
+        wince::assert_eq!(
             to_key_press(event(KeyCode::Char('j'), KeyModifiers::NONE)),
             Some(KeyPress::new(Key::Char('j')))
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             to_key_press(event(KeyCode::PageDown, KeyModifiers::NONE)),
             Some(KeyPress::new(Key::PageDown))
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             to_key_press(event(KeyCode::Char('f'), KeyModifiers::CONTROL)),
             Some(KeyPress::with_modifiers(Key::Char('f'), true, false, false))
         );
@@ -82,11 +82,11 @@ mod tests {
     #[test]
     fn folds_a_shifted_letter_and_back_tab_into_their_bindings() {
         // A shifted "g" and a bare "G" both bind as uppercase with shift cleared.
-        k9::assert_equal!(
+        wince::assert_eq!(
             to_key_press(event(KeyCode::Char('g'), KeyModifiers::SHIFT)),
             Some(KeyPress::new(Key::Char('G')))
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             to_key_press(event(KeyCode::BackTab, KeyModifiers::SHIFT)),
             Some(KeyPress::with_modifiers(Key::Tab, false, false, true))
         );
@@ -99,11 +99,11 @@ mod tests {
             KeyModifiers::NONE,
             KeyEventKind::Release,
         );
-        k9::assert_equal!(to_key_press(release), None);
-        k9::assert_equal!(
+        wince::assert_eq!(to_key_press(release), None);
+        wince::assert_eq!(
             to_key_press(event(KeyCode::CapsLock, KeyModifiers::NONE)),
             None
         );
-        k9::assert_equal!(to_key_press(event(KeyCode::Null, KeyModifiers::NONE)), None);
+        wince::assert_eq!(to_key_press(event(KeyCode::Null, KeyModifiers::NONE)), None);
     }
 }

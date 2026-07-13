@@ -185,7 +185,7 @@ $shell -> true
 } -> false
  -> false
 ";
-        k9::assert_equal!(
+        wince::assert_eq!(
             classify(
                 &matchers,
                 "notes.txt",
@@ -214,7 +214,7 @@ impl Theme { -> true
     let x = 1; -> false
 } -> false
 ";
-        k9::assert_equal!(
+        wince::assert_eq!(
             classify(
                 &matchers,
                 "src/lib.rs",
@@ -238,7 +238,7 @@ class Widget: -> true
     async def load(self): -> true
     x = 1 -> false
 ";
-        k9::assert_equal!(
+        wince::assert_eq!(
             classify(
                 &matchers,
                 "app.py",
@@ -251,7 +251,7 @@ class Widget: -> true
 ###### Deep -> true
 Just a paragraph. -> false
 ";
-        k9::assert_equal!(
+        wince::assert_eq!(
             classify(
                 &matchers,
                 "README.md",
@@ -283,7 +283,7 @@ struct Theme { -> false
 ";
         // `struct` is no longer a definition since the replacement only knows
         // about `fn`, and the attribute line is excluded.
-        k9::assert_equal!(
+        wince::assert_eq!(
             classify(
                 &matchers,
                 "src/lib.rs",
@@ -303,7 +303,7 @@ struct Theme { -> false
             Ok(_) => panic!("expected an invalid-pattern error"),
             Err(error) => error.to_string(),
         };
-        k9::assert_equal!(
+        wince::assert_eq!(
             message,
             "invalid section pattern for go: Parsing error at position 9: Opening parenthesis without closing parenthesis".to_string()
         );

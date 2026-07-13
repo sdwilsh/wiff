@@ -220,6 +220,6 @@ mod tests {
 - 00000000000000000000000004 lines 5-6 (after) by dev (human) [shifted]
   moved code
 ";
-        k9::assert_equal!(out, expected.to_string());
+        wince::assert_eq!(out, expected.to_string());
     }
 }

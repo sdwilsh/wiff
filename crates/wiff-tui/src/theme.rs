@@ -329,7 +329,7 @@ mod tests {
 
     #[test]
     fn an_unknown_theme_name_has_no_palette() {
-        k9::assert_equal!(Theme::named("no such theme").is_none(), true);
+        wince::assert_eq!(Theme::named("no such theme").is_none(), true);
     }
 
     /// `field #rrggbb` for one color, so a contrast test asserts the whole value.

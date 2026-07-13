@@ -45,7 +45,7 @@ fn reconstitutes_after_side_with_gaps() {
         },
         ReconLine::Gap { count: None },
     ];
-    k9::assert_equal!(reconstitute(file, Side::After), expected);
+    wince::assert_eq!(reconstitute(file, Side::After), expected);
 }
 
 #[test]
@@ -64,6 +64,6 @@ fn known_lines_drop_gaps_per_side() {
         (no(12), "twelve".to_string()),
         (no(13), "thirteen".to_string()),
     ];
-    k9::assert_equal!(known_lines(file, Side::Before), before);
-    k9::assert_equal!(known_lines(file, Side::After), after);
+    wince::assert_eq!(known_lines(file, Side::Before), before);
+    wince::assert_eq!(known_lines(file, Side::After), after);
 }

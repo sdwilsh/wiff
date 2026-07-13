@@ -374,8 +374,8 @@ mod tests {
     fn an_empty_buffer_leaves_the_committed_comments_untouched() {
         let committed = vec![committed_comment(1, "looks fine", false)];
         let buffer = DraftBuffer::new();
-        k9::assert_equal!(buffer.is_empty(), true);
-        k9::assert_equal!(
+        wince::assert_eq!(buffer.is_empty(), true);
+        wince::assert_eq!(
             buffer.apply(&committed),
             vec![EffectiveComment {
                 comment: committed_comment(1, "looks fine", false),
@@ -398,7 +398,7 @@ mod tests {
         };
         expected_new.created_seq = 0;
         expected_new.updated_seq = 0;
-        k9::assert_equal!(
+        wince::assert_eq!(
             buffer.apply(&committed),
             vec![
                 EffectiveComment {
@@ -423,7 +423,7 @@ mod tests {
         expected.resolved_by = Some(actor());
         expected.created_seq = 3;
         expected.updated_seq = 3;
-        k9::assert_equal!(
+        wince::assert_eq!(
             buffer.apply(&committed),
             vec![EffectiveComment {
                 comment: expected,
@@ -443,7 +443,7 @@ mod tests {
         let mut deleted = committed_comment(1, "a", false);
         deleted.deleted = true;
         deleted.deleted_by = Some(actor());
-        k9::assert_equal!(
+        wince::assert_eq!(
             buffer.apply(&committed),
             vec![
                 EffectiveComment {
@@ -464,15 +464,15 @@ mod tests {
         let mut buffer = DraftBuffer::new();
         buffer.delete(Ulid(1), actor());
         buffer.restore(Ulid(1));
-        k9::assert_equal!(buffer.is_empty(), true);
-        k9::assert_equal!(
+        wince::assert_eq!(buffer.is_empty(), true);
+        wince::assert_eq!(
             buffer.apply(&committed),
             vec![EffectiveComment {
                 comment: committed_comment(1, "a", false),
                 pending: false,
             }]
         );
-        k9::assert_equal!(buffer.into_records(), Vec::<RecordBody>::new());
+        wince::assert_eq!(buffer.into_records(), Vec::<RecordBody>::new());
     }
 
     #[test]
@@ -480,7 +480,7 @@ mod tests {
         let mut buffer = DraftBuffer::new();
         buffer.edit(Ulid(1), "reworded".to_string());
         buffer.delete(Ulid(1), actor());
-        k9::assert_equal!(
+        wince::assert_eq!(
             buffer.into_records(),
             vec![RecordBody::CommentDelete(crate::record::CommentDelete {
                 id: Ulid(1),
@@ -506,14 +506,14 @@ mod tests {
         deleted.deleted_by = Some(actor());
         deleted.created_seq = 0;
         deleted.updated_seq = 0;
-        k9::assert_equal!(
+        wince::assert_eq!(
             buffer.apply(&[]),
             vec![EffectiveComment {
                 comment: deleted,
                 pending: true,
             }]
         );
-        k9::assert_equal!(buffer.into_records(), Vec::<RecordBody>::new());
+        wince::assert_eq!(buffer.into_records(), Vec::<RecordBody>::new());
     }
 
     #[test]
@@ -522,7 +522,7 @@ mod tests {
         let id = buffer.add(drafted(2, "keep me"));
         buffer.delete(id, actor());
         buffer.restore(id);
-        k9::assert_equal!(
+        wince::assert_eq!(
             buffer.into_records(),
             vec![RecordBody::Comment(drafted(2, "keep me"))]
         );
@@ -533,7 +533,7 @@ mod tests {
         let mut buffer = DraftBuffer::new();
         buffer.edit(Ulid(1), "first".to_string());
         buffer.edit(Ulid(1), "final".to_string());
-        k9::assert_equal!(
+        wince::assert_eq!(
             buffer.into_records(),
             vec![RecordBody::CommentEdit(crate::record::CommentEdit {
                 id: Ulid(1),
@@ -602,14 +602,14 @@ new file mode 100644
         .unwrap();
         buffer
             .rebase(1, &new, |version| {
-                k9::assert_equal!(version, 0);
+                wince::assert_eq!(version, 0);
                 Ok(old.clone())
             })
             .unwrap();
 
         let mut rebased = drafted_line(2, 4);
         rebased.version = 1;
-        k9::assert_equal!(buffer.into_records(), vec![RecordBody::Comment(rebased)]);
+        wince::assert_eq!(buffer.into_records(), vec![RecordBody::Comment(rebased)]);
     }
 
     #[test]
@@ -622,7 +622,7 @@ new file mode 100644
         buffer
             .rebase(1, &new, |_| panic!("a review draft needs no old diff"))
             .unwrap();
-        k9::assert_equal!(
+        wince::assert_eq!(
             buffer.into_records(),
             vec![RecordBody::Comment(drafted(2, "one more thing"))]
         );
@@ -633,7 +633,7 @@ new file mode 100644
         let mut buffer = DraftBuffer::new();
         buffer.add(drafted(2, "new comment"));
         buffer.resolve(Ulid(1), true, actor());
-        k9::assert_equal!(
+        wince::assert_eq!(
             buffer.into_records(),
             vec![
                 RecordBody::Comment(drafted(2, "new comment")),

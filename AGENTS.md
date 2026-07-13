@@ -44,7 +44,7 @@ make fmt          # Format all code (cargo +nightly fmt)
  - In tests, always assert on the full rendered output a human would see -- never
    examine a substring or a single field in isolation. Do not use
    `str.contains("something")` or other "keyhole" checks; examine the full value.
-   Prefer `k9::assert_equal!` for value comparisons.
+   Prefer `wince::snapshot!` or `wince::assert_eq!` for value comparisons.
  - If a test has unstable/variable output (eg: temporary file paths), preprocess
    the string to replace the known temporary path with a constant like TMPDIR
    before asserting.

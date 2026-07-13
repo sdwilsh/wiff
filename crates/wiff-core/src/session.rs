@@ -471,7 +471,7 @@ mod tests {
         file.flush().expect("flush");
 
         let records = read_records(file.path()).expect("read");
-        k9::assert_equal!(records, vec![record]);
+        wince::assert_eq!(records, vec![record]);
     }
 
     #[test]
@@ -493,7 +493,7 @@ mod tests {
             Err(Error::Decode(_)) => "decode error".to_string(),
             Err(other) => format!("other error: {other}"),
         };
-        k9::assert_equal!(outcome, "decode error".to_string());
+        wince::assert_eq!(outcome, "decode error".to_string());
     }
 
     #[test]
@@ -509,7 +509,7 @@ mod tests {
 
         let empty_records = read_records(empty.path()).expect("read empty");
         let blank_records = read_records(blank.path()).expect("read blank");
-        k9::assert_equal!((empty_records, blank_records), (Vec::new(), Vec::new()));
+        wince::assert_eq!((empty_records, blank_records), (Vec::new(), Vec::new()));
     }
 
     #[test]
@@ -522,18 +522,18 @@ mod tests {
         file.flush().expect("flush");
 
         let mut watcher = SessionWatcher::new(file.path());
-        k9::assert_equal!(watcher.changed().is_some(), false);
+        wince::assert_eq!(watcher.changed().is_some(), false);
 
         file.write_all(b"two\n").expect("append");
         file.flush().expect("flush");
         let seen = watcher.changed().expect("the append registers");
-        k9::assert_equal!(watcher.changed().is_some(), true);
+        wince::assert_eq!(watcher.changed().is_some(), true);
 
         watcher.acknowledge(seen);
-        k9::assert_equal!(watcher.changed().is_some(), false);
+        wince::assert_eq!(watcher.changed().is_some(), false);
 
         file.write_all(b"three\n").expect("append");
         file.flush().expect("flush");
-        k9::assert_equal!(watcher.changed().is_some(), true);
+        wince::assert_eq!(watcher.changed().is_some(), true);
     }
 }

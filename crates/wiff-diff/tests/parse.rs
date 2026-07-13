@@ -46,7 +46,7 @@ index 1111111..2222222 100644
             }],
         }],
     };
-    k9::assert_equal!(parse(input).unwrap(), expected);
+    wince::assert_eq!(parse(input).unwrap(), expected);
 }
 
 #[test]
@@ -99,7 +99,7 @@ deleted file mode 100644
             },
         ],
     };
-    k9::assert_equal!(parse(input).unwrap(), expected);
+    wince::assert_eq!(parse(input).unwrap(), expected);
 }
 
 #[test]
@@ -133,7 +133,7 @@ rename to new/name.rs
             }],
         }],
     };
-    k9::assert_equal!(parse(input).unwrap(), expected);
+    wince::assert_eq!(parse(input).unwrap(), expected);
 }
 
 #[test]
@@ -184,7 +184,7 @@ diff --git a/a.txt b/a.txt
             ],
         }],
     };
-    k9::assert_equal!(parse(input).unwrap(), expected);
+    wince::assert_eq!(parse(input).unwrap(), expected);
 }
 
 #[test]
@@ -218,7 +218,7 @@ fn parses_plain_diff_u_with_timestamp_tabs() {
             }],
         }],
     };
-    k9::assert_equal!(parse(input).unwrap(), expected);
+    wince::assert_eq!(parse(input).unwrap(), expected);
 }
 
 #[test]
@@ -251,7 +251,7 @@ diff --git a/n.txt b/n.txt
             }],
         }],
     };
-    k9::assert_equal!(parse(input).unwrap(), expected);
+    wince::assert_eq!(parse(input).unwrap(), expected);
 }
 
 #[test]
@@ -288,7 +288,7 @@ diff --git a/e.txt b/e.txt
             }],
         }],
     };
-    k9::assert_equal!(parse(input).unwrap(), expected);
+    wince::assert_eq!(parse(input).unwrap(), expected);
 }
 
 #[test]
@@ -319,7 +319,7 @@ diff --git a/s.txt b/s.txt
             }],
         }],
     };
-    k9::assert_equal!(parse(input).unwrap(), expected);
+    wince::assert_eq!(parse(input).unwrap(), expected);
 }
 
 #[test]
@@ -352,12 +352,12 @@ diff --git a/a.txt b/a.txt
             }],
         }],
     };
-    k9::assert_equal!(parse(input).unwrap(), expected);
+    wince::assert_eq!(parse(input).unwrap(), expected);
 }
 
 #[test]
 fn empty_input_yields_no_files() {
-    k9::assert_equal!(parse("").unwrap(), Diff { files: vec![] });
+    wince::assert_eq!(parse("").unwrap(), Diff { files: vec![] });
 }
 
 #[test]
@@ -368,7 +368,7 @@ diff --git a/x.txt b/x.txt
 +++ b/x.txt
 @@ this is not a range @@
 ";
-    k9::assert_equal!(
+    wince::assert_eq!(
         parse(input),
         Err(ParseError::BadHunkHeader {
             line: 4,
@@ -387,7 +387,7 @@ diff --git a/x.txt b/x.txt
 -a
 !garbage
 ";
-    k9::assert_equal!(
+    wince::assert_eq!(
         parse(input),
         Err(ParseError::OrphanLine {
             line: 6,

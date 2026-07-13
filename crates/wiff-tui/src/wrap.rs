@@ -102,7 +102,7 @@ mod tests {
     #[test]
     fn a_line_within_the_width_is_returned_whole() {
         let line = Line::from("short enough");
-        k9::assert_equal!(
+        wince::assert_eq!(
             texts(&wrap_line(&line, 20)),
             vec!["short enough".to_string()]
         );
@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn a_zero_width_leaves_the_line_unwrapped() {
         let line = Line::from("anything at all here");
-        k9::assert_equal!(
+        wince::assert_eq!(
             texts(&wrap_line(&line, 0)),
             vec!["anything at all here".to_string()]
         );
@@ -122,7 +122,7 @@ mod tests {
         // At width ten the run breaks after "the" and after "lazy", each break
         // consuming the space so no line begins or ends on one.
         let line = Line::from("the quick brown lazy fox");
-        k9::assert_equal!(
+        wince::assert_eq!(
             texts(&wrap_line(&line, 10)),
             vec![
                 "the quick".to_string(),
@@ -138,7 +138,7 @@ mod tests {
         // width and the remainder continues on the next line with the trailing
         // word.
         let line = Line::from("a supercalifragilistic word");
-        k9::assert_equal!(
+        wince::assert_eq!(
             texts(&wrap_line(&line, 8)),
             vec![
                 "a".to_string(),
@@ -171,7 +171,7 @@ mod tests {
                     .collect()
             })
             .collect();
-        k9::assert_equal!(
+        wince::assert_eq!(
             rendered,
             vec![
                 vec![("hello".to_string(), red)],

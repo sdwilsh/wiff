@@ -273,14 +273,14 @@ new file mode 100644
         )]
         .into_iter()
         .collect();
-        k9::assert_equal!(
+        wince::assert_eq!(
             comparison.after_origin,
             LineOrigin {
                 version: 1,
                 side: Side::After,
             }
         );
-        k9::assert_equal!(comparison.before_origin, expected_before);
+        wince::assert_eq!(comparison.before_origin, expected_before);
         let expected = "\
 Modified f.txt -> f.txt
 @@ -1,3 +1,4 @@
@@ -290,7 +290,7 @@ Modified f.txt -> f.txt
  3  3  gamma
  -  4 +delta
 ";
-        k9::assert_equal!(dump(&comparison.diff), expected.to_string());
+        wince::assert_eq!(dump(&comparison.diff), expected.to_string());
     }
 
     /// A file that only entered the diff after the reference version has no
@@ -345,7 +345,7 @@ diff --git a/b.txt b/b.txt
         )]
         .into_iter()
         .collect();
-        k9::assert_equal!(comparison.before_origin, expected_before);
+        wince::assert_eq!(comparison.before_origin, expected_before);
         let expected = "\
 Modified b.txt -> b.txt
 @@ -1,2 +1,2 @@
@@ -353,6 +353,6 @@ Modified b.txt -> b.txt
  2  - -green
  -  2 +GREEN
 ";
-        k9::assert_equal!(dump(&comparison.diff), expected.to_string());
+        wince::assert_eq!(dump(&comparison.diff), expected.to_string());
     }
 }

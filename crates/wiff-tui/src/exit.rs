@@ -94,11 +94,11 @@ mod tests {
     fn an_explicit_choice_settles_itself_whatever_the_default() {
         // quit-keep commits and keeps; quit-remove removes, regardless of the
         // configured default or whether drafts are pending.
-        k9::assert_equal!(
+        wince::assert_eq!(
             plan_exit(Action::QuitKeep, ExitDefault::Remove, true),
             ExitPlan::Now(Exit::Commit)
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             plan_exit(Action::QuitRemove, ExitDefault::Keep, false),
             ExitPlan::Now(Exit::Remove)
         );
@@ -108,7 +108,7 @@ mod tests {
     fn a_plain_quit_with_drafts_always_asks_preselecting_the_default() {
         // Whatever the default, pending drafts mean the reviewer is asked; the
         // default only picks which choice opens highlighted.
-        k9::assert_equal!(
+        wince::assert_eq!(
             plan_exit(Action::Quit, ExitDefault::Keep, true),
             ExitPlan::Ask {
                 title: "You have uncommitted comments",
@@ -120,7 +120,7 @@ mod tests {
                 selected: 0,
             }
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             plan_exit(Action::Quit, ExitDefault::Remove, true),
             ExitPlan::Ask {
                 title: "You have uncommitted comments",
@@ -132,7 +132,7 @@ mod tests {
                 selected: 2,
             }
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             plan_exit(Action::Quit, ExitDefault::Prompt, true),
             ExitPlan::Ask {
                 title: "You have uncommitted comments",
@@ -150,15 +150,15 @@ mod tests {
     fn a_plain_quit_without_drafts_follows_the_default_or_asks_keep_remove() {
         // Nothing is buffered, so keep and remove resolve at once and only a
         // prompt default asks, offering just keep or remove.
-        k9::assert_equal!(
+        wince::assert_eq!(
             plan_exit(Action::Quit, ExitDefault::Keep, false),
             ExitPlan::Now(Exit::Commit)
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             plan_exit(Action::Quit, ExitDefault::Remove, false),
             ExitPlan::Now(Exit::Remove)
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             plan_exit(Action::Quit, ExitDefault::Prompt, false),
             ExitPlan::Ask {
                 title: "Keep this session?",

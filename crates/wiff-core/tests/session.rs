@@ -45,7 +45,7 @@ fn create_append_and_read_round_trip() {
     let base = tempfile::tempdir().unwrap();
     let (mut log, mut lock) = SessionLog::create(base.path(), "demo", header).unwrap();
     let seq = log.append(&mut lock, comment()).unwrap();
-    k9::assert_equal!(seq, 1);
+    wince::assert_eq!(seq, 1);
     drop(lock);
 
     let records = read_records(log.path()).unwrap();
@@ -55,7 +55,7 @@ fn create_append_and_read_round_trip() {
         .into_iter()
         .map(|record| (record.seq, record.body))
         .collect();
-    k9::assert_equal!(got, vec![(0, header(log.ulid())), (1, comment())]);
+    wince::assert_eq!(got, vec![(0, header(log.ulid())), (1, comment())]);
 }
 
 #[test]
@@ -66,10 +66,10 @@ fn reopen_continues_the_sequence() {
     drop(lock);
 
     let mut reopened = SessionLog::open(&path).unwrap();
-    k9::assert_equal!(reopened.next_seq(), 1);
+    wince::assert_eq!(reopened.next_seq(), 1);
     let seq = reopened.append_locked(comment()).unwrap();
-    k9::assert_equal!(seq, 1);
-    k9::assert_equal!(read_records(&path).unwrap().len(), 2);
+    wince::assert_eq!(seq, 1);
+    wince::assert_eq!(read_records(&path).unwrap().len(), 2);
 }
 
 #[test]
@@ -95,7 +95,7 @@ fn appending_from_a_stale_handle_diverges() {
             sync: SyncState::Diverged { file_next_seq },
             ..
         } => {
-            k9::assert_equal!(file_next_seq, 2);
+            wince::assert_eq!(file_next_seq, 2);
         }
         other => panic!("expected divergence, got {other:?}"),
     }
@@ -112,13 +112,13 @@ fn a_locked_batch_appends_every_record_in_order() {
     let seqs = reopened
         .append_all_locked(vec![comment(), comment()])
         .unwrap();
-    k9::assert_equal!(seqs, vec![1, 2]);
+    wince::assert_eq!(seqs, vec![1, 2]);
     let got: Vec<(u64, RecordBody)> = read_records(&path)
         .unwrap()
         .into_iter()
         .map(|record| (record.seq, record.body))
         .collect();
-    k9::assert_equal!(
+    wince::assert_eq!(
         got,
         vec![(0, header(reopened.ulid())), (1, comment()), (2, comment()),]
     );
@@ -139,7 +139,7 @@ fn a_diverged_batch_writes_none_of_its_records() {
         Ok(seqs) => format!("wrote {seqs:?}"),
         Err(err) => format!("{err}"),
     };
-    k9::assert_equal!(
+    wince::assert_eq!(
         outcome,
         format!(
             "session {} diverged from our position",
@@ -151,7 +151,7 @@ fn a_diverged_batch_writes_none_of_its_records() {
         .into_iter()
         .map(|record| (record.seq, record.body))
         .collect();
-    k9::assert_equal!(got, vec![(0, header(writer.ulid())), (1, comment())]);
+    wince::assert_eq!(got, vec![(0, header(writer.ulid())), (1, comment())]);
 }
 
 #[test]
@@ -163,16 +163,16 @@ fn discovery_lists_projects_sessions_and_the_active_one() {
     let (second, second_lock) = SessionLog::create(base.path(), "demo", header).unwrap();
     drop(second_lock);
 
-    k9::assert_equal!(
+    wince::assert_eq!(
         list_projects(base.path()).unwrap(),
         vec!["demo".to_string()]
     );
     let sessions = list_sessions(base.path(), "demo").unwrap();
-    k9::assert_equal!(
+    wince::assert_eq!(
         sessions,
         vec![second.path().to_path_buf(), first.path().to_path_buf()]
     );
-    k9::assert_equal!(
+    wince::assert_eq!(
         active_session(base.path(), "demo").unwrap(),
         second.path().to_path_buf()
     );
@@ -188,6 +188,6 @@ fn removing_a_session_deletes_the_log_and_sideband() {
     std::fs::write(sideband.join("v0.diff"), "diff").unwrap();
 
     remove_session(log.path()).unwrap();
-    k9::assert_equal!(log.path().exists(), false);
-    k9::assert_equal!(sideband.exists(), false);
+    wince::assert_eq!(log.path().exists(), false);
+    wince::assert_eq!(sideband.exists(), false);
 }

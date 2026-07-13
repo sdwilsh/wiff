@@ -19,5 +19,4 @@ wiff-core.workspace = true
 wiff-diff.workspace = true
 
 [dev-dependencies]
-k9.workspace = true
 wince.workspace = true

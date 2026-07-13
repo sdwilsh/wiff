@@ -47,7 +47,7 @@ fn stdin_diff() -> CapturedDiff {
 async fn captured_diff_is_its_own_source() {
     let original = stdin_diff();
     let captured = original.capture().await.unwrap();
-    k9::assert_equal!(captured, original);
+    wince::assert_eq!(captured, original);
 }
 
 #[test]
@@ -96,10 +96,10 @@ fn create_session_writes_header_version_and_sideband() {
             }),
         ),
     ];
-    k9::assert_equal!(bodies, expected);
+    wince::assert_eq!(bodies, expected);
 
     // The raw diff lands in the sideband v0.diff, byte for byte.
     let sideband = log.sideband_dir().join("v0.diff");
     let written = std::fs::read_to_string(&sideband).unwrap();
-    k9::assert_equal!(written, DIFF.to_string());
+    wince::assert_eq!(written, DIFF.to_string());
 }

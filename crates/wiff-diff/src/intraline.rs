@@ -139,7 +139,7 @@ mod tests {
         ];
         // The changed word (with its trailing "!") spans bytes 12..17.
         let expected: Vec<Vec<Range<usize>>> = vec![vec![12..17], vec![12..17]];
-        k9::assert_equal!(refine(&lines), expected);
+        wince::assert_eq!(refine(&lines), expected);
     }
 
     #[test]
@@ -151,7 +151,7 @@ mod tests {
         // The word "1;" becomes "100;", so the whole token is emphasized on
         // each side: bytes 8..10 before, 8..12 after.
         let expected: Vec<Vec<Range<usize>>> = vec![vec![8..10], vec![8..12]];
-        k9::assert_equal!(refine(&lines), expected);
+        wince::assert_eq!(refine(&lines), expected);
     }
 
     #[test]
@@ -161,7 +161,7 @@ mod tests {
             line(LineKind::Added, "omega beta gamma", 1),
         ];
         let expected: Vec<Vec<Range<usize>>> = vec![vec![], vec![]];
-        k9::assert_equal!(refine(&lines), expected);
+        wince::assert_eq!(refine(&lines), expected);
     }
 
     #[test]
@@ -172,7 +172,7 @@ mod tests {
             line(LineKind::Context, "also unchanged", 3),
         ];
         let expected: Vec<Vec<Range<usize>>> = vec![vec![], vec![], vec![]];
-        k9::assert_equal!(refine(&lines), expected);
+        wince::assert_eq!(refine(&lines), expected);
     }
 
     #[test]
@@ -185,6 +185,6 @@ mod tests {
         ];
         // Each pair differs in its second word ("fish" vs "dish"/"wish").
         let expected: Vec<Vec<Range<usize>>> = vec![vec![4..8], vec![4..8], vec![4..8], vec![4..8]];
-        k9::assert_equal!(refine(&lines), expected);
+        wince::assert_eq!(refine(&lines), expected);
     }
 }

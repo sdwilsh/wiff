@@ -295,16 +295,16 @@ mod tests {
 
     #[test]
     fn parses_plain_and_named_keys() {
-        k9::assert_equal!(press("j"), KeyPress::new(Key::Char('j')));
-        k9::assert_equal!(press("space"), KeyPress::new(Key::Char(' ')));
-        k9::assert_equal!(press("enter"), KeyPress::new(Key::Enter));
-        k9::assert_equal!(press("pagedown"), KeyPress::new(Key::PageDown));
-        k9::assert_equal!(press("f5"), KeyPress::new(Key::Function(5)));
+        wince::assert_eq!(press("j"), KeyPress::new(Key::Char('j')));
+        wince::assert_eq!(press("space"), KeyPress::new(Key::Char(' ')));
+        wince::assert_eq!(press("enter"), KeyPress::new(Key::Enter));
+        wince::assert_eq!(press("pagedown"), KeyPress::new(Key::PageDown));
+        wince::assert_eq!(press("f5"), KeyPress::new(Key::Function(5)));
     }
 
     #[test]
     fn parses_modifier_prefixes() {
-        k9::assert_equal!(
+        wince::assert_eq!(
             press("ctrl-f"),
             KeyPress {
                 key: Key::Char('f'),
@@ -313,7 +313,7 @@ mod tests {
                 shift: false,
             }
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             press("alt-enter"),
             KeyPress {
                 key: Key::Enter,
@@ -328,9 +328,9 @@ mod tests {
     fn folds_a_shifted_letter_into_its_case() {
         // "G", "shift-g", and a shifted "g" are the same binding.
         let expected = KeyPress::new(Key::Char('G'));
-        k9::assert_equal!(press("G"), expected);
-        k9::assert_equal!(press("shift-g"), expected);
-        k9::assert_equal!(
+        wince::assert_eq!(press("G"), expected);
+        wince::assert_eq!(press("shift-g"), expected);
+        wince::assert_eq!(
             KeyPress {
                 key: Key::Char('g'),
                 ctrl: false,
@@ -344,8 +344,8 @@ mod tests {
 
     #[test]
     fn parses_the_dash_key_and_multi_press_chords() {
-        k9::assert_equal!(press("-"), KeyPress::new(Key::Char('-')));
-        k9::assert_equal!(
+        wince::assert_eq!(press("-"), KeyPress::new(Key::Char('-')));
+        wince::assert_eq!(
             press("ctrl--"),
             KeyPress {
                 key: Key::Char('-'),
@@ -355,7 +355,7 @@ mod tests {
             }
         );
         let chord: Chord = "g g".parse().unwrap();
-        k9::assert_equal!(
+        wince::assert_eq!(
             chord,
             Chord(vec![
                 KeyPress::new(Key::Char('g')),
@@ -366,15 +366,15 @@ mod tests {
 
     #[test]
     fn rejects_unknown_keys_modifiers_and_empty_chords() {
-        k9::assert_equal!(
+        wince::assert_eq!(
             "nope".parse::<KeyPress>(),
             Err("unknown key \"nope\"".to_string())
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             "hyper-x".parse::<KeyPress>(),
             Err("unknown key \"hyper-x\"".to_string())
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             "   ".parse::<Chord>(),
             Err("a chord must contain at least one key press".to_string())
         );

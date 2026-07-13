@@ -179,10 +179,10 @@ mod tests {
     fn smart_case_matches_insensitively_until_the_pattern_has_an_uppercase() {
         // A lowercase pattern ignores case; adding an uppercase letter makes the
         // whole pattern case-sensitive, and an empty pattern never matches.
-        k9::assert_equal!(is_match("let Foo = 1;", "foo"), true);
-        k9::assert_equal!(is_match("let Foo = 1;", "Foo"), true);
-        k9::assert_equal!(is_match("let foo = 1;", "Foo"), false);
-        k9::assert_equal!(is_match("anything", ""), false);
+        wince::assert_eq!(is_match("let Foo = 1;", "foo"), true);
+        wince::assert_eq!(is_match("let Foo = 1;", "Foo"), true);
+        wince::assert_eq!(is_match("let foo = 1;", "Foo"), false);
+        wince::assert_eq!(is_match("anything", ""), false);
     }
 
     #[test]
@@ -190,31 +190,31 @@ mod tests {
         // Every non-overlapping hit is reported in order; smart case folds a
         // lowercase pattern and pins an uppercase one, and a byte range spans
         // the matched characters even past a multibyte character.
-        k9::assert_equal!(ranges("let l = let;", "let"), vec![0..3, 8..11]);
-        k9::assert_equal!(ranges("Foo foo FOO", "foo"), vec![0..3, 4..7, 8..11]);
-        k9::assert_equal!(ranges("Foo foo FOO", "Foo"), vec![0..3]);
-        k9::assert_equal!(
+        wince::assert_eq!(ranges("let l = let;", "let"), vec![0..3, 8..11]);
+        wince::assert_eq!(ranges("Foo foo FOO", "foo"), vec![0..3, 4..7, 8..11]);
+        wince::assert_eq!(ranges("Foo foo FOO", "Foo"), vec![0..3]);
+        wince::assert_eq!(
             ranges("a\u{00e9}b a\u{00e9}b", "\u{00e9}b"),
             vec![1..4, 6..9]
         );
-        k9::assert_equal!(ranges("anything", ""), Vec::<super::Range<usize>>::new());
+        wince::assert_eq!(ranges("anything", ""), Vec::<super::Range<usize>>::new());
     }
 
     #[test]
     fn a_regular_expression_matches_and_locates_its_hits() {
         // The pattern is a regex, not a literal: character classes, anchors, and
         // alternation all apply, and an invalid pattern matches nothing.
-        k9::assert_equal!(ranges("a1 b2 c3", "[a-z][0-9]"), vec![0..2, 3..5, 6..8]);
-        k9::assert_equal!(ranges("foo bar foo", "^foo"), vec![0..3]);
-        k9::assert_equal!(ranges("cat and dog", "cat|dog"), vec![0..3, 8..11]);
-        k9::assert_equal!(is_match("anything", "(unclosed"), false);
+        wince::assert_eq!(ranges("a1 b2 c3", "[a-z][0-9]"), vec![0..2, 3..5, 6..8]);
+        wince::assert_eq!(ranges("foo bar foo", "^foo"), vec![0..3]);
+        wince::assert_eq!(ranges("cat and dog", "cat|dog"), vec![0..3, 8..11]);
+        wince::assert_eq!(is_match("anything", "(unclosed"), false);
     }
 
     #[test]
     fn a_direction_reverses_and_names_its_prompt_lead() {
-        k9::assert_equal!(Direction::Forward.reversed(), Direction::Backward);
-        k9::assert_equal!(Direction::Backward.reversed(), Direction::Forward);
-        k9::assert_equal!(Direction::Forward.lead(), '/');
-        k9::assert_equal!(Direction::Backward.lead(), '?');
+        wince::assert_eq!(Direction::Forward.reversed(), Direction::Backward);
+        wince::assert_eq!(Direction::Backward.reversed(), Direction::Forward);
+        wince::assert_eq!(Direction::Forward.lead(), '/');
+        wince::assert_eq!(Direction::Backward.lead(), '?');
     }
 }

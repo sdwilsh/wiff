@@ -83,6 +83,6 @@ mod tests {
 00000000000000000000000004  open,shifted  other.rs lines 5-6 (after)  dev (human)
   moved code
 ";
-        k9::assert_equal!(out, expected.to_string());
+        wince::assert_eq!(out, expected.to_string());
     }
 }

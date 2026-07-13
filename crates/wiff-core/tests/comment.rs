@@ -99,7 +99,7 @@ fn adding_comments_captures_anchors_and_folds_to_current_state() {
     .unwrap();
 
     // The line comment captured the changed line and one context line each side.
-    k9::assert_equal!(
+    wince::assert_eq!(
         line.anchor,
         Some(Anchor {
             snippet: vec!["let b = 3;".to_string()],
@@ -107,11 +107,11 @@ fn adding_comments_captures_anchors_and_folds_to_current_state() {
             context_after: vec!["let c = 4;".to_string()],
         })
     );
-    k9::assert_equal!(whole.anchor, None);
-    k9::assert_equal!(overall.anchor, None);
-    k9::assert_equal!((line.seq, line.version), (2, 0));
-    k9::assert_equal!((whole.seq, whole.version), (3, 0));
-    k9::assert_equal!((overall.seq, overall.version), (4, 0));
+    wince::assert_eq!(whole.anchor, None);
+    wince::assert_eq!(overall.anchor, None);
+    wince::assert_eq!((line.seq, line.version), (2, 0));
+    wince::assert_eq!((whole.seq, whole.version), (3, 0));
+    wince::assert_eq!((overall.seq, overall.version), (4, 0));
 
     let state = fold(&read_records(log.path()).unwrap()).unwrap();
     let expected_header = SessionHeader {
@@ -122,8 +122,8 @@ fn adding_comments_captures_anchors_and_folds_to_current_state() {
         cwd: "/work".to_string(),
         source: SourceKind::Stdin,
     };
-    k9::assert_equal!(state.session, expected_header);
-    k9::assert_equal!(
+    wince::assert_eq!(state.session, expected_header);
+    wince::assert_eq!(
         state.versions,
         vec![DiffVersionRecord {
             number: 0,
@@ -144,7 +144,7 @@ fn adding_comments_captures_anchors_and_folds_to_current_state() {
             ],
         }]
     );
-    k9::assert_equal!(
+    wince::assert_eq!(
         state.comments,
         vec![
             CommentState {
@@ -215,7 +215,7 @@ fn a_line_range_anchors_across_multiple_lines() {
     }
     .append(&mut log)
     .unwrap();
-    k9::assert_equal!(
+    wince::assert_eq!(
         added.anchor,
         Some(Anchor {
             snippet: vec!["first".to_string(), "second".to_string()],
@@ -235,10 +235,10 @@ fn a_line_beyond_the_captured_window_is_recorded_without_an_anchor() {
     }
     .append(&mut log)
     .unwrap();
-    k9::assert_equal!(added.anchor, None);
+    wince::assert_eq!(added.anchor, None);
 
     let state = fold(&read_records(log.path()).unwrap()).unwrap();
-    k9::assert_equal!(
+    wince::assert_eq!(
         state.comments,
         vec![CommentState {
             id: added.id,
@@ -284,7 +284,7 @@ fn resolving_and_withdrawing_comments_folds_to_current_state() {
     delete_comment(&mut log, gone.id, human("wez")).unwrap();
 
     let state = fold(&read_records(log.path()).unwrap()).unwrap();
-    k9::assert_equal!(
+    wince::assert_eq!(
         state.comments,
         vec![
             CommentState {
@@ -329,11 +329,11 @@ fn mutating_an_unknown_comment_is_an_error() {
     let missing = Ulid::new();
     let resolve_err = set_resolved(&mut log, missing, true, human("wez")).unwrap_err();
     let delete_err = delete_comment(&mut log, missing, human("wez")).unwrap_err();
-    k9::assert_equal!(
+    wince::assert_eq!(
         resolve_err.to_string(),
         format!("no comment {missing} in this session")
     );
-    k9::assert_equal!(
+    wince::assert_eq!(
         delete_err.to_string(),
         format!("no comment {missing} in this session")
     );
@@ -349,7 +349,7 @@ fn a_file_outside_the_diff_cannot_be_anchored() {
     }
     .append(&mut log)
     .unwrap_err();
-    k9::assert_equal!(matches!(error, Error::Anchor(_)), true);
+    wince::assert_eq!(matches!(error, Error::Anchor(_)), true);
     wince::snapshot_display!(
         error,
         "cannot anchor comment: nope.rs is not part of diff v0"

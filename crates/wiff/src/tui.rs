@@ -438,7 +438,7 @@ mod tests {
             .into_iter()
             .map(|record| (record.seq, record.body))
             .collect();
-        k9::assert_equal!(
+        wince::assert_eq!(
             got,
             vec![
                 (0, header(ulid)),
@@ -483,7 +483,7 @@ mod tests {
             .into_iter()
             .map(|record| (record.seq, record.body))
             .collect();
-        k9::assert_equal!(got, vec![(0, header(ulid))]);
+        wince::assert_eq!(got, vec![(0, header(ulid))]);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -493,7 +493,7 @@ mod tests {
         // The recapture blocks on the runtime, so it needs one even though the
         // stdin arm never reaches git.
         let error = recapture(&source_header(SourceKind::Stdin)).unwrap_err();
-        k9::assert_equal!(
+        wince::assert_eq!(
             error.to_string(),
             "this session's diff came from stdin; refresh it with `wiff refresh` and a new piped diff"
                 .to_string()
@@ -508,7 +508,7 @@ mod tests {
             approximate: 1,
             outdated: 0,
         });
-        k9::assert_equal!(
+        wince::assert_eq!(
             report,
             "captured v3; rebased 3 comments: 2 exact, 1 shifted, 0 outdated".to_string()
         );
@@ -642,7 +642,7 @@ mod tests {
         // rebased above the added delta on its new line, and the status line
         // reports the tally. A version-comparison prompt is offered over the full
         // diff, opening on the latest where the reviewer was reading.
-        k9::assert_equal!(app.picking(), true);
+        wince::assert_eq!(app.picking(), true);
         let expected = "\
 Review [press c here to draft the review comment]
 modified  f.txt
@@ -658,7 +658,7 @@ modified  f.txt
 ---
 captured v1; rebased 1 comment: 1 exact, 0 shifted, 0 outdated
 ";
-        k9::assert_equal!(screen(&app, 80), expected.to_string());
+        wince::assert_eq!(screen(&app, 80), expected.to_string());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -742,7 +742,7 @@ modified  f.txt
 ---
 comparing v0 against v1
 ";
-        k9::assert_equal!(screen(&app, 80), expected.to_string());
+        wince::assert_eq!(screen(&app, 80), expected.to_string());
 
         // Returning to the latest diff shows v1's own captured change against
         // its baseline again.
@@ -759,7 +759,7 @@ modified  f.txt
 ---
 showing the latest diff (v1)
 ";
-        k9::assert_equal!(screen(&app, 80), latest.to_string());
+        wince::assert_eq!(screen(&app, 80), latest.to_string());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -796,13 +796,13 @@ showing the latest diff (v1)
         drop(log);
 
         let state = ReviewState::load(&session_path).expect("load state");
-        k9::assert_equal!(source_changed(&state), false);
+        wince::assert_eq!(source_changed(&state), false);
 
         // The working tree gains another line, so a recapture no longer matches
         // v0.
         std::fs::write(&file, "alpha\nbeta\ngamma\ndelta\nepsilon\n").expect("write change");
         let state = ReviewState::load(&session_path).expect("reload state");
-        k9::assert_equal!(source_changed(&state), true);
+        wince::assert_eq!(source_changed(&state), true);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -833,7 +833,7 @@ new file mode 100644
         drop(log);
 
         let state = ReviewState::load(&session_path).expect("load state");
-        k9::assert_equal!(source_changed(&state), false);
+        wince::assert_eq!(source_changed(&state), false);
     }
 
     #[test]
@@ -911,7 +911,7 @@ new file mode 100644
                 _ => None,
             })
             .collect();
-        k9::assert_equal!(
+        wince::assert_eq!(
             targets,
             vec![CommentTarget::Lines {
                 file: "f.txt".to_string(),
@@ -937,7 +937,7 @@ added  f.txt
 ---
 committed 1 change
 ";
-        k9::assert_equal!(screen(&app, 80), expected.to_string());
+        wince::assert_eq!(screen(&app, 80), expected.to_string());
     }
 
     #[test]
@@ -997,7 +997,7 @@ new file mode 100644
         // The watcher takes the freshly created session as its baseline, so it
         // registers no change until another actor writes.
         let mut watcher = SessionWatcher::new(&session_path);
-        k9::assert_equal!(watcher.changed().is_some(), false);
+        wince::assert_eq!(watcher.changed().is_some(), false);
 
         // An agent commits a comment on the alpha line straight to the log.
         let mut log = SessionLog::open(&session_path).expect("open");
@@ -1024,7 +1024,7 @@ new file mode 100644
         watcher.acknowledge(fingerprint);
         app.set_message(sync_report(&summary));
 
-        k9::assert_equal!(
+        wince::assert_eq!(
             summary,
             CommentSync {
                 added: 1,
@@ -1033,7 +1033,7 @@ new file mode 100644
             }
         );
         // The acknowledged change no longer registers.
-        k9::assert_equal!(watcher.changed().is_some(), false);
+        wince::assert_eq!(watcher.changed().is_some(), false);
 
         // The agent's comment now shows as committed above the alpha line, and
         // the status line reports what was synced.
@@ -1051,6 +1051,6 @@ added  f.txt
 ---
 synced: 1 added
 ";
-        k9::assert_equal!(screen(&app, 80), expected.to_string());
+        wince::assert_eq!(screen(&app, 80), expected.to_string());
     }
 }

@@ -305,15 +305,15 @@ mod tests {
         let map = WrapMap::build(&lines, 11);
 
         // Start of "world" (char 6) is the start of the second visual row.
-        k9::assert_equal!(map.cursor_to_visual(0, 6, CursorBias::Forward), (1, 0));
+        wince::assert_eq!(map.cursor_to_visual(0, 6, CursorBias::Forward), (1, 0));
         // Inside the first row.
-        k9::assert_equal!(map.cursor_to_visual(0, 3, CursorBias::Forward), (0, 3));
+        wince::assert_eq!(map.cursor_to_visual(0, 3, CursorBias::Forward), (0, 3));
         // End of the line renders at the end of its last row.
-        k9::assert_equal!(map.cursor_to_visual(0, 15, CursorBias::Forward), (1, 9));
+        wince::assert_eq!(map.cursor_to_visual(0, 15, CursorBias::Forward), (1, 9));
 
         // Round-trips back to char positions.
-        k9::assert_equal!(map.visual_to_cursor(1, 0), (0, 6));
-        k9::assert_equal!(map.visual_to_cursor(0, 3), (0, 3));
+        wince::assert_eq!(map.visual_to_cursor(1, 0), (0, 6));
+        wince::assert_eq!(map.visual_to_cursor(0, 3), (0, 3));
     }
 
     #[test]
@@ -326,8 +326,8 @@ mod tests {
         // Arriving from the next row (moving up) keeps the cursor at the end of
         // row 0; arriving from an edit or horizontal move reads it as the start
         // of row 1.
-        k9::assert_equal!(map.cursor_to_visual(0, 4, CursorBias::Backward), (0, 4));
-        k9::assert_equal!(map.cursor_to_visual(0, 4, CursorBias::Forward), (1, 0));
+        wince::assert_eq!(map.cursor_to_visual(0, 4, CursorBias::Backward), (0, 4));
+        wince::assert_eq!(map.cursor_to_visual(0, 4, CursorBias::Forward), (1, 0));
     }
 
     #[test]
@@ -338,13 +338,13 @@ mod tests {
 
         // Moving down to row 1 at column 0 reaches the boundary shared with
         // row 0's end; a forward bias keeps it at row 1's start.
-        k9::assert_equal!(map.vertical_target(1, 0), (0, 4, CursorBias::Forward));
+        wince::assert_eq!(map.vertical_target(1, 0), (0, 4, CursorBias::Forward));
         // Moving up to row 1 at a column past its width reaches the boundary
         // shared with row 2's start; a backward bias keeps it at row 1's end.
-        k9::assert_equal!(map.vertical_target(1, 99), (0, 8, CursorBias::Backward));
+        wince::assert_eq!(map.vertical_target(1, 99), (0, 8, CursorBias::Backward));
         // The last row of the line never needs a backward bias: its end is the
         // true line end.
-        k9::assert_equal!(map.vertical_target(2, 99), (0, 10, CursorBias::Forward));
+        wince::assert_eq!(map.vertical_target(2, 99), (0, 10, CursorBias::Forward));
     }
 
     #[test]
@@ -354,11 +354,11 @@ mod tests {
 
         // Home on the first row is its start; End trims the trailing break space
         // so the cursor stays on the first row (char 5, after "hello").
-        k9::assert_equal!(map.row_start_cursor(0), (0, 0));
-        k9::assert_equal!(map.row_end_cursor(0), (0, 5));
+        wince::assert_eq!(map.row_start_cursor(0), (0, 0));
+        wince::assert_eq!(map.row_end_cursor(0), (0, 5));
 
         // On the last row End is the true line end.
-        k9::assert_equal!(map.row_start_cursor(1), (0, 6));
-        k9::assert_equal!(map.row_end_cursor(1), (0, 15));
+        wince::assert_eq!(map.row_start_cursor(1), (0, 6));
+        wince::assert_eq!(map.row_end_cursor(1), (0, 15));
     }
 }

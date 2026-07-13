@@ -586,7 +586,7 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        k9::assert_equal!(highlighter.highlight_side(&file, Side::After), expected);
+        wince::assert_eq!(highlighter.highlight_side(&file, Side::After), expected);
     }
 
     #[test]
@@ -603,7 +603,7 @@ mod tests {
             ],
             vec![span("//", "#65737e"), span(" note", "#65737e")],
         ];
-        k9::assert_equal!(
+        wince::assert_eq!(
             highlighter.highlight_code("rust", "let x = 1;\n// note"),
             Some(expected)
         );
@@ -612,7 +612,7 @@ mod tests {
     #[test]
     fn highlight_code_returns_none_for_an_unknown_language() {
         let highlighter = Highlighter::with_theme(TEST_THEME).unwrap();
-        k9::assert_equal!(highlighter.highlight_code("nonesuch", "fn main() {}"), None);
+        wince::assert_eq!(highlighter.highlight_code("nonesuch", "fn main() {}"), None);
     }
 
     #[test]
@@ -652,7 +652,7 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        k9::assert_equal!(highlighter.highlight_side(&file, Side::Before), expected);
+        wince::assert_eq!(highlighter.highlight_side(&file, Side::Before), expected);
     }
 
     #[test]
@@ -664,23 +664,23 @@ mod tests {
             [(ln(1), vec![span("hello world", "#c0c5ce")])]
                 .into_iter()
                 .collect();
-        k9::assert_equal!(highlighter.highlight_side(&file, Side::After), expected);
+        wince::assert_eq!(highlighter.highlight_side(&file, Side::After), expected);
     }
 
     #[test]
     fn fence_language_maps_known_extensions_and_ignores_the_rest() {
         use super::fence_language;
-        k9::assert_equal!(fence_language("src/lib.rs"), Some("rust"));
-        k9::assert_equal!(fence_language("deploy.sh"), Some("bash"));
-        k9::assert_equal!(fence_language("conf.yml"), Some("yaml"));
-        k9::assert_equal!(fence_language("Cargo.toml"), Some("toml"));
-        k9::assert_equal!(fence_language("notes.unknownext"), None);
-        k9::assert_equal!(fence_language("Makefile"), None);
+        wince::assert_eq!(fence_language("src/lib.rs"), Some("rust"));
+        wince::assert_eq!(fence_language("deploy.sh"), Some("bash"));
+        wince::assert_eq!(fence_language("conf.yml"), Some("yaml"));
+        wince::assert_eq!(fence_language("Cargo.toml"), Some("toml"));
+        wince::assert_eq!(fence_language("notes.unknownext"), None);
+        wince::assert_eq!(fence_language("Makefile"), None);
     }
 
     #[test]
     fn an_unknown_theme_is_an_error() {
-        k9::assert_equal!(
+        wince::assert_eq!(
             Highlighter::with_theme("no-such-theme").err(),
             Some(HighlightError::UnknownTheme {
                 name: "no-such-theme".to_string(),
@@ -707,7 +707,7 @@ mod tests {
         let parsed = highlighter.parse_side(&file, Side::After);
 
         // Under the parse theme, coloring the cache matches a direct highlight.
-        k9::assert_equal!(
+        wince::assert_eq!(
             highlighter.color_side(&parsed),
             highlighter.highlight_side(&file, Side::After)
         );
@@ -717,19 +717,19 @@ mod tests {
         const OTHER_THEME: &str = "InspiredGitHub";
         highlighter.set_theme(OTHER_THEME).unwrap();
         let fresh = Highlighter::with_theme(OTHER_THEME).unwrap();
-        k9::assert_equal!(
+        wince::assert_eq!(
             highlighter.color_side(&parsed),
             fresh.highlight_side(&file, Side::After)
         );
 
         // An unknown theme is rejected and leaves the coloring untouched.
-        k9::assert_equal!(
+        wince::assert_eq!(
             highlighter.set_theme("no-such-theme").err(),
             Some(HighlightError::UnknownTheme {
                 name: "no-such-theme".to_string(),
             })
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             highlighter.color_side(&parsed),
             fresh.highlight_side(&file, Side::After)
         );
@@ -748,7 +748,7 @@ mod tests {
 
         // A heading takes the theme's heading color while ordinary prose stays
         // the default foreground, proving the markdown syntax resolved.
-        k9::assert_equal!(
+        wince::assert_eq!(
             live_spans(&live, 2),
             vec![
                 vec![
@@ -791,7 +791,7 @@ mod tests {
         let mut fresh = highlighter.live("markdown");
         fresh.update(&final_buffer);
 
-        k9::assert_equal!(live_spans(&typed, 3), live_spans(&fresh, 3));
+        wince::assert_eq!(live_spans(&typed, 3), live_spans(&fresh, 3));
     }
 
     #[test]
@@ -812,12 +812,12 @@ mod tests {
 
         let mut fresh = highlighter.live("markdown");
         fresh.update(&["# Note".to_string()]);
-        k9::assert_equal!(live_spans(&typed, 1), live_spans(&fresh, 1));
+        wince::assert_eq!(live_spans(&typed, 1), live_spans(&fresh, 1));
 
         // Grow again and the appended line colors as a fresh two-line highlight.
         typed.update(&["# Note".to_string(), "tail".to_string()]);
         let mut grown = highlighter.live("markdown");
         grown.update(&["# Note".to_string(), "tail".to_string()]);
-        k9::assert_equal!(live_spans(&typed, 2), live_spans(&grown, 2));
+        wince::assert_eq!(live_spans(&typed, 2), live_spans(&grown, 2));
     }
 }

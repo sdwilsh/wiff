@@ -285,10 +285,10 @@ mod tests {
             rev: "HEAD".to_string(),
         };
         let json = serde_json::to_string(&source).expect("serialize");
-        k9::assert_equal!(json, r#"{"kind":"git_rev","rev":"HEAD"}"#.to_string());
+        wince::assert_eq!(json, r#"{"kind":"git_rev","rev":"HEAD"}"#.to_string());
         let back: SourceKind = serde_json::from_str(&json).expect("deserialize");
-        k9::assert_equal!(back, source);
-        k9::assert_equal!(source.regenerable(), true);
-        k9::assert_equal!(source.as_str(), "git_rev");
+        wince::assert_eq!(back, source);
+        wince::assert_eq!(source.regenerable(), true);
+        wince::assert_eq!(source.as_str(), "git_rev");
     }
 }

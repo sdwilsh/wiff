@@ -44,7 +44,7 @@ quit = [\"q\", \"ctrl-c\"]
     ]
     .into_iter()
     .collect();
-    k9::assert_equal!(
+    wince::assert_eq!(
         config,
         Config {
             on_exit: OnExit::Keep,
@@ -75,16 +75,16 @@ quit = [\"q\", \"ctrl-c\"]
 #[test]
 fn an_empty_config_is_all_defaults() {
     let config = Config::parse("").unwrap();
-    k9::assert_equal!(config, Config::default());
-    k9::assert_equal!(config.on_exit, OnExit::Prompt);
-    k9::assert_equal!(
+    wince::assert_eq!(config, Config::default());
+    wince::assert_eq!(config.on_exit, OnExit::Prompt);
+    wince::assert_eq!(
         config.author.resolve(AuthorKind::Human),
         Author {
             name: std::env::var("USER").unwrap_or_else(|_| "unknown".to_string()),
             kind: AuthorKind::Human,
         }
     );
-    k9::assert_equal!(
+    wince::assert_eq!(
         config.author.resolve(AuthorKind::Agent),
         Author {
             name: "assistant".to_string(),
@@ -99,12 +99,12 @@ fn the_configured_keymap_overlays_the_defaults() {
     let map = config.keymap().unwrap();
     // The override binds and the default "j" is gone, while untouched actions
     // keep their defaults.
-    k9::assert_equal!(
+    wince::assert_eq!(
         map.resolve(&presses("x")),
         Resolution::Action(Action::LineDown)
     );
-    k9::assert_equal!(map.resolve(&presses("j")), Resolution::None);
-    k9::assert_equal!(map.resolve(&presses("q")), Resolution::Action(Action::Quit));
+    wince::assert_eq!(map.resolve(&presses("j")), Resolution::None);
+    wince::assert_eq!(map.resolve(&presses("q")), Resolution::Action(Action::Quit));
 }
 
 #[test]

@@ -370,8 +370,8 @@ index HASHES
 @@ -0,0 +1,2 @@
 +alpha
 +beta";
-        k9::assert_equal!(stable(&captured.text), expected.to_string());
-        k9::assert_equal!(
+        wince::assert_eq!(stable(&captured.text), expected.to_string());
+        wince::assert_eq!(
             captured.source,
             SourceKind::GitRev {
                 rev: "HEAD".to_string()
@@ -420,8 +420,8 @@ index HASHES
 @@ -1 +1,2 @@
  one
 +two";
-        k9::assert_equal!(stable(&captured.text), expected.to_string());
-        k9::assert_equal!(captured.source, SourceKind::GitWorktree);
+        wince::assert_eq!(stable(&captured.text), expected.to_string());
+        wince::assert_eq!(captured.source, SourceKind::GitWorktree);
     }
 
     /// Toggle the read-only bit on every file and directory under `root`

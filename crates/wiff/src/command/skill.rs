@@ -145,14 +145,14 @@ mod tests {
         let expanded = expand_binary(SKILL_TEMPLATE, bin);
         // Idempotent: the second pass finds no bare command head to rewrite,
         // which is the invariant that no runnable `wiff` invocation was missed.
-        k9::assert_equal!(expand_binary(&expanded, bin), expanded.clone());
+        wince::assert_eq!(expand_binary(&expanded, bin), expanded.clone());
         // The invocations became the absolute path; the prose, the skill name,
         // and the example ULIDs kept their bare form.
-        k9::assert_equal!(expanded.contains("/opt/tools/wiff render"), true);
-        k9::assert_equal!(expanded.contains("| /opt/tools/wiff comment add"), true);
-        k9::assert_equal!(expanded.contains("name: wiff-review"), true);
-        k9::assert_equal!(expanded.contains("browses in the wiff TUI"), true);
-        k9::assert_equal!(expanded.contains("skills/wiff-review/"), false);
+        wince::assert_eq!(expanded.contains("/opt/tools/wiff render"), true);
+        wince::assert_eq!(expanded.contains("| /opt/tools/wiff comment add"), true);
+        wince::assert_eq!(expanded.contains("name: wiff-review"), true);
+        wince::assert_eq!(expanded.contains("browses in the wiff TUI"), true);
+        wince::assert_eq!(expanded.contains("skills/wiff-review/"), false);
     }
 
     /// A command head is rewritten at the start of a line and right after a
@@ -161,19 +161,19 @@ mod tests {
     #[test]
     fn rewrite_targets_command_heads_only() {
         let bin = "/bin/wiff";
-        k9::assert_equal!(
+        wince::assert_eq!(
             rewrite_command_heads("wiff render\n", bin),
             "/bin/wiff render\n".to_string()
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             rewrite_command_heads("  cat x | wiff comment add\n", bin),
             "  cat x | /bin/wiff comment add\n".to_string()
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             rewrite_command_heads("a && wiff render; wiff render\n", bin),
             "a && /bin/wiff render; /bin/wiff render\n".to_string()
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             rewrite_command_heads("the wiff-review skill wraps wiff nicely\n", bin),
             "the wiff-review skill wraps wiff nicely\n".to_string()
         );

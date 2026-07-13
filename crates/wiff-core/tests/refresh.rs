@@ -74,7 +74,7 @@ fn lines_target(start: u32, end: u32) -> CommentTarget {
 fn comment_after_refresh(log: &SessionLog) -> CommentState {
     let state = fold(&read_records(log.path()).unwrap()).unwrap();
     let mut comments = state.comments;
-    k9::assert_equal!(comments.len(), 1);
+    wince::assert_eq!(comments.len(), 1);
     comments.pop().unwrap()
 }
 
@@ -126,7 +126,7 @@ new file mode 100644
 +delta
 ";
     let outcome = refresh_session(&mut log, v1).unwrap();
-    k9::assert_equal!(
+    wince::assert_eq!(
         outcome,
         Some(RefreshOutcome {
             version: 1,
@@ -135,7 +135,7 @@ new file mode 100644
             outdated: 0,
         })
     );
-    k9::assert_equal!(
+    wince::assert_eq!(
         comment_after_refresh(&log),
         expected_comment(
             id,
@@ -163,7 +163,7 @@ new file mode 100644
 +delta
 ";
     let outcome = refresh_session(&mut log, v1).unwrap();
-    k9::assert_equal!(
+    wince::assert_eq!(
         outcome,
         Some(RefreshOutcome {
             version: 1,
@@ -172,7 +172,7 @@ new file mode 100644
             outdated: 1,
         })
     );
-    k9::assert_equal!(
+    wince::assert_eq!(
         comment_after_refresh(&log),
         expected_comment(
             id,
@@ -201,7 +201,7 @@ new file mode 100644
 +delta
 ";
     let outcome = refresh_session(&mut log, v1).unwrap();
-    k9::assert_equal!(
+    wince::assert_eq!(
         outcome,
         Some(RefreshOutcome {
             version: 1,
@@ -210,7 +210,7 @@ new file mode 100644
             outdated: 0,
         })
     );
-    k9::assert_equal!(
+    wince::assert_eq!(
         comment_after_refresh(&log),
         expected_comment(
             id,
@@ -226,9 +226,9 @@ new file mode 100644
 fn an_identical_diff_captures_nothing() {
     let (_base, mut log, id) = session_with_gamma_comment();
     let outcome = refresh_session(&mut log, V0).unwrap();
-    k9::assert_equal!(outcome, None);
+    wince::assert_eq!(outcome, None);
     // The comment stays anchored to v0, untouched.
-    k9::assert_equal!(
+    wince::assert_eq!(
         comment_after_refresh(&log),
         expected_comment(id, lines_target(3, 3), 0, None, 2)
     );

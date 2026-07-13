@@ -1601,12 +1601,12 @@ mod tests {
         // each side of the two changes.
         let kinds = [C, C, C, A, C, C, C, C, C, A, C, C, C];
         let none = vec![false; kinds.len()];
-        k9::assert_equal!(
+        wince::assert_eq!(
             super::foldable_runs(&kinds, 1, &none),
             vec![0..2, 5..8, 11..13]
         );
         // With enough context to reach across every gap, nothing folds.
-        k9::assert_equal!(
+        wince::assert_eq!(
             super::foldable_runs(&kinds, 5, &none),
             Vec::<std::ops::Range<usize>>::new()
         );

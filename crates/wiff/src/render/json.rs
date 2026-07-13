@@ -153,6 +153,6 @@ mod tests {
                 }
             ]
         });
-        k9::assert_equal!(value, expected);
+        wince::assert_eq!(value, expected);
     }
 }

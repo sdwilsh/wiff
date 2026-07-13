@@ -113,7 +113,7 @@ fn parses_the_vendored_corpus() {
         let expected = fs::read_to_string(&golden).unwrap_or_else(|_| {
             panic!("missing golden {}; run with WIFF_BLESS=1", golden.display())
         });
-        k9::assert_equal!(
+        wince::assert_eq!(
             rendered,
             expected,
             "parsed form of {} diverged from its golden file",

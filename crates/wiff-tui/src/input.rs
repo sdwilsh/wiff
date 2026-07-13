@@ -80,25 +80,25 @@ mod tests {
     #[test]
     fn a_single_press_resolves_its_action_immediately() {
         let mut input = dispatcher(&[(Action::LineDown, &["j"])]);
-        k9::assert_equal!(input.press(press("j")), Some(Action::LineDown));
-        k9::assert_equal!(input.is_pending(), false);
+        wince::assert_eq!(input.press(press("j")), Some(Action::LineDown));
+        wince::assert_eq!(input.is_pending(), false);
     }
 
     #[test]
     fn a_multi_press_chord_waits_then_resolves() {
         let mut input = dispatcher(&[(Action::Top, &["g g"])]);
-        k9::assert_equal!(input.press(press("g")), None);
-        k9::assert_equal!(input.is_pending(), true);
-        k9::assert_equal!(input.press(press("g")), Some(Action::Top));
-        k9::assert_equal!(input.is_pending(), false);
+        wince::assert_eq!(input.press(press("g")), None);
+        wince::assert_eq!(input.is_pending(), true);
+        wince::assert_eq!(input.press(press("g")), Some(Action::Top));
+        wince::assert_eq!(input.is_pending(), false);
     }
 
     #[test]
     fn an_unmatched_press_clears_the_pending_sequence() {
         let mut input = dispatcher(&[(Action::Top, &["g g"])]);
-        k9::assert_equal!(input.press(press("g")), None);
+        wince::assert_eq!(input.press(press("g")), None);
         // "g x" matches no binding, so the sequence resets.
-        k9::assert_equal!(input.press(press("x")), None);
-        k9::assert_equal!(input.is_pending(), false);
+        wince::assert_eq!(input.press(press("x")), None);
+        wince::assert_eq!(input.is_pending(), false);
     }
 }

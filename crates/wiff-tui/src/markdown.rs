@@ -1091,7 +1091,7 @@ mod tests {
     #[test]
     fn empty_input_renders_nothing() {
         let highlighter = Highlighter::with_theme(TEST_THEME).expect("theme");
-        k9::assert_equal!(
+        wince::assert_eq!(
             render("", 80, &palette(), &highlighter),
             Vec::<Line<'static>>::new()
         );

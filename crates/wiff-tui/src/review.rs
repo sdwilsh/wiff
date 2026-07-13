@@ -503,7 +503,7 @@ mod tests {
         // and one changed; comment 1 is unchanged and comment 2 is not removed.
         let before = vec![committed(1, 5), committed(2, 5)];
         let after = vec![committed(1, 5), committed(2, 9), committed(3, 1)];
-        k9::assert_equal!(
+        wince::assert_eq!(
             CommentSync::between(&before, &after),
             CommentSync {
                 added: 1,
@@ -514,7 +514,7 @@ mod tests {
 
         // Dropping comment 2 from the reloaded set counts as one removed, and an
         // identical reload reports nothing at all.
-        k9::assert_equal!(
+        wince::assert_eq!(
             CommentSync::between(&before, &[committed(1, 5)]),
             CommentSync {
                 added: 0,
@@ -522,7 +522,7 @@ mod tests {
                 removed: 1,
             }
         );
-        k9::assert_equal!(CommentSync::between(&before, &before).is_empty(), true);
+        wince::assert_eq!(CommentSync::between(&before, &before).is_empty(), true);
     }
 
     /// Block until `review` finishes parsing every file in the background,
@@ -580,7 +580,7 @@ mod tests {
         // exact same document an eager review produces up front.
         finish_highlighting(&mut deferred);
         let eager = super::Review::new(view(), diff, author, 0, Vec::new());
-        k9::assert_equal!(
+        wince::assert_eq!(
             dump(&deferred.document(layout).lines),
             dump(&eager.document(layout).lines)
         );

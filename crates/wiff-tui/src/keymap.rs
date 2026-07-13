@@ -208,70 +208,70 @@ mod tests {
     #[test]
     fn the_defaults_resolve_navigation_and_review_keys() {
         let map = Keymap::defaults();
-        k9::assert_equal!(
+        wince::assert_eq!(
             map.resolve(&presses("j")),
             Resolution::Action(Action::LineDown)
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             map.resolve(&presses("down")),
             Resolution::Action(Action::LineDown)
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             map.resolve(&presses("space")),
             Resolution::Action(Action::PageDown)
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             map.resolve(&presses("ctrl-f")),
             Resolution::Action(Action::PageDown)
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             map.resolve(&presses("G")),
             Resolution::Action(Action::Bottom)
         );
         // less-style angle brackets also jump to the ends of the diff.
-        k9::assert_equal!(map.resolve(&presses("<")), Resolution::Action(Action::Top));
-        k9::assert_equal!(
+        wince::assert_eq!(map.resolve(&presses("<")), Resolution::Action(Action::Top));
+        wince::assert_eq!(
             map.resolve(&presses(">")),
             Resolution::Action(Action::Bottom)
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             map.resolve(&presses("c")),
             Resolution::Action(Action::AddComment)
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             map.resolve(&presses("R")),
             Resolution::Action(Action::Refresh)
         );
-        k9::assert_equal!(map.resolve(&presses("q")), Resolution::Action(Action::Quit));
-        k9::assert_equal!(
+        wince::assert_eq!(map.resolve(&presses("q")), Resolution::Action(Action::Quit));
+        wince::assert_eq!(
             map.resolve(&presses("V")),
             Resolution::Action(Action::HideComments)
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             map.resolve(&presses("/")),
             Resolution::Action(Action::SearchForward)
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             map.resolve(&presses("?")),
             Resolution::Action(Action::SearchBackward)
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             map.resolve(&presses("n")),
             Resolution::Action(Action::SearchNext)
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             map.resolve(&presses("N")),
             Resolution::Action(Action::SearchPrev)
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             map.resolve(&presses("ctrl-d")),
             Resolution::Action(Action::SubmitComment)
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             map.resolve(&presses("esc")),
             Resolution::Action(Action::CancelComment)
         );
-        k9::assert_equal!(map.resolve(&presses("z")), Resolution::None);
+        wince::assert_eq!(map.resolve(&presses("z")), Resolution::None);
     }
 
     #[test]
@@ -279,16 +279,16 @@ mod tests {
         let map = build(&[(Action::LineDown, &["x"])], false).unwrap();
         // The override takes effect and the default "j" no longer binds, but
         // untouched actions keep their defaults.
-        k9::assert_equal!(
+        wince::assert_eq!(
             map.resolve(&presses("x")),
             Resolution::Action(Action::LineDown)
         );
-        k9::assert_equal!(map.resolve(&presses("j")), Resolution::None);
-        k9::assert_equal!(
+        wince::assert_eq!(map.resolve(&presses("j")), Resolution::None);
+        wince::assert_eq!(
             map.resolve(&presses("k")),
             Resolution::Action(Action::LineUp)
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             map.chords(Action::LineDown),
             &["x".parse::<Chord>().unwrap()]
         );
@@ -297,22 +297,22 @@ mod tests {
     #[test]
     fn an_empty_override_unbinds_an_action() {
         let map = build(&[(Action::Quit, &[])], false).unwrap();
-        k9::assert_equal!(map.resolve(&presses("q")), Resolution::None);
-        k9::assert_equal!(map.chords(Action::Quit), &[] as &[Chord]);
+        wince::assert_eq!(map.resolve(&presses("q")), Resolution::None);
+        wince::assert_eq!(map.chords(Action::Quit), &[] as &[Chord]);
     }
 
     #[test]
     fn disabling_the_defaults_keeps_only_configured_bindings() {
         let map = build(&[(Action::Quit, &["x"])], true).unwrap();
-        k9::assert_equal!(map.resolve(&presses("x")), Resolution::Action(Action::Quit));
-        k9::assert_equal!(map.resolve(&presses("j")), Resolution::None);
-        k9::assert_equal!(map.resolve(&presses("q")), Resolution::None);
+        wince::assert_eq!(map.resolve(&presses("x")), Resolution::Action(Action::Quit));
+        wince::assert_eq!(map.resolve(&presses("j")), Resolution::None);
+        wince::assert_eq!(map.resolve(&presses("q")), Resolution::None);
     }
 
     #[test]
     fn a_chord_shared_by_two_actions_is_a_conflict() {
         let error = build(&[(Action::LineUp, &["j"])], false).unwrap_err();
-        k9::assert_equal!(
+        wince::assert_eq!(
             error,
             KeymapError::Conflict {
                 chord: "j".to_string(),
@@ -325,11 +325,11 @@ mod tests {
     #[test]
     fn a_multi_press_chord_reports_pending_until_complete() {
         let map = build(&[(Action::Top, &["g g"])], true).unwrap();
-        k9::assert_equal!(map.resolve(&presses("g")), Resolution::Pending);
-        k9::assert_equal!(
+        wince::assert_eq!(map.resolve(&presses("g")), Resolution::Pending);
+        wince::assert_eq!(
             map.resolve(&presses("g g")),
             Resolution::Action(Action::Top)
         );
-        k9::assert_equal!(map.resolve(&presses("g x")), Resolution::None);
+        wince::assert_eq!(map.resolve(&presses("g x")), Resolution::None);
     }
 }

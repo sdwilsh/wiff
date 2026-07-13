@@ -3167,8 +3167,8 @@ mod tests {
     #[test]
     fn opens_with_the_cursor_on_the_first_file_header() {
         let (cursor, top, visible) = after(3, &[]);
-        k9::assert_equal!(cursor, 0);
-        k9::assert_equal!(top, 0);
+        wince::assert_eq!(cursor, 0);
+        wince::assert_eq!(top, 0);
         // The first three rows are shown; the cursor row (the file header) is
         // washed with the selection background out to the full width.
         let expected = "\
@@ -3176,7 +3176,7 @@ mod tests {
 <#96b5b4|-|->@@ -1,2 +1,2 @@
 <#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
 ";
-        k9::assert_equal!(visible, expected.to_string());
+        wince::assert_eq!(visible, expected.to_string());
     }
 
     #[test]
@@ -3185,8 +3185,8 @@ mod tests {
         // onto the middle visible row with the view still anchored at the top.
         let mut app = App::new(tall_document(), 0, &Theme::dark());
         app.set_height(9);
-        k9::assert_equal!(app.cursor(), 4);
-        k9::assert_equal!(app.top(), 0);
+        wince::assert_eq!(app.cursor(), 4);
+        wince::assert_eq!(app.top(), 0);
         let expected = "\
 <#c0c5ce|-|b>added  long.txt
 <#96b5b4|-|->@@ -1,20 +1,20 @@
@@ -3198,7 +3198,7 @@ mod tests {
 <#9ea1a9|#414a4a|->        6 + <#c0c5ce|#414a4a|->row06<-|#414a4a|->                       
 <#9ea1a9|#414a4a|->        7 + <#c0c5ce|#414a4a|->row07<-|#414a4a|->                       
 ";
-        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
 
     #[test]
@@ -3208,8 +3208,8 @@ mod tests {
         // the last visible line.
         let actions = [Action::LineDown; 12];
         let (cursor, top, visible) = drive(tall_document(), 9, &actions);
-        k9::assert_equal!(cursor, 12);
-        k9::assert_equal!(top, 7);
+        wince::assert_eq!(cursor, 12);
+        wince::assert_eq!(top, 7);
         let expected = "\
 <#9ea1a9|#414a4a|->        6 + <#c0c5ce|#414a4a|->row06<-|#414a4a|->                       
 <#9ea1a9|#414a4a|->        7 + <#c0c5ce|#414a4a|->row07<-|#414a4a|->                       
@@ -3221,7 +3221,7 @@ mod tests {
 <#9ea1a9|#414a4a|->       13 + <#c0c5ce|#414a4a|->row13<-|#414a4a|->                       
 <#9ea1a9|#414a4a|->       14 + <#c0c5ce|#414a4a|->row14<-|#414a4a|->                       
 ";
-        k9::assert_equal!(visible, expected.to_string());
+        wince::assert_eq!(visible, expected.to_string());
     }
 
     #[test]
@@ -3229,12 +3229,12 @@ mod tests {
         // At the top the first file is named and progress is zero; jumping to
         // the second file names it and shows how far through the view it sits.
         let mut app = App::new(document(), 10, &Theme::dark());
-        k9::assert_equal!(
+        wince::assert_eq!(
             dump(&[app.status(28)]),
             "<#c0c5ce|#3a3f4a|->src/lib.rs        0 open  0%\n".to_string()
         );
         app.update(Action::NextFile);
-        k9::assert_equal!(
+        wince::assert_eq!(
             dump(&[app.status(28)]),
             "<#c0c5ce|#3a3f4a|->notes.txt        0 open  66%\n".to_string()
         );
@@ -3250,12 +3250,12 @@ mod tests {
         for _ in 0..3 {
             app.update(Action::LineDown);
         }
-        k9::assert_equal!(
+        wince::assert_eq!(
             dump(&[app.status(28)]),
             "<#c0c5ce|#3a3f4a|->src/lib.rs       1 open  33%\n".to_string()
         );
         app.update(Action::ResolveComment);
-        k9::assert_equal!(
+        wince::assert_eq!(
             dump(&[app.status(28)]),
             "<#c0c5ce|#3a3f4a|->src/lib.rs     * 2 open  33%\n".to_string()
         );
@@ -3270,13 +3270,13 @@ mod tests {
             app.update(Action::LineDown);
         }
         app.update(Action::HideComments);
-        k9::assert_equal!(
+        wince::assert_eq!(
             dump(&[app.status(60)]),
             "<#c0c5ce|#3a3f4a|->src/lib.rs               comments hidden, toggle with V  75%\n"
                 .to_string()
         );
         app.update(Action::HideComments);
-        k9::assert_equal!(
+        wince::assert_eq!(
             dump(&[app.status(60)]),
             "<#c0c5ce|#3a3f4a|->src/lib.rs                                       1 open  55%\n"
                 .to_string()
@@ -3325,7 +3325,7 @@ mod tests {
 <#767b84|-|->└──────────────────────────────────────┘
 <#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
-        k9::assert_equal!(visible, expected.to_string());
+        wince::assert_eq!(visible, expected.to_string());
     }
 
     #[test]
@@ -3363,7 +3363,7 @@ mod tests {
 <#96b5b4|-|->@@ -1,1 +1,1 @@
 <#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> total <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> alpha plus beta plus gamma<#c0c5ce|#414a4a|->;
 ";
-        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), clipped.to_string());
+        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), clipped.to_string());
 
         app.update(Action::ToggleWrap);
         let wrapped = "\
@@ -3373,10 +3373,10 @@ mod tests {
 <#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> total = alpha plus beta<-|#414a4a|-> 
 <#9ea1a9|#414a4a|->            <#c0c5ce|#414a4a|->plus gamma;<-|#414a4a|->                 
 ";
-        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), wrapped.to_string());
+        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), wrapped.to_string());
 
         app.update(Action::ToggleWrap);
-        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), clipped.to_string());
+        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), clipped.to_string());
     }
 
     #[test]
@@ -3427,20 +3427,20 @@ mod tests {
 <#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> total = alpha plus beta<-|#414a4a|-> 
 <#9ea1a9|#414a4a|->            <#c0c5ce|#414a4a|->plus gamma;<-|#414a4a|->                 
 ";
-        k9::assert_equal!(dump_compose(&view), expected.to_string());
+        wince::assert_eq!(dump_compose(&view), expected.to_string());
     }
 
     #[test]
     fn next_and_prev_file_jump_between_file_headers() {
         let (cursor, top, _) = after(10, &[Action::NextFile]);
-        k9::assert_equal!(cursor, 4);
-        k9::assert_equal!(top, 0);
+        wince::assert_eq!(cursor, 4);
+        wince::assert_eq!(top, 0);
 
         // From the second file, prev-file returns to the first header, and a
         // further prev-file stays put since there is none before it.
         let (cursor, top, _) = after(10, &[Action::NextFile, Action::PrevFile, Action::PrevFile]);
-        k9::assert_equal!(cursor, 0);
-        k9::assert_equal!(top, 0);
+        wince::assert_eq!(cursor, 0);
+        wince::assert_eq!(top, 0);
     }
 
     /// Dump the open modal list rendered to its full height, as a human sees it.
@@ -3460,14 +3460,14 @@ mod tests {
         // highlighted, then a spacer and the key hint.
         let mut app = App::new(document(), 8, &Theme::dark());
         app.update(Action::PickFile);
-        k9::assert_equal!(app.picking(), true);
+        wince::assert_eq!(app.picking(), true);
         let expected = "\
 <#c0c5ce|#4f5b66|->> src/lib.rs                            
 <#c0c5ce|#2b303b|->  notes.txt                             
 <-|#2b303b|->                                        
 <#767b84|#2b303b|->  up/down move  enter select  esc cancel
 ";
-        k9::assert_equal!(dump_picker(&mut app), expected.to_string());
+        wince::assert_eq!(dump_picker(&mut app), expected.to_string());
     }
 
     #[test]
@@ -3478,8 +3478,8 @@ mod tests {
         app.update(Action::PickFile);
         app.picker_nav(Action::LineDown);
         app.picker_activate();
-        k9::assert_equal!(app.picking(), false);
-        k9::assert_equal!(app.cursor(), 4);
+        wince::assert_eq!(app.picking(), false);
+        wince::assert_eq!(app.cursor(), 4);
     }
 
     #[test]
@@ -3490,8 +3490,8 @@ mod tests {
         app.update(Action::PickFile);
         app.picker_nav(Action::LineDown);
         app.picker_cancel();
-        k9::assert_equal!(app.picking(), false);
-        k9::assert_equal!(app.cursor(), 0);
+        wince::assert_eq!(app.picking(), false);
+        wince::assert_eq!(app.cursor(), 0);
     }
 
     #[test]
@@ -3502,7 +3502,7 @@ mod tests {
         // start of its body, then a spacer and the key hint.
         let mut app = App::reviewing(commented_review(), 8, &Theme::dark());
         app.update(Action::PickComment);
-        k9::assert_equal!(app.picking(), true);
+        wince::assert_eq!(app.picking(), true);
         #[rustfmt::skip]
         wince::snapshot_str!(
             dump_picker(&mut app),
@@ -3578,7 +3578,7 @@ mod tests {
         review.toggle_deleted(Ulid(4));
         let mut app = App::reviewing(review, 8, &Theme::dark());
         app.update(Action::PickComment);
-        k9::assert_equal!(app.picking(), true);
+        wince::assert_eq!(app.picking(), true);
         #[rustfmt::skip]
         wince::snapshot_str!(
             dump_picker(&mut app),
@@ -3600,8 +3600,8 @@ mod tests {
         app.update(Action::PickComment);
         app.picker_nav(Action::LineDown);
         app.picker_activate();
-        k9::assert_equal!(app.picking(), false);
-        k9::assert_equal!(
+        wince::assert_eq!(app.picking(), false);
+        wince::assert_eq!(
             app.kind_at(app.cursor()),
             Some(&RowKind::CommentHeader { id: Ulid(1) })
         );
@@ -3614,7 +3614,7 @@ mod tests {
         // than the first, then a spacer and the key hint.
         let mut app = App::reviewing(commented_review(), 8, &Theme::dark());
         app.update(Action::PickTheme);
-        k9::assert_equal!(app.picking(), true);
+        wince::assert_eq!(app.picking(), true);
         let expected = "\
 <#c0c5ce|#2b303b|->  InspiredGitHub                        
 <#c0c5ce|#2b303b|->  Solarized (dark)                      
@@ -3626,7 +3626,7 @@ mod tests {
 <-|#2b303b|->                                        
 <#767b84|#2b303b|->  up/down move  enter select  esc cancel
 ";
-        k9::assert_equal!(dump_picker(&mut app), expected.to_string());
+        wince::assert_eq!(dump_picker(&mut app), expected.to_string());
     }
 
     #[test]
@@ -3638,9 +3638,9 @@ mod tests {
         app.update(Action::PickTheme);
         app.picker_nav(Action::Top);
         app.picker_activate();
-        k9::assert_equal!(app.picking(), false);
+        wince::assert_eq!(app.picking(), false);
         let light = Theme::light();
-        k9::assert_equal!(app.background(), light.background);
+        wince::assert_eq!(app.background(), light.background);
     }
 
     /// A review over a one-line file whose latest captured version is `version`,
@@ -3671,7 +3671,7 @@ mod tests {
         // latest diff since no comparison is in effect.
         let mut app = App::reviewing(versioned_review(2), 8, &Theme::dark());
         app.update(Action::CompareVersions);
-        k9::assert_equal!(app.picking(), true);
+        wince::assert_eq!(app.picking(), true);
         let expected = "\
 <#c0c5ce|#4f5b66|->> the latest diff (v2) (showing now)    
 <#c0c5ce|#2b303b|->  changes since v1                      
@@ -3679,7 +3679,7 @@ mod tests {
 <-|#2b303b|->                                        
 <#767b84|#2b303b|->  up/down move  enter select  esc cancel
 ";
-        k9::assert_equal!(dump_picker(&mut app), expected.to_string());
+        wince::assert_eq!(dump_picker(&mut app), expected.to_string());
     }
 
     #[test]
@@ -3690,7 +3690,7 @@ mod tests {
         let mut app = App::reviewing(versioned_review(2), 8, &Theme::dark());
         app.show_comparison(comparison_diff(), Some((1, from_v1_before_origin())));
         app.update(Action::CompareVersions);
-        k9::assert_equal!(app.picking(), true);
+        wince::assert_eq!(app.picking(), true);
         let expected = "\
 <#c0c5ce|#2b303b|->  the latest diff (v2)                  
 <#c0c5ce|#4f5b66|->> changes since v1 (showing now)        
@@ -3698,7 +3698,7 @@ mod tests {
 <-|#2b303b|->                                        
 <#767b84|#2b303b|->  up/down move  enter select  esc cancel
 ";
-        k9::assert_equal!(dump_picker(&mut app), expected.to_string());
+        wince::assert_eq!(dump_picker(&mut app), expected.to_string());
     }
 
     #[test]
@@ -3710,9 +3710,9 @@ mod tests {
         app.update(Action::CompareVersions);
         app.picker_nav(Action::LineDown);
         app.picker_activate();
-        k9::assert_equal!(app.picking(), false);
-        k9::assert_equal!(app.take_pending_compare(), Some(CompareRequest::Version(1)));
-        k9::assert_equal!(app.take_pending_compare(), None);
+        wince::assert_eq!(app.picking(), false);
+        wince::assert_eq!(app.take_pending_compare(), Some(CompareRequest::Version(1)));
+        wince::assert_eq!(app.take_pending_compare(), None);
     }
 
     #[test]
@@ -3722,8 +3722,8 @@ mod tests {
         let mut app = App::reviewing(versioned_review(0), 8, &Theme::dark());
         app.set_width(TEST_WIDTH);
         app.update(Action::CompareVersions);
-        k9::assert_equal!(app.picking(), false);
-        k9::assert_equal!(
+        wince::assert_eq!(app.picking(), false);
+        wince::assert_eq!(
             status_text(&app),
             "no earlier version to compare against   ".to_string()
         );
@@ -3735,14 +3735,14 @@ mod tests {
         // offers the two choices, opening on the first.
         let mut app = App::reviewing(versioned_review(1), 8, &Theme::dark());
         app.offer_refresh();
-        k9::assert_equal!(app.picking(), true);
+        wince::assert_eq!(app.picking(), true);
         let expected = "\
 <#c0c5ce|#4f5b66|->> Refresh now                           
 <#c0c5ce|#2b303b|->  Keep the current diff                 
 <-|#2b303b|->                                        
 <#767b84|#2b303b|->  up/down move  enter select  esc cancel
 ";
-        k9::assert_equal!(dump_picker(&mut app), expected.to_string());
+        wince::assert_eq!(dump_picker(&mut app), expected.to_string());
     }
 
     #[test]
@@ -3752,9 +3752,9 @@ mod tests {
         let mut app = App::reviewing(versioned_review(1), 8, &Theme::dark());
         app.offer_refresh();
         app.picker_activate();
-        k9::assert_equal!(app.picking(), false);
-        k9::assert_equal!(app.take_pending_refresh(), true);
-        k9::assert_equal!(app.take_pending_refresh(), false);
+        wince::assert_eq!(app.picking(), false);
+        wince::assert_eq!(app.take_pending_refresh(), true);
+        wince::assert_eq!(app.take_pending_refresh(), false);
     }
 
     #[test]
@@ -3765,8 +3765,8 @@ mod tests {
         app.offer_refresh();
         app.picker_nav(Action::LineDown);
         app.picker_activate();
-        k9::assert_equal!(app.picking(), false);
-        k9::assert_equal!(app.take_pending_refresh(), false);
+        wince::assert_eq!(app.picking(), false);
+        wince::assert_eq!(app.take_pending_refresh(), false);
     }
 
     #[test]
@@ -3775,14 +3775,14 @@ mod tests {
         // on the latest, where the reviewer was.
         let mut app = App::reviewing(versioned_review(1), 8, &Theme::dark());
         app.offer_compare_after_refresh(None, None);
-        k9::assert_equal!(app.picking(), true);
+        wince::assert_eq!(app.picking(), true);
         let expected = "\
 <#c0c5ce|#4f5b66|->> the latest diff (v1) (showing now)    
 <#c0c5ce|#2b303b|->  changes since v0                      
 <-|#2b303b|->                                        
 <#767b84|#2b303b|->  up/down move  enter select  esc cancel
 ";
-        k9::assert_equal!(dump_picker(&mut app), expected.to_string());
+        wince::assert_eq!(dump_picker(&mut app), expected.to_string());
     }
 
     #[test]
@@ -3791,7 +3791,7 @@ mod tests {
         // opening on that row, so the reviewer keeps the perspective they had.
         let mut app = App::reviewing(versioned_review(2), 8, &Theme::dark());
         app.offer_compare_after_refresh(Some(1), None);
-        k9::assert_equal!(app.picking(), true);
+        wince::assert_eq!(app.picking(), true);
         let expected = "\
 <#c0c5ce|#2b303b|->  the latest diff (v2)                  
 <#c0c5ce|#4f5b66|->> changes since v1 (showing now)        
@@ -3799,7 +3799,7 @@ mod tests {
 <-|#2b303b|->                                        
 <#767b84|#2b303b|->  up/down move  enter select  esc cancel
 ";
-        k9::assert_equal!(dump_picker(&mut app), expected.to_string());
+        wince::assert_eq!(dump_picker(&mut app), expected.to_string());
     }
 
     #[test]
@@ -3809,7 +3809,7 @@ mod tests {
         // comments are so they can step to it.
         let mut app = App::reviewing(versioned_review(2), 8, &Theme::dark());
         app.offer_compare_after_refresh(None, Some(1));
-        k9::assert_equal!(app.picking(), true);
+        wince::assert_eq!(app.picking(), true);
         let expected = "\
 <#c0c5ce|#4f5b66|->> the latest diff (v2) (showing now)    
 <#c0c5ce|#2b303b|->  changes since v1 (your last comments) 
@@ -3817,7 +3817,7 @@ mod tests {
 <-|#2b303b|->                                        
 <#767b84|#2b303b|->  up/down move  enter select  esc cancel
 ";
-        k9::assert_equal!(dump_picker(&mut app), expected.to_string());
+        wince::assert_eq!(dump_picker(&mut app), expected.to_string());
     }
 
     #[test]
@@ -3828,9 +3828,9 @@ mod tests {
         app.offer_compare_after_refresh(None, None);
         app.picker_nav(Action::LineDown);
         app.picker_activate();
-        k9::assert_equal!(app.picking(), false);
-        k9::assert_equal!(app.take_pending_compare(), Some(CompareRequest::Version(0)));
-        k9::assert_equal!(app.take_pending_compare(), None);
+        wince::assert_eq!(app.picking(), false);
+        wince::assert_eq!(app.take_pending_compare(), Some(CompareRequest::Version(0)));
+        wince::assert_eq!(app.take_pending_compare(), None);
     }
 
     #[test]
@@ -3840,9 +3840,9 @@ mod tests {
         let mut app = App::reviewing(versioned_review(1), 8, &Theme::dark());
         app.offer_compare_after_refresh(None, None);
         app.picker_activate();
-        k9::assert_equal!(app.picking(), false);
-        k9::assert_equal!(app.take_pending_compare(), Some(CompareRequest::Latest));
-        k9::assert_equal!(app.take_pending_compare(), None);
+        wince::assert_eq!(app.picking(), false);
+        wince::assert_eq!(app.take_pending_compare(), Some(CompareRequest::Latest));
+        wince::assert_eq!(app.take_pending_compare(), None);
     }
 
     #[test]
@@ -3853,9 +3853,9 @@ mod tests {
         let mut app = App::reviewing(versioned_review(2), 8, &Theme::dark());
         app.offer_compare_after_refresh(Some(1), None);
         app.picker_cancel();
-        k9::assert_equal!(app.picking(), false);
-        k9::assert_equal!(app.take_pending_compare(), Some(CompareRequest::Version(1)));
-        k9::assert_equal!(app.take_pending_compare(), None);
+        wince::assert_eq!(app.picking(), false);
+        wince::assert_eq!(app.take_pending_compare(), Some(CompareRequest::Version(1)));
+        wince::assert_eq!(app.take_pending_compare(), None);
     }
 
     #[test]
@@ -3865,9 +3865,9 @@ mod tests {
         let mut app = App::reviewing(versioned_review(2), 8, &Theme::dark());
         app.offer_compare_after_refresh(None, None);
         app.picker_cancel();
-        k9::assert_equal!(app.picking(), false);
-        k9::assert_equal!(app.take_pending_compare(), Some(CompareRequest::Latest));
-        k9::assert_equal!(app.take_pending_compare(), None);
+        wince::assert_eq!(app.picking(), false);
+        wince::assert_eq!(app.take_pending_compare(), Some(CompareRequest::Latest));
+        wince::assert_eq!(app.take_pending_compare(), None);
     }
 
     #[test]
@@ -3877,19 +3877,19 @@ mod tests {
         let mut app = App::reviewing(versioned_review(2), 8, &Theme::dark());
         app.update(Action::CompareVersions);
         app.picker_cancel();
-        k9::assert_equal!(app.picking(), false);
-        k9::assert_equal!(app.take_pending_compare(), None);
+        wince::assert_eq!(app.picking(), false);
+        wince::assert_eq!(app.take_pending_compare(), None);
     }
 
     #[test]
     fn next_hunk_lands_on_the_hunk_header_and_bottom_jumps_to_the_end() {
         let (cursor, _, _) = after(10, &[Action::NextHunk]);
-        k9::assert_equal!(cursor, 1);
+        wince::assert_eq!(cursor, 1);
 
         let (cursor, _, _) = after(10, &[Action::Bottom]);
         // Seven rows total (a header and hunk header plus content for each
         // file); the last is the added line of the second file.
-        k9::assert_equal!(cursor, 6);
+        wince::assert_eq!(cursor, 6);
     }
 
     #[test]
@@ -3897,23 +3897,23 @@ mod tests {
         // On a height-3 view, each page-down slides the viewport by a full screen
         // and carries the cursor along, rather than nudging it one row.
         let (cursor, top, _) = after(3, &[Action::PageDown]);
-        k9::assert_equal!(cursor, 3);
-        k9::assert_equal!(top, 3);
+        wince::assert_eq!(cursor, 3);
+        wince::assert_eq!(top, 3);
 
         let (cursor, top, _) = after(3, &[Action::PageDown, Action::PageDown]);
-        k9::assert_equal!(cursor, 6);
-        k9::assert_equal!(top, 4);
+        wince::assert_eq!(cursor, 6);
+        wince::assert_eq!(top, 4);
 
         let (cursor, top, _) = after(3, &[Action::PageDown, Action::PageDown, Action::PageUp]);
-        k9::assert_equal!(cursor, 3);
-        k9::assert_equal!(top, 1);
+        wince::assert_eq!(cursor, 3);
+        wince::assert_eq!(top, 1);
     }
 
     #[test]
     fn a_non_navigation_action_is_passed_back_to_the_host() {
         let mut app = App::new(document(), 10, &Theme::dark());
-        k9::assert_equal!(app.update(Action::Refresh), Update::Passed(Action::Refresh));
-        k9::assert_equal!(app.update(Action::LineDown), Update::Handled);
+        wince::assert_eq!(app.update(Action::Refresh), Update::Passed(Action::Refresh));
+        wince::assert_eq!(app.update(Action::LineDown), Update::Handled);
     }
 
     #[test]
@@ -3921,9 +3921,9 @@ mod tests {
         // With no drafts to lose, a keep default leaves at once with no dialog
         // and settles on keeping the session.
         let mut app = App::new(document(), 10, &Theme::dark()).with_exit_default(ExitDefault::Keep);
-        k9::assert_equal!(app.update(Action::Quit), Update::Handled);
-        k9::assert_equal!(app.picking(), false);
-        k9::assert_equal!(app.pending_exit(), Some(Exit::Commit));
+        wince::assert_eq!(app.update(Action::Quit), Update::Handled);
+        wince::assert_eq!(app.picking(), false);
+        wince::assert_eq!(app.pending_exit(), Some(Exit::Commit));
     }
 
     #[test]
@@ -3932,13 +3932,13 @@ mod tests {
         // the second choice and confirming removes the session.
         let mut app =
             App::new(document(), 10, &Theme::dark()).with_exit_default(ExitDefault::Prompt);
-        k9::assert_equal!(app.update(Action::Quit), Update::Handled);
-        k9::assert_equal!(app.picking(), true);
-        k9::assert_equal!(app.pending_exit(), None);
+        wince::assert_eq!(app.update(Action::Quit), Update::Handled);
+        wince::assert_eq!(app.picking(), true);
+        wince::assert_eq!(app.pending_exit(), None);
         app.picker_nav(Action::LineDown);
         app.picker_activate();
-        k9::assert_equal!(app.picking(), false);
-        k9::assert_equal!(app.pending_exit(), Some(Exit::Remove));
+        wince::assert_eq!(app.picking(), false);
+        wince::assert_eq!(app.pending_exit(), Some(Exit::Remove));
     }
 
     #[test]
@@ -3948,8 +3948,8 @@ mod tests {
             App::new(document(), 10, &Theme::dark()).with_exit_default(ExitDefault::Prompt);
         app.update(Action::Quit);
         app.picker_cancel();
-        k9::assert_equal!(app.picking(), false);
-        k9::assert_equal!(app.pending_exit(), None);
+        wince::assert_eq!(app.picking(), false);
+        wince::assert_eq!(app.pending_exit(), None);
     }
 
     #[test]
@@ -3957,8 +3957,8 @@ mod tests {
         // The whole collapsed view: the headers, a leading fold, the kept
         // context and the change, and a trailing fold.
         let (cursor, top, visible) = drive(folded_document(), 12, &[]);
-        k9::assert_equal!(cursor, 0);
-        k9::assert_equal!(top, 0);
+        wince::assert_eq!(cursor, 0);
+        wince::assert_eq!(top, 0);
         let expected = "\
 <#cdd1d8|#4f5b66|b>modified  notes.txt<-|#4f5b66|->                     
 <#96b5b4|-|->@@ -1,17 +1,17 @@
@@ -3972,7 +3972,7 @@ mod tests {
 <#7d828c|-|->  12   12   <#c0c5ce|-|->ctx11
 <#767b84|#3a3f4a|->            [5 unchanged lines]  ctx16<-|#3a3f4a|->  
 ";
-        k9::assert_equal!(visible, expected.to_string());
+        wince::assert_eq!(visible, expected.to_string());
     }
 
     #[test]
@@ -3983,8 +3983,8 @@ mod tests {
             6,
             &[Action::LineDown, Action::LineDown, Action::ToggleFold],
         );
-        k9::assert_equal!(cursor, 2);
-        k9::assert_equal!(top, 0);
+        wince::assert_eq!(cursor, 2);
+        wince::assert_eq!(top, 0);
         let expected = "\
 <#c0c5ce|-|b>modified  notes.txt
 <#96b5b4|-|->@@ -1,17 +1,17 @@
@@ -3993,7 +3993,7 @@ mod tests {
 <#7d828c|-|->   3    3   <#c0c5ce|-|->ctx03
 <#7d828c|-|->   4    4   <#c0c5ce|-|->ctx04
 ";
-        k9::assert_equal!(visible, expected.to_string());
+        wince::assert_eq!(visible, expected.to_string());
     }
 
     #[test]
@@ -4009,8 +4009,8 @@ mod tests {
                 Action::ToggleFold,
             ],
         );
-        k9::assert_equal!(cursor, 2);
-        k9::assert_equal!(top, 0);
+        wince::assert_eq!(cursor, 2);
+        wince::assert_eq!(top, 0);
         let expected = "\
 <#c0c5ce|-|b>modified  notes.txt
 <#96b5b4|-|->@@ -1,17 +1,17 @@
@@ -4019,7 +4019,7 @@ mod tests {
 <#7d828c|-|->   7    7   <#c0c5ce|-|->ctx07
 <#7d828c|-|->   8    8   <#c0c5ce|-|->ctx08
 ";
-        k9::assert_equal!(visible, expected.to_string());
+        wince::assert_eq!(visible, expected.to_string());
     }
 
     #[test]
@@ -4027,8 +4027,8 @@ mod tests {
         // The resolved comment on line 1 shows only its header; the unresolved
         // comment on line 2 shows its header and both body lines.
         let (cursor, top, visible) = drive(commented_document(), 12, &[]);
-        k9::assert_equal!(cursor, 0);
-        k9::assert_equal!(top, 0);
+        wince::assert_eq!(cursor, 0);
+        wince::assert_eq!(top, 0);
         let expected = "\
 <#ecce91|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
@@ -4041,7 +4041,7 @@ mod tests {
 <#767b84|-|->└──────────────────────────────────────┘
 <#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
-        k9::assert_equal!(visible, expected.to_string());
+        wince::assert_eq!(visible, expected.to_string());
     }
 
     #[test]
@@ -4049,13 +4049,13 @@ mod tests {
         // Two comment headers; next-comment lands on the first then the second,
         // and prev-comment walks back, staying put once past the first.
         let (cursor, _, _) = drive(commented_document(), 12, &[Action::NextComment]);
-        k9::assert_equal!(cursor, 3);
+        wince::assert_eq!(cursor, 3);
         let (cursor, _, _) = drive(
             commented_document(),
             12,
             &[Action::NextComment, Action::NextComment],
         );
-        k9::assert_equal!(cursor, 6);
+        wince::assert_eq!(cursor, 6);
         let (cursor, _, _) = drive(
             commented_document(),
             12,
@@ -4066,7 +4066,7 @@ mod tests {
                 Action::PrevComment,
             ],
         );
-        k9::assert_equal!(cursor, 3);
+        wince::assert_eq!(cursor, 3);
     }
 
     #[test]
@@ -4082,8 +4082,8 @@ mod tests {
                 Action::ToggleComment,
             ],
         );
-        k9::assert_equal!(cursor, 6);
-        k9::assert_equal!(top, 0);
+        wince::assert_eq!(cursor, 6);
+        wince::assert_eq!(top, 0);
         let expected = "\
 <#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
@@ -4095,7 +4095,7 @@ mod tests {
 <#767b84|-|->└──────────────────────────────────────┘
 <#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
-        k9::assert_equal!(visible, expected.to_string());
+        wince::assert_eq!(visible, expected.to_string());
 
         let (cursor, _, visible) = drive(
             commented_document(),
@@ -4107,7 +4107,7 @@ mod tests {
                 Action::ToggleComment,
             ],
         );
-        k9::assert_equal!(cursor, 6);
+        wince::assert_eq!(cursor, 6);
         let expected = "\
 <#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
@@ -4120,7 +4120,7 @@ mod tests {
 <#767b84|-|->└──────────────────────────────────────┘
 <#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
-        k9::assert_equal!(visible, expected.to_string());
+        wince::assert_eq!(visible, expected.to_string());
     }
 
     #[test]
@@ -4137,8 +4137,8 @@ mod tests {
                 Action::HideComments,
             ],
         );
-        k9::assert_equal!(cursor, 4);
-        k9::assert_equal!(top, 0);
+        wince::assert_eq!(cursor, 4);
+        wince::assert_eq!(top, 0);
         let expected = "\
 <#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
@@ -4146,7 +4146,7 @@ mod tests {
 <#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
 <#cfd0d4|#4f5b66|->        2 + <#ddccda|#4f5b66|->let<#cdd1d8|#4f5b66|-> y <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#ebcdc3|#4f5b66|->2<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  
 ";
-        k9::assert_equal!(visible, expected.to_string());
+        wince::assert_eq!(visible, expected.to_string());
 
         // Showing them again brings every box back; the cursor stays on the code.
         let (cursor, _, visible) = drive(
@@ -4159,7 +4159,7 @@ mod tests {
                 Action::HideComments,
             ],
         );
-        k9::assert_equal!(cursor, 9);
+        wince::assert_eq!(cursor, 9);
         let restored = "\
 <#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
@@ -4172,7 +4172,7 @@ mod tests {
 <#767b84|-|->└──────────────────────────────────────┘
 <#cfd0d4|#4f5b66|->        2 + <#ddccda|#4f5b66|->let<#cdd1d8|#4f5b66|-> y <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#ebcdc3|#4f5b66|->2<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  
 ";
-        k9::assert_equal!(visible, restored.to_string());
+        wince::assert_eq!(visible, restored.to_string());
     }
 
     #[test]
@@ -4188,8 +4188,8 @@ mod tests {
                 Action::ResolveComment,
             ],
         );
-        k9::assert_equal!(cursor, 6);
-        k9::assert_equal!(top, 0);
+        wince::assert_eq!(cursor, 6);
+        wince::assert_eq!(top, 0);
         let expected = "\
 <#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
@@ -4202,7 +4202,7 @@ mod tests {
 <#a3be8c|-|->└──────────────────────────────────────┘
 <#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
-        k9::assert_equal!(visible, expected.to_string());
+        wince::assert_eq!(visible, expected.to_string());
     }
 
     #[test]
@@ -4219,8 +4219,8 @@ mod tests {
                 Action::DeleteComment,
             ],
         );
-        k9::assert_equal!(cursor, 6);
-        k9::assert_equal!(top, 0);
+        wince::assert_eq!(cursor, 6);
+        wince::assert_eq!(top, 0);
         let expected = "\
 <#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
@@ -4232,7 +4232,7 @@ mod tests {
 <#a3be8c|-|->└──────────────────────────────────────┘
 <#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
-        k9::assert_equal!(visible, expected.to_string());
+        wince::assert_eq!(visible, expected.to_string());
     }
 
     #[test]
@@ -4250,8 +4250,8 @@ mod tests {
                 Action::DeleteComment,
             ],
         );
-        k9::assert_equal!(cursor, 6);
-        k9::assert_equal!(top, 0);
+        wince::assert_eq!(cursor, 6);
+        wince::assert_eq!(top, 0);
         let expected = "\
 <#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
@@ -4264,7 +4264,7 @@ mod tests {
 <#767b84|-|->└──────────────────────────────────────┘
 <#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
-        k9::assert_equal!(visible, expected.to_string());
+        wince::assert_eq!(visible, expected.to_string());
     }
 
     #[test]
@@ -4272,19 +4272,19 @@ mod tests {
         // Without a review the app is a read-only viewport, so resolve and
         // delete are handed back to the host untouched.
         let mut app = App::new(commented_document(), 12, &Theme::dark());
-        k9::assert_equal!(
+        wince::assert_eq!(
             app.update(Action::ResolveComment),
             Update::Passed(Action::ResolveComment)
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             app.update(Action::DeleteComment),
             Update::Passed(Action::DeleteComment)
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             app.update(Action::AddComment),
             Update::Passed(Action::AddComment)
         );
-        k9::assert_equal!(
+        wince::assert_eq!(
             app.update(Action::EditComment),
             Update::Passed(Action::EditComment)
         );
@@ -4299,10 +4299,10 @@ mod tests {
             app.update(Action::LineDown);
         }
         app.update(Action::AddComment);
-        k9::assert_equal!(app.composing(), true);
+        wince::assert_eq!(app.composing(), true);
         typed(&mut app, "why 2?");
         app.compose_key(submit());
-        k9::assert_equal!(app.composing(), false);
+        wince::assert_eq!(app.composing(), false);
         let expected = "\
 <#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
@@ -4313,7 +4313,7 @@ mod tests {
 <#a3be8c|-|->└──────────────────────────────────────┘
 <#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
-        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
 
     #[test]
@@ -4337,7 +4337,7 @@ mod tests {
 --below--
 <#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
-        k9::assert_equal!(dump_compose(&view), expected.to_string());
+        wince::assert_eq!(dump_compose(&view), expected.to_string());
     }
 
     #[test]
@@ -4354,11 +4354,11 @@ mod tests {
         let view = app.compose_view(TEST_WIDTH).expect("composing");
         // The cursor rests at the end of the last wrapped row (column 8 of
         // "lazy dog" on row 1).
-        k9::assert_equal!(
+        wince::assert_eq!(
             dump(&view.editor_rows),
             "<#c0c5ce|-|->the quick brown fox jumps over the \n<#c0c5ce|-|->lazy dog\n".to_string()
         );
-        k9::assert_equal!(view.editor_cursor, Some((8, 1)));
+        wince::assert_eq!(view.editor_cursor, Some((8, 1)));
     }
 
     #[test]
@@ -4375,11 +4375,11 @@ mod tests {
         typed(&mut app, "the quick brown fox jumps over the lazy dog");
         app.compose_key(KeyPress::new(Key::Up));
         let view = app.compose_view(TEST_WIDTH).expect("composing");
-        k9::assert_equal!(
+        wince::assert_eq!(
             dump(&view.editor_rows),
             "<#c0c5ce|-|->the quick brown fox jumps over the \n<#c0c5ce|-|->lazy dog\n".to_string()
         );
-        k9::assert_equal!(view.editor_cursor, Some((8, 0)));
+        wince::assert_eq!(view.editor_cursor, Some((8, 0)));
     }
 
     #[test]
@@ -4401,13 +4401,13 @@ mod tests {
             }
         }
         let view = app.compose_view(TEST_WIDTH).expect("composing");
-        k9::assert_equal!(
+        wince::assert_eq!(
             dump(&view.editor_rows),
             "<#c0c5ce|-|->line 5\n<#c0c5ce|-|->line 6\n<#c0c5ce|-|->line 7\n<#c0c5ce|-|->line 8\n"
                 .to_string()
         );
-        k9::assert_equal!(view.editor_cursor, Some((6, 3)));
-        k9::assert_equal!(
+        wince::assert_eq!(view.editor_cursor, Some((6, 3)));
+        wince::assert_eq!(
             view.editor_scroll.map(|s| (s.offset, s.total)),
             Some((4, 8))
         );
@@ -4463,14 +4463,14 @@ mod tests {
         // cells to read against.
         let mut app = composing_on_added_line(20, "why 2?");
         app.compose_key(detach());
-        k9::assert_equal!((float_inset(&app), float_top(&app)), (Some(2), Some(4)));
+        wince::assert_eq!((float_inset(&app), float_top(&app)), (Some(2), Some(4)));
         // A body that fits the wide interior on one row but overflows the
         // narrower inset interior keeps the wide box, so the inset never grows
         // the box: TEST_WIDTH is 40, the wide interior 38 and the inset one 34,
         // and 36 characters wrap to one wide row but two inset rows.
         let mut app = composing_on_added_line(20, &"x".repeat(36));
         app.compose_key(detach());
-        k9::assert_equal!((float_inset(&app), float_top(&app)), (Some(0), Some(4)));
+        wince::assert_eq!((float_inset(&app), float_top(&app)), (Some(0), Some(4)));
     }
 
     #[test]
@@ -4480,10 +4480,10 @@ mod tests {
         // cursor leaving it to sit on that line.
         let mut app = composing_on_added_line(8, "why 2?");
         app.compose_key(detach());
-        k9::assert_equal!(app.composing(), true);
-        k9::assert_equal!(app.compose_view(TEST_WIDTH).is_none(), true);
-        k9::assert_equal!(float_top(&app), Some(4));
-        k9::assert_equal!(float_has_cursor(&app), false);
+        wince::assert_eq!(app.composing(), true);
+        wince::assert_eq!(app.compose_view(TEST_WIDTH).is_none(), true);
+        wince::assert_eq!(float_top(&app), Some(4));
+        wince::assert_eq!(float_has_cursor(&app), false);
         let expected = "\
 <#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
@@ -4494,7 +4494,7 @@ mod tests {
 --float end--
 
 ";
-        k9::assert_equal!(dump_detached(&app, TEST_WIDTH, 8), expected.to_string());
+        wince::assert_eq!(dump_detached(&app, TEST_WIDTH, 8), expected.to_string());
     }
 
     #[test]
@@ -4511,12 +4511,12 @@ mod tests {
         typed(&mut app, "why?");
         app.compose_key(detach());
         // While the anchor is on screen the box floats over it, not at an edge.
-        k9::assert_equal!(float_top(&app), Some(4));
+        wince::assert_eq!(float_top(&app), Some(4));
         for _ in 0..20 {
             app.compose_key(ch('j'));
         }
-        k9::assert_equal!(float_top(&app), Some(0));
-        k9::assert_equal!(float_has_cursor(&app), false);
+        wince::assert_eq!(float_top(&app), Some(0));
+        wince::assert_eq!(float_has_cursor(&app), false);
     }
 
     #[test]
@@ -4535,8 +4535,8 @@ mod tests {
         for _ in 0..20 {
             app.compose_key(ch('k'));
         }
-        k9::assert_equal!(float_top(&app), Some(7));
-        k9::assert_equal!(float_has_cursor(&app), false);
+        wince::assert_eq!(float_top(&app), Some(7));
+        wince::assert_eq!(float_has_cursor(&app), false);
     }
 
     #[test]
@@ -4560,14 +4560,14 @@ mod tests {
         }
         app.compose_key(detach());
         // The cursor sits on the anchor, the box's top border row.
-        k9::assert_equal!(float_cursor_offset(&app), Some(0));
+        wince::assert_eq!(float_cursor_offset(&app), Some(0));
         let offsets: Vec<Option<u16>> = (0..6)
             .map(|_| {
                 app.compose_key(ch('j'));
                 float_cursor_offset(&app)
             })
             .collect();
-        k9::assert_equal!(
+        wince::assert_eq!(
             offsets,
             vec![Some(1), Some(2), Some(3), Some(4), Some(5), None]
         );
@@ -4581,9 +4581,9 @@ mod tests {
         let mut app = composing_on_added_line(8, "why 2?");
         let anchor = app.cursor();
         app.compose_key(KeyPress::new(Key::Up));
-        k9::assert_equal!(float_top(&app), Some(4));
-        k9::assert_equal!(float_has_cursor(&app), false);
-        k9::assert_equal!(app.cursor(), anchor - 1);
+        wince::assert_eq!(float_top(&app), Some(4));
+        wince::assert_eq!(float_has_cursor(&app), false);
+        wince::assert_eq!(app.cursor(), anchor - 1);
     }
 
     #[test]
@@ -4602,8 +4602,8 @@ mod tests {
         typed(&mut app, "why 2?");
         let anchor = app.cursor();
         app.compose_key(KeyPress::new(Key::Down));
-        k9::assert_equal!(float_has_cursor(&app), false);
-        k9::assert_equal!(app.cursor(), anchor + 3);
+        wince::assert_eq!(float_has_cursor(&app), false);
+        wince::assert_eq!(app.cursor(), anchor + 3);
     }
 
     #[test]
@@ -4622,9 +4622,9 @@ mod tests {
         typed(&mut app, "why 2?");
         let before = (app.top, app.cursor());
         app.compose_key(KeyPress::new(Key::Down));
-        k9::assert_equal!((app.top, app.cursor()), before);
-        k9::assert_equal!(app.compose_float(TEST_WIDTH).is_none(), true);
-        k9::assert_equal!(app.compose_view(TEST_WIDTH).is_some(), true);
+        wince::assert_eq!((app.top, app.cursor()), before);
+        wince::assert_eq!(app.compose_float(TEST_WIDTH).is_none(), true);
+        wince::assert_eq!(app.compose_view(TEST_WIDTH).is_some(), true);
     }
 
     #[test]
@@ -4639,8 +4639,8 @@ mod tests {
         app.update(Action::AddComment);
         typed(&mut app, "why 2?");
         app.compose_key(KeyPress::new(Key::Up));
-        k9::assert_equal!(app.compose_float(TEST_WIDTH).is_none(), true);
-        k9::assert_equal!(app.compose_view(TEST_WIDTH).is_some(), true);
+        wince::assert_eq!(app.compose_float(TEST_WIDTH).is_none(), true);
+        wince::assert_eq!(app.compose_view(TEST_WIDTH).is_some(), true);
     }
 
     #[test]
@@ -4652,11 +4652,11 @@ mod tests {
         let start = app.cursor();
         // The anchor is the last diff row, so move up into the diff, then back.
         app.compose_key(ch('k'));
-        k9::assert_equal!(app.cursor(), start - 1);
-        k9::assert_equal!(float_has_cursor(&app), false);
+        wince::assert_eq!(app.cursor(), start - 1);
+        wince::assert_eq!(float_has_cursor(&app), false);
         app.compose_key(ch('j'));
-        k9::assert_equal!(app.cursor(), start);
-        k9::assert_equal!(float_has_cursor(&app), false);
+        wince::assert_eq!(app.cursor(), start);
+        wince::assert_eq!(float_has_cursor(&app), false);
     }
 
     #[test]
@@ -4668,10 +4668,10 @@ mod tests {
         app.compose_key(ch('j'));
         let looked_at = app.cursor();
         app.compose_key(ch('e'));
-        k9::assert_equal!(float_has_cursor(&app), true);
-        k9::assert_equal!(app.cursor(), looked_at);
+        wince::assert_eq!(float_has_cursor(&app), true);
+        wince::assert_eq!(app.cursor(), looked_at);
         // The editor still floats; it does not snap back inline.
-        k9::assert_equal!(app.compose_view(TEST_WIDTH).is_none(), true);
+        wince::assert_eq!(app.compose_view(TEST_WIDTH).is_none(), true);
     }
 
     #[test]
@@ -4682,9 +4682,9 @@ mod tests {
         app.compose_key(detach());
         // '2' is unbound in the review keymap, so it re-enters and inserts.
         app.compose_key(ch('2'));
-        k9::assert_equal!(float_has_cursor(&app), true);
+        wince::assert_eq!(float_has_cursor(&app), true);
         app.compose_key(submit());
-        k9::assert_equal!(app.composing(), false);
+        wince::assert_eq!(app.composing(), false);
         let expected = "\
 <#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
@@ -4695,7 +4695,7 @@ mod tests {
 <#a3be8c|-|->└──────────────────────────────────────┘
 <#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
-        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
 
     #[test]
@@ -4705,8 +4705,8 @@ mod tests {
         let mut app = composing_on_added_line(8, "why 2?");
         app.compose_key(detach());
         app.compose_key(submit());
-        k9::assert_equal!(app.composing(), false);
-        k9::assert_equal!(app.compose_float(TEST_WIDTH).is_none(), true);
+        wince::assert_eq!(app.composing(), false);
+        wince::assert_eq!(app.compose_float(TEST_WIDTH).is_none(), true);
     }
 
     #[test]
@@ -4714,10 +4714,10 @@ mod tests {
         // Escape with nothing typed leaves editing immediately with no draft.
         let mut app = App::reviewing(plain_review(), 12, &Theme::dark());
         app.update(Action::AddComment);
-        k9::assert_equal!(app.composing(), true);
+        wince::assert_eq!(app.composing(), true);
         app.compose_key(KeyPress::new(Key::Escape));
-        k9::assert_equal!(app.composing(), false);
-        k9::assert_equal!(app.take_drafts(), Vec::new());
+        wince::assert_eq!(app.composing(), false);
+        wince::assert_eq!(app.take_drafts(), Vec::new());
     }
 
     #[test]
@@ -4728,13 +4728,13 @@ mod tests {
         app.update(Action::AddComment);
         typed(&mut app, "hmm");
         app.compose_key(KeyPress::new(Key::Escape));
-        k9::assert_equal!(app.composing(), true);
+        wince::assert_eq!(app.composing(), true);
         app.compose_key(ch('n'));
-        k9::assert_equal!(app.composing(), true);
+        wince::assert_eq!(app.composing(), true);
         app.compose_key(KeyPress::new(Key::Escape));
         app.compose_key(ch('y'));
-        k9::assert_equal!(app.composing(), false);
-        k9::assert_equal!(app.take_drafts(), Vec::new());
+        wince::assert_eq!(app.composing(), false);
+        wince::assert_eq!(app.take_drafts(), Vec::new());
     }
 
     #[test]
@@ -4743,8 +4743,8 @@ mod tests {
         let mut app = App::reviewing(plain_review(), 12, &Theme::dark());
         app.update(Action::AddComment);
         app.compose_key(submit());
-        k9::assert_equal!(app.composing(), false);
-        k9::assert_equal!(app.take_drafts(), Vec::new());
+        wince::assert_eq!(app.composing(), false);
+        wince::assert_eq!(app.take_drafts(), Vec::new());
     }
 
     #[test]
@@ -4765,14 +4765,14 @@ mod tests {
             app.update(Action::LineDown);
         }
         app.update(Action::AddComment);
-        k9::assert_equal!(app.editor_hint(), "ctrl-g submit  esc cancel".to_string());
+        wince::assert_eq!(app.editor_hint(), "ctrl-g submit  esc cancel".to_string());
         typed(&mut app, "why 2?");
         // The former submit key is now ordinary input, so the editor stays open.
         app.compose_key(submit());
-        k9::assert_equal!(app.composing(), true);
+        wince::assert_eq!(app.composing(), true);
         // The configured key confirms the comment as a draft above its line.
         app.compose_key(KeyPress::with_modifiers(Key::Char('g'), true, false, false));
-        k9::assert_equal!(app.composing(), false);
+        wince::assert_eq!(app.composing(), false);
         let expected = "\
 <#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
@@ -4783,7 +4783,7 @@ mod tests {
 <#a3be8c|-|->└──────────────────────────────────────┘
 <#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
-        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
 
     #[test]
@@ -4793,14 +4793,14 @@ mod tests {
         // the diff (the key returns it to the editor) and `navigate` once it is
         // back in the editor (the key hands it to the diff).
         let mut app = composing_on_added_line(8, "why 2?");
-        k9::assert_equal!(app.editor_hint(), "ctrl-d submit  esc cancel".to_string());
+        wince::assert_eq!(app.editor_hint(), "ctrl-d submit  esc cancel".to_string());
         app.compose_key(detach());
-        k9::assert_equal!(
+        wince::assert_eq!(
             app.editor_hint(),
             "ctrl-d submit  [ctrl-o edit]  esc cancel".to_string()
         );
         app.compose_key(ch('e'));
-        k9::assert_equal!(
+        wince::assert_eq!(
             app.editor_hint(),
             "ctrl-d submit  [ctrl-o navigate]  esc cancel".to_string()
         );
@@ -4817,11 +4817,11 @@ mod tests {
         let view = app.compose_view(TEST_WIDTH).expect("composing");
         // The editor opens seeded with the current body and the cursor resting
         // past its end, on column 8 of the second row.
-        k9::assert_equal!(
+        wince::assert_eq!(
             dump(&view.editor_rows),
             "<#c0c5ce|-|->why 2?\n<#c0c5ce|-|->say more\n".to_string()
         );
-        k9::assert_equal!(view.editor_cursor, Some((8, 1)));
+        wince::assert_eq!(view.editor_cursor, Some((8, 1)));
         drop(view);
         // Replace the body: clear the two seeded lines, then type a new one.
         for _ in 0..20 {
@@ -4829,7 +4829,7 @@ mod tests {
         }
         typed(&mut app, "use a constant");
         app.compose_key(submit());
-        k9::assert_equal!(app.composing(), false);
+        wince::assert_eq!(app.composing(), false);
         let expected = "\
 <#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
@@ -4842,7 +4842,7 @@ mod tests {
 <#a3be8c|-|->└──────────────────────────────────────┘
 <#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
-        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
 
     #[test]
@@ -4868,7 +4868,7 @@ mod tests {
 --below--
 <#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
-        k9::assert_equal!(dump_compose(&view), expected.to_string());
+        wince::assert_eq!(dump_compose(&view), expected.to_string());
     }
 
     #[test]
@@ -4898,7 +4898,7 @@ mod tests {
 <#767b84|-|->└──────────────────────────────────────┘
 <#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;
 ";
-        k9::assert_equal!(dump_compose(&view), expected.to_string());
+        wince::assert_eq!(dump_compose(&view), expected.to_string());
     }
 
     /// The status-line text an app currently shows at `width`.
@@ -4942,8 +4942,8 @@ mod tests {
             "captured v1; rebased 0 comments: 0 exact, 0 shifted, 0 outdated".to_string(),
         );
 
-        k9::assert_equal!(app.cursor(), 4);
-        k9::assert_equal!(app.top(), 0);
+        wince::assert_eq!(app.cursor(), 4);
+        wince::assert_eq!(app.top(), 0);
         let expected = "\
 <#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
@@ -4952,9 +4952,9 @@ mod tests {
 <#cfd0d4|#4f5b66|->        2 + <#ddccda|#4f5b66|->let<#cdd1d8|#4f5b66|-> y <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#ebcdc3|#4f5b66|->2<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  
 <#9ea1a9|#414a4a|->        3 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> z <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->3<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
-        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
         // The status line truncates the note to the screen width.
-        k9::assert_equal!(
+        wince::assert_eq!(
             status_text(&app),
             "captured v1; rebased 0 comments: 0 exact".to_string()
         );
@@ -4998,7 +4998,7 @@ mod tests {
             )],
         };
         app.refresh(new, Vec::new(), 1, |version| {
-            k9::assert_equal!(version, 0);
+            wince::assert_eq!(version, 0);
             Ok(old.clone())
         })
         .unwrap();
@@ -5017,7 +5017,7 @@ mod tests {
 <#a3be8c|-|->└──────────────────────────────────────┘
 <#9ea1a9|#414a4a|->        3 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
-        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
 
     #[test]
@@ -5040,15 +5040,15 @@ mod tests {
         app.refresh(new, Vec::new(), 1, |_| unreachable!("no drafts to rebase"))
             .unwrap();
 
-        k9::assert_equal!(app.cursor(), 3);
-        k9::assert_equal!(app.top(), 0);
+        wince::assert_eq!(app.cursor(), 3);
+        wince::assert_eq!(app.top(), 0);
         let expected = "\
 <#ebcb8b|#3a3f4a|b>Review<#767b84|#3a3f4a|-> [press c here to draft the review comment]
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,1 +1,1 @@
 <#b8bac0|#4f5b66|->   1    1   <#ddccda|#4f5b66|->let<#cdd1d8|#4f5b66|-> x <#cdd1d8|#4f5b66|->=<#cdd1d8|#4f5b66|-> <#eac9bf|#4f5b66|->1<#cdd1d8|#4f5b66|->;<-|#4f5b66|->                  
 ";
-        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
 
     /// Open a search in `direction` and type `pattern` into the prompt.
@@ -5067,7 +5067,7 @@ mod tests {
         // keys.
         let mut app = App::new(document(), 9, &Theme::dark());
         search_for(&mut app, Action::SearchForward, "hello");
-        k9::assert_equal!(
+        wince::assert_eq!(
             status_text(&app),
             "/hello  1/1 matches                 100%".to_string()
         );
@@ -5080,10 +5080,10 @@ mod tests {
 <#96b5b4|-|->@@ -1,1 +1,1 @@
 <#cfd0d4|#4f5b66|->        1 + <#dcdfe4|#686255|->hello<-|#4f5b66|->                       
 ";
-        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
         app.search_key(KeyPress::new(Key::Enter));
-        k9::assert_equal!(app.searching(), false);
-        k9::assert_equal!(
+        wince::assert_eq!(app.searching(), false);
+        wince::assert_eq!(
             status_text(&app),
             "/hello  n next  N prev  1/1 matches 100%".to_string()
         );
@@ -5105,7 +5105,7 @@ mod tests {
 <#96b5b4|-|->@@ -1,1 +1,1 @@
 <#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->hello<-|#414a4a|->                       
 ";
-        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
 
     #[test]
@@ -5114,7 +5114,7 @@ mod tests {
         // the cursor stays where the search opened.
         let mut app = App::new(document(), 9, &Theme::dark());
         search_for(&mut app, Action::SearchForward, "absent");
-        k9::assert_equal!(
+        wince::assert_eq!(
             status_text(&app),
             "/absent  no matches                   0%".to_string()
         );
@@ -5127,7 +5127,7 @@ mod tests {
         // and highlights every occurrence in view while the tally counts them.
         let mut app = App::new(document(), 9, &Theme::dark());
         search_for(&mut app, Action::SearchForward, "l.t");
-        k9::assert_equal!(
+        wince::assert_eq!(
             status_text(&app),
             "/l.t  1/2 matches                    33%".to_string()
         );
@@ -5140,7 +5140,7 @@ mod tests {
 <#96b5b4|-|->@@ -1,1 +1,1 @@
 <#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->hello<-|#414a4a|->                       
 ";
-        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
 
     #[test]
@@ -5149,7 +5149,7 @@ mod tests {
         // so and the cursor stays where the search opened rather than jumping.
         let mut app = App::new(document(), 9, &Theme::dark());
         search_for(&mut app, Action::SearchForward, "(let");
-        k9::assert_equal!(
+        wince::assert_eq!(
             status_text(&app),
             "/(let  bad pattern                    0%".to_string()
         );
@@ -5174,7 +5174,7 @@ mod tests {
 <#7d828c|-|->  12   12   <#c0c5ce|-|->ctx11
 <#767b84|#3a3f4a|->            [5 unchanged lines]  ctx16<-|#3a3f4a|->  
 ";
-        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
 
     #[test]
@@ -5195,7 +5195,7 @@ mod tests {
 <#7d828c|-|->  12   12   <#c0c5ce|-|->ctx11
 <#767b84|#3a3f4a|->            [5 unchanged lines]  ctx16<-|#3a3f4a|->  
 ";
-        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
 
     #[test]
@@ -5218,7 +5218,7 @@ mod tests {
 <#767b84|-|->└──────────────────────────────────────┘
 <#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  
 ";
-        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
 
     #[test]
@@ -5230,7 +5230,7 @@ mod tests {
         }
         search_for(&mut app, Action::SearchForward, "hello");
         app.search_key(KeyPress::new(Key::Escape));
-        k9::assert_equal!(app.searching(), false);
+        wince::assert_eq!(app.searching(), false);
         let expected = "\
 <#c0c5ce|-|b>modified  src/lib.rs
 <#96b5b4|-|->@@ -1,2 +1,2 @@
@@ -5240,7 +5240,7 @@ mod tests {
 <#96b5b4|-|->@@ -1,1 +1,1 @@
 <#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->hello<-|#414a4a|->                       
 ";
-        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
 
     #[test]
@@ -5254,7 +5254,7 @@ mod tests {
         search_for(&mut app, Action::SearchForward, "hello");
         app.search_key(KeyPress::new(Key::Enter));
         app.update(Action::SearchNext);
-        k9::assert_equal!(
+        wince::assert_eq!(
             status_text_at(&app, 60),
             "/hello  n next  N prev  1/1 matches  wrapped to top     100%".to_string()
         );
@@ -5267,7 +5267,7 @@ mod tests {
 <#96b5b4|-|->@@ -1,1 +1,1 @@
 <#cfd0d4|#4f5b66|->        1 + <#dcdfe4|#686255|->hello<-|#4f5b66|->                       
 ";
-        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
 
     #[test]
@@ -5279,7 +5279,7 @@ mod tests {
         search_for(&mut app, Action::SearchForward, "let");
         app.search_key(KeyPress::new(Key::Enter));
         app.update(Action::SearchNext);
-        k9::assert_equal!(
+        wince::assert_eq!(
             status_text(&app),
             "/let  n next  N prev  2/2 matches    50%".to_string()
         );
@@ -5292,7 +5292,7 @@ mod tests {
 <#96b5b4|-|->@@ -1,1 +1,1 @@
 <#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->hello<-|#414a4a|->                       
 ";
-        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
+        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), expected.to_string());
     }
 
     /// The plain text a reviewer sees on `app`'s screen at `width`: each visible
@@ -5416,7 +5416,7 @@ mod tests {
         app.set_width(80);
         app.show_comparison(comparison_diff(), Some((1, from_v1_before_origin())));
 
-        k9::assert_equal!(app.comparing_from(), Some(1));
+        wince::assert_eq!(app.comparing_from(), Some(1));
         let expected = "\
 Review [press c here to draft the review comment]
 modified  f.txt
@@ -5430,7 +5430,7 @@ modified  f.txt
 └──────────────────────────────────────────────────────────────────────────────┘
         4 + delta
 ";
-        k9::assert_equal!(plain(&app, 80), expected.to_string());
+        wince::assert_eq!(plain(&app, 80), expected.to_string());
     }
 
     #[test]
@@ -5463,7 +5463,7 @@ modified  f.txt
             Some(RecordBody::Comment(comment)) => (comment.version, comment.target, comment.body),
             other => panic!("expected one drafted comment, got {other:?}"),
         };
-        k9::assert_equal!(
+        wince::assert_eq!(
             anchored,
             (
                 1,
@@ -5494,8 +5494,8 @@ modified  f.txt
 
         app.reload_comments(comments);
 
-        k9::assert_equal!(app.cursor(), before_cursor);
-        k9::assert_equal!(dump(&app.visible(TEST_WIDTH)), before);
+        wince::assert_eq!(app.cursor(), before_cursor);
+        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), before);
     }
 
     #[test]
@@ -5558,7 +5558,7 @@ modified  notes.txt
         // single leading fold over the whole unchanged run.
         let mut app = App::reviewing(review, 24, &Theme::dark());
         app.set_width(TEST_WIDTH);
-        k9::assert_equal!(plain(&app, TEST_WIDTH), BEFORE.to_string());
+        wince::assert_eq!(plain(&app, TEST_WIDTH), BEFORE.to_string());
 
         // A comment far enough into the run that its kept context does not reach
         // the file top splits that one fold into a fold above and below it.
@@ -5572,6 +5572,6 @@ modified  notes.txt
         )];
         app.reload_comments(comments);
 
-        k9::assert_equal!(plain(&app, TEST_WIDTH), AFTER.to_string());
+        wince::assert_eq!(plain(&app, TEST_WIDTH), AFTER.to_string());
     }
 }

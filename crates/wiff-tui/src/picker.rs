@@ -383,7 +383,7 @@ mod tests {
 <-|#555555|->                                          
 <#444444|#555555|->  up/down move   enter select   esc cancel
 ";
-        k9::assert_equal!(dump(&picker.lines(picker.width())), expected.to_string());
+        wince::assert_eq!(dump(&picker.lines(picker.width())), expected.to_string());
     }
 
     #[test]
@@ -395,7 +395,7 @@ mod tests {
         for _ in 0..3 {
             picker.select_next();
         }
-        k9::assert_equal!(picker.selected(), 3);
+        wince::assert_eq!(picker.selected(), 3);
         let expected = "\
 <#333333|#555555|->  item 1                                  
 <#333333|#555555|->  item 2                                  
@@ -403,7 +403,7 @@ mod tests {
 <-|#555555|->                                          
 <#444444|#555555|->  up/down move   enter select   esc cancel
 ";
-        k9::assert_equal!(dump(&picker.lines(picker.width())), expected.to_string());
+        wince::assert_eq!(dump(&picker.lines(picker.width())), expected.to_string());
     }
 
     #[test]
@@ -414,18 +414,18 @@ mod tests {
         for _ in 0..10 {
             picker.select_next();
         }
-        k9::assert_equal!(picker.selected(), 3);
+        wince::assert_eq!(picker.selected(), 3);
         picker.to_top();
-        k9::assert_equal!(picker.selected(), 0);
+        wince::assert_eq!(picker.selected(), 0);
         picker.to_bottom();
-        k9::assert_equal!(picker.selected(), 3);
+        wince::assert_eq!(picker.selected(), 3);
         let expected = "\
 <#333333|#555555|->  item 2                                  
 <#333333|#222222|->> item 3                                  
 <-|#555555|->                                          
 <#444444|#555555|->  up/down move   enter select   esc cancel
 ";
-        k9::assert_equal!(dump(&picker.lines(picker.width())), expected.to_string());
+        wince::assert_eq!(dump(&picker.lines(picker.width())), expected.to_string());
     }
 
     #[test]
@@ -443,7 +443,7 @@ mod tests {
 <-|#555555|->             
 <#444444|#555555|->  up/down mov
 ";
-        k9::assert_equal!(dump(&picker.lines(13)), expected.to_string());
+        wince::assert_eq!(dump(&picker.lines(13)), expected.to_string());
     }
 
     #[test]
@@ -454,6 +454,6 @@ mod tests {
         picker.select_next();
         let mut host = Vec::new();
         picker.activate_selected(&mut host);
-        k9::assert_equal!(host, vec![2]);
+        wince::assert_eq!(host, vec![2]);
     }
 }

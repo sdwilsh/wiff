@@ -207,8 +207,8 @@ fn folds_versions_and_comment_chains() {
             },
         ],
     };
-    k9::assert_equal!(state, expected);
-    k9::assert_equal!(state.latest_version(), Some(&version(1, "src/lib.rs")));
+    wince::assert_eq!(state, expected);
+    wince::assert_eq!(state.latest_version(), Some(&version(1, "src/lib.rs")));
 }
 
 #[test]
@@ -225,7 +225,7 @@ fn a_mutation_referencing_an_unknown_comment_is_a_corrupt_log() {
     ];
 
     let error = fold(&records).unwrap_err();
-    k9::assert_equal!(matches!(error, Error::InconsistentLog(_)), true);
+    wince::assert_eq!(matches!(error, Error::InconsistentLog(_)), true);
     wince::snapshot_display!(
         error,
         "inconsistent session log: record at seq 1 references unknown comment 00000000000000000000000000"
@@ -240,7 +240,7 @@ fn an_unrecognized_record_type_is_a_corrupt_log() {
     ];
 
     let error = fold(&records).unwrap_err();
-    k9::assert_equal!(matches!(error, Error::InconsistentLog(_)), true);
+    wince::assert_eq!(matches!(error, Error::InconsistentLog(_)), true);
     wince::snapshot_display!(
         error,
         "inconsistent session log: unrecognized record type at seq 1"
@@ -254,7 +254,7 @@ fn a_newer_format_version_is_refused() {
     let records = vec![rec(0, RecordBody::Session(newer))];
 
     let error = fold(&records).unwrap_err();
-    k9::assert_equal!(
+    wince::assert_eq!(
         matches!(error, Error::UnsupportedVersion { found, supported }
             if found == FORMAT_VERSION + 1 && supported == FORMAT_VERSION),
         true
@@ -268,6 +268,6 @@ fn a_newer_format_version_is_refused() {
 #[test]
 fn a_log_without_a_header_cannot_be_folded() {
     let error = fold(&[]).unwrap_err();
-    k9::assert_equal!(matches!(error, Error::MissingHeader), true);
+    wince::assert_eq!(matches!(error, Error::MissingHeader), true);
     wince::snapshot_display!(error, "session has no header record");
 }

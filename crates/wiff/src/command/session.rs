@@ -200,7 +200,7 @@ mod tests {
 * 00000000000000000000000001  git_worktree  3 comments, 1 open
   00000000000000000000000002  stdin  0 comments, 0 open
 ";
-        k9::assert_equal!(out, expected.to_string());
+        wince::assert_eq!(out, expected.to_string());
     }
 
     #[test]
@@ -234,12 +234,12 @@ demo
 other
     00000000000000000000000002  stdin  2 comments, 2 open
 ";
-        k9::assert_equal!(out, expected.to_string());
+        wince::assert_eq!(out, expected.to_string());
     }
 
     #[test]
     fn reports_when_there_are_no_sessions() {
         let out = render_list(&[], true);
-        k9::assert_equal!(out, "No sessions.\n".to_string());
+        wince::assert_eq!(out, "No sessions.\n".to_string());
     }
 }
