@@ -10,8 +10,8 @@ use wiff_core::record::{
 use wiff_core::review::{CommentState, fold};
 use wiff_core::session::read_records;
 use wiff_core::{
-    CapturedDiff, DraftComment, Error, ProjectIdentity, SessionLog, SidebandHash, create_session,
-    delete_comment, set_resolved,
+    CapturedDiff, DraftComment, Error, LockWait, ProjectIdentity, SessionLog, SidebandHash,
+    create_session, delete_comment, set_resolved,
 };
 use wiff_diff::{FileStatus, LineNo, Side};
 
@@ -76,7 +76,7 @@ fn adding_comments_captures_anchors_and_folds_to_current_state() {
         target: lines_target("src/main.rs", 2, 2),
         body: "why 3?".to_string(),
     }
-    .append(&mut log)
+    .append(&mut log, LockWait::Block)
     .unwrap();
     let whole = DraftComment {
         author: Author {
@@ -88,14 +88,14 @@ fn adding_comments_captures_anchors_and_folds_to_current_state() {
         },
         body: "needs a newline".to_string(),
     }
-    .append(&mut log)
+    .append(&mut log, LockWait::Block)
     .unwrap();
     let overall = DraftComment {
         author: human("wez"),
         target: CommentTarget::Review,
         body: "looks good".to_string(),
     }
-    .append(&mut log)
+    .append(&mut log, LockWait::Block)
     .unwrap();
 
     // The line comment captured the changed line and one context line each side.
@@ -213,7 +213,7 @@ fn a_line_range_anchors_across_multiple_lines() {
         target: lines_target("added.txt", 1, 2),
         body: "both lines".to_string(),
     }
-    .append(&mut log)
+    .append(&mut log, LockWait::Block)
     .unwrap();
     wince::assert_eq!(
         added.anchor,
@@ -233,7 +233,7 @@ fn a_line_beyond_the_captured_window_is_recorded_without_an_anchor() {
         target: lines_target("src/main.rs", 100, 100),
         body: "look here for context".to_string(),
     }
-    .append(&mut log)
+    .append(&mut log, LockWait::Block)
     .unwrap();
     wince::assert_eq!(added.anchor, None);
 
@@ -268,20 +268,20 @@ fn resolving_and_withdrawing_comments_folds_to_current_state() {
         },
         body: "needs a newline".to_string(),
     }
-    .append(&mut log)
+    .append(&mut log, LockWait::Block)
     .unwrap();
     let gone = DraftComment {
         author: human("wez"),
         target: CommentTarget::Review,
         body: "never mind".to_string(),
     }
-    .append(&mut log)
+    .append(&mut log, LockWait::Block)
     .unwrap();
 
     // Resolve then reopen the kept comment; its state reflects the last write.
-    set_resolved(&mut log, keep.id, true, human("wez")).unwrap();
-    set_resolved(&mut log, keep.id, false, human("wez")).unwrap();
-    delete_comment(&mut log, gone.id, human("wez")).unwrap();
+    set_resolved(&mut log, keep.id, true, human("wez"), LockWait::Block).unwrap();
+    set_resolved(&mut log, keep.id, false, human("wez"), LockWait::Block).unwrap();
+    delete_comment(&mut log, gone.id, human("wez"), LockWait::Block).unwrap();
 
     let state = fold(&read_records(log.path()).unwrap()).unwrap();
     wince::assert_eq!(
@@ -327,8 +327,9 @@ fn resolving_and_withdrawing_comments_folds_to_current_state() {
 fn mutating_an_unknown_comment_is_an_error() {
     let (_base, mut log) = session();
     let missing = Ulid::new();
-    let resolve_err = set_resolved(&mut log, missing, true, human("wez")).unwrap_err();
-    let delete_err = delete_comment(&mut log, missing, human("wez")).unwrap_err();
+    let resolve_err =
+        set_resolved(&mut log, missing, true, human("wez"), LockWait::Block).unwrap_err();
+    let delete_err = delete_comment(&mut log, missing, human("wez"), LockWait::Block).unwrap_err();
     wince::assert_eq!(
         resolve_err.to_string(),
         format!("no comment {missing} in this session")
@@ -347,7 +348,7 @@ fn a_file_outside_the_diff_cannot_be_anchored() {
         target: lines_target("nope.rs", 1, 1),
         body: "nowhere".to_string(),
     }
-    .append(&mut log)
+    .append(&mut log, LockWait::Block)
     .unwrap_err();
     wince::assert_eq!(matches!(error, Error::Anchor(_)), true);
     wince::snapshot_display!(

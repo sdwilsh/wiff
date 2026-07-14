@@ -80,6 +80,17 @@ pub enum SyncState {
     },
 }
 
+/// How to wait for a session's exclusive lock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockWait {
+    /// Block until the lock becomes available. Suited to a one-shot process
+    /// that has no event loop to keep responsive.
+    Block,
+    /// Fail immediately with [`Error::Locked`] when another process holds the
+    /// lock. Suited to an interactive loop that must not stall.
+    NonBlock,
+}
+
 impl SessionLog {
     /// The session's ULID.
     pub fn ulid(&self) -> Ulid {
@@ -252,6 +263,36 @@ impl SessionLog {
             },
             sync,
         })
+    }
+
+    /// Take the file's exclusive lock per `wait`, then resync our position to
+    /// the file's current tail, returning the guard alongside the records read
+    /// to recover it. Because the position is recovered while the lock is held,
+    /// an append made through the returned guard cannot diverge. A caller that
+    /// must inspect the log to build its record (the latest diff version, an
+    /// existing comment) reads it from the returned records rather than parsing
+    /// the file a second time.
+    pub fn lock_and_sync(&mut self, wait: LockWait) -> Result<(SessionLock, Vec<Record>)> {
+        let file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&self.path)
+            .map_err(|source| Error::io(&self.path, source))?;
+        let arg = match wait {
+            LockWait::Block => FlockArg::LockExclusive,
+            LockWait::NonBlock => FlockArg::LockExclusiveNonblock,
+        };
+        let locked = match Flock::lock(file, arg) {
+            Ok(locked) => locked,
+            Err((_, nix::errno::Errno::EAGAIN)) => return Err(Error::Locked(self.path.clone())),
+            Err((_, errno)) => return Err(Error::io(&self.path, errno.into())),
+        };
+        let records = read_records(&self.path)?;
+        self.next_seq = records.last().map(|record| record.seq + 1).unwrap_or(0);
+        let lock = SessionLock {
+            file: locked,
+            path: self.path.clone(),
+        };
+        Ok((lock, records))
     }
 }
 

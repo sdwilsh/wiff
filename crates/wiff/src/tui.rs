@@ -11,7 +11,8 @@ use wiff_config::{Config, OnExit};
 use wiff_core::record::{Author, AuthorKind, RecordBody, SessionHeader};
 use wiff_core::session::{SessionWatcher, read_records, remove_session};
 use wiff_core::{
-    RefreshOutcome, ReviewState, SessionLog, SidebandHash, compare_versions, refresh_session,
+    LockWait, RefreshOutcome, ReviewState, SessionLog, SidebandHash, compare_versions,
+    refresh_session,
 };
 use wiff_tui::{
     App, CommentSync, CompareRequest, DiffView, Exit, ExitDefault, KeyHints, Review, Theme, run,
@@ -170,7 +171,7 @@ fn refresh_in_place(
     let prior_latest = state.latest_version().map(|v| v.number);
     let diff_text = recapture(&state.session)?;
     let mut log = SessionLog::open(session_path)?;
-    let outcome = match refresh_session(&mut log, &diff_text)? {
+    let outcome = match refresh_session(&mut log, &diff_text, LockWait::NonBlock)? {
         Some(outcome) => outcome,
         None => {
             let current = prior_latest.unwrap_or(0);
@@ -366,6 +367,10 @@ fn commit_drafts(session_path: &Path, drafts: Vec<RecordBody>) -> anyhow::Result
         return Ok(());
     }
     let mut log = SessionLog::open(session_path)?;
+    // Buffered drafts append as a batch that rejects a diverged file rather
+    // than resyncing to it. The reviewer composed them against the view folded
+    // at save time; failing the save on a concurrent write lets the view reload
+    // and reconcile before the reviewer retries.
     log.append_all_locked(drafts)?;
     Ok(())
 }
@@ -382,8 +387,8 @@ mod tests {
     };
     use wiff_core::session::{SessionLog, SessionWatcher, read_records};
     use wiff_core::{
-        CapturedDiff, DraftComment, ProjectIdentity, RefreshOutcome, ReviewState, ScmType,
-        create_session,
+        CapturedDiff, DraftComment, LockWait, ProjectIdentity, RefreshOutcome, ReviewState,
+        ScmType, create_session,
     };
     use wiff_diff::{LineNo, Side};
     use wiff_tui::{
@@ -619,7 +624,7 @@ mod tests {
             },
             body: "why delta?".to_string(),
         }
-        .append(&mut log)
+        .append(&mut log, LockWait::Block)
         .expect("attach comment");
         drop(log);
 

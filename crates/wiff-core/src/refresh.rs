@@ -18,7 +18,7 @@ use crate::hash::SidebandHash;
 use crate::rebase::rebase_line_comment;
 use crate::record::{CommentReanchor, Confidence, RecordBody};
 use crate::review::fold;
-use crate::session::{LockAttempt, SessionLog, SyncState, read_records};
+use crate::session::{LockWait, SessionLog};
 
 /// A tally of a refresh: the version it captured and how its comments fared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -39,22 +39,16 @@ pub struct RefreshOutcome {
 pub fn refresh_session(
     log: &mut SessionLog,
     new_diff_text: &str,
+    wait: LockWait,
 ) -> Result<Option<RefreshOutcome>> {
-    let state = fold(&read_records(log.path())?)?;
+    let (mut lock, records) = log.lock_and_sync(wait)?;
+    let state = fold(&records)?;
     let latest = state.latest_version().ok_or(Error::NoDiffVersion)?;
     if latest.diff_hash == SidebandHash::of(new_diff_text.as_bytes()) {
         return Ok(None);
     }
     let number = latest.number + 1;
     let new_diff = parse(new_diff_text)?;
-
-    let (mut lock, sync) = match log.lock()? {
-        LockAttempt::Acquired { lock, sync } => (lock, sync),
-        LockAttempt::Contended => return Err(Error::Locked(log.path().to_path_buf())),
-    };
-    if let SyncState::Diverged { .. } = sync {
-        return Err(Error::Diverged(log.path().to_path_buf()));
-    }
 
     write_diff_version(log, &mut lock, number, new_diff_text)?;
 

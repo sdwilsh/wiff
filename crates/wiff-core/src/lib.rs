@@ -28,5 +28,5 @@ pub use identity::{ProjectIdentity, ScmType};
 pub use rebase::{RebaseOutcome, rebase_line_comment};
 pub use refresh::{RefreshOutcome, refresh_session};
 pub use review::{CommentState, ReviewState, fold};
-pub use session::{SessionLock, SessionLog};
+pub use session::{LockWait, SessionLock, SessionLog};
 pub use source::{CapturedDiff, DiffSource, GitSource};

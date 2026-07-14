@@ -5,8 +5,8 @@ use wiff_core::record::{
     Author, AuthorKind, CommentRecord, CommentTarget, RecordBody, SessionHeader, SourceKind,
 };
 use wiff_core::session::{
-    LockAttempt, SessionLog, SyncState, active_session, list_projects, list_sessions, read_records,
-    remove_session,
+    LockAttempt, LockWait, SessionLog, SyncState, active_session, list_projects, list_sessions,
+    read_records, remove_session,
 };
 use wiff_diff::{LineNo, Side};
 
@@ -99,6 +99,33 @@ fn appending_from_a_stale_handle_diverges() {
         }
         other => panic!("expected divergence, got {other:?}"),
     }
+}
+
+#[test]
+fn lock_and_sync_resyncs_a_stale_handle_and_appends_at_the_tail() {
+    // A one-shot writer that opened the log before another writer appended can
+    // still commit: taking the lock resyncs its position to the file's tail, so
+    // the append is placed after the record it had not seen instead of diverging.
+    let base = tempfile::tempdir().unwrap();
+    let (mut writer, mut lock) = SessionLog::create(base.path(), "demo", header).unwrap();
+    let mut stale = SessionLog::open(writer.path()).unwrap();
+    writer.append(&mut lock, comment()).unwrap();
+    drop(lock);
+
+    let (mut guard, _records) = stale.lock_and_sync(LockWait::Block).unwrap();
+    let seq = stale.append(&mut guard, comment()).unwrap();
+    wince::assert_eq!(seq, 2);
+    drop(guard);
+
+    let got: Vec<(u64, RecordBody)> = read_records(writer.path())
+        .unwrap()
+        .into_iter()
+        .map(|record| (record.seq, record.body))
+        .collect();
+    wince::assert_eq!(
+        got,
+        vec![(0, header(writer.ulid())), (1, comment()), (2, comment())]
+    );
 }
 
 #[test]

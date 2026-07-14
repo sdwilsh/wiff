@@ -5,7 +5,7 @@ use anyhow::bail;
 use clap::Args;
 use wiff_core::record::SessionHeader;
 use wiff_core::review::ReviewState;
-use wiff_core::{RefreshOutcome, SessionLog, refresh_session};
+use wiff_core::{LockWait, RefreshOutcome, SessionLog, refresh_session};
 
 use super::{read_piped_stdin, recapture_diff, resolve_session};
 
@@ -28,7 +28,7 @@ impl RefreshArgs {
         let state = ReviewState::load(&path)?;
         let diff_text = recapture(&state.session).await?;
         let mut log = SessionLog::open(&path)?;
-        match refresh_session(&mut log, &diff_text)? {
+        match refresh_session(&mut log, &diff_text, LockWait::Block)? {
             Some(outcome) => report(&outcome),
             None => {
                 let current = state.latest_version().map(|v| v.number).unwrap_or(0);

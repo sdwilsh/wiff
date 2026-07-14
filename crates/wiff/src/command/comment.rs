@@ -6,7 +6,7 @@ use ulid::Ulid;
 use wiff_config::Config;
 use wiff_core::record::{Author, AuthorKind, CommentTarget};
 use wiff_core::review::ReviewState;
-use wiff_core::{DraftComment, SessionLog, delete_comment, set_resolved};
+use wiff_core::{DraftComment, LockWait, SessionLog, delete_comment, set_resolved};
 use wiff_diff::{LineNo, Side};
 
 use super::{read_piped_stdin, resolve_session};
@@ -89,7 +89,7 @@ impl CommentAddArgs {
             target,
             body,
         }
-        .append(&mut log)?;
+        .append(&mut log, LockWait::Block)?;
         println!("added comment {} (seq {})", added.id, added.seq);
         Ok(())
     }
@@ -167,7 +167,7 @@ impl CommentResolveArgs {
         let id = parse_id(&self.id)?;
         let author = resolve_author(self.agent, self.author.clone())?;
         let mut log = SessionLog::open(&path)?;
-        let comment = set_resolved(&mut log, id, !self.reopen, author)?;
+        let comment = set_resolved(&mut log, id, !self.reopen, author, LockWait::Block)?;
         let verb = if self.reopen { "reopened" } else { "resolved" };
         println!("{verb} comment {}", comment.id);
         Ok(())
@@ -200,7 +200,7 @@ impl CommentRmArgs {
         let id = parse_id(&self.id)?;
         let author = resolve_author(self.agent, self.author.clone())?;
         let mut log = SessionLog::open(&path)?;
-        let comment = delete_comment(&mut log, id, author)?;
+        let comment = delete_comment(&mut log, id, author, LockWait::Block)?;
         println!("withdrew comment {}", comment.id);
         Ok(())
     }

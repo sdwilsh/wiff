@@ -22,7 +22,7 @@ use crate::record::{
     Record, RecordBody,
 };
 use crate::review::{CommentState, fold};
-use crate::session::{SessionLog, read_records};
+use crate::session::{LockWait, SessionLog};
 
 /// The number of surrounding context lines captured on each side of a
 /// line-range anchor, giving the rebaser something to match against when the
@@ -54,9 +54,10 @@ pub struct AddedComment {
 
 impl DraftComment {
     /// Append this comment to `log`, anchoring a line-range target against the
-    /// session's most recent diff version.
-    pub fn append(self, log: &mut SessionLog) -> Result<AddedComment> {
-        let records = read_records(log.path())?;
+    /// session's most recent diff version. The version and anchor are read under
+    /// the same lock that appends the comment.
+    pub fn append(self, log: &mut SessionLog, wait: LockWait) -> Result<AddedComment> {
+        let (mut lock, records) = log.lock_and_sync(wait)?;
         let version = latest_diff_version(&records)?.number;
         let anchor = match &self.target {
             CommentTarget::Lines {
@@ -76,7 +77,7 @@ impl DraftComment {
             anchor: anchor.clone(),
             body: self.body,
         };
-        let seq = log.append_locked(RecordBody::Comment(record))?;
+        let seq = log.append(&mut lock, RecordBody::Comment(record))?;
         Ok(AddedComment {
             id,
             seq,
@@ -93,28 +94,42 @@ pub fn set_resolved(
     id: Ulid,
     resolved: bool,
     author: Author,
+    wait: LockWait,
 ) -> Result<CommentState> {
-    let comment = require_comment_in_log(log, id)?;
-    log.append_locked(RecordBody::CommentResolve(CommentResolve {
-        id,
-        resolved,
-        author,
-    }))?;
+    let (mut lock, records) = log.lock_and_sync(wait)?;
+    let comment = require_comment_in_records(&records, id)?;
+    log.append(
+        &mut lock,
+        RecordBody::CommentResolve(CommentResolve {
+            id,
+            resolved,
+            author,
+        }),
+    )?;
     Ok(comment)
 }
 
 /// Withdraw an existing comment, appending a delete tombstone attributed to
 /// `author`. The comment must already exist in the session.
-pub fn delete_comment(log: &mut SessionLog, id: Ulid, author: Author) -> Result<CommentState> {
-    let comment = require_comment_in_log(log, id)?;
-    log.append_locked(RecordBody::CommentDelete(CommentDelete { id, author }))?;
+pub fn delete_comment(
+    log: &mut SessionLog,
+    id: Ulid,
+    author: Author,
+    wait: LockWait,
+) -> Result<CommentState> {
+    let (mut lock, records) = log.lock_and_sync(wait)?;
+    let comment = require_comment_in_records(&records, id)?;
+    log.append(
+        &mut lock,
+        RecordBody::CommentDelete(CommentDelete { id, author }),
+    )?;
     Ok(comment)
 }
 
-/// Fold the session and return the current state of comment `id`, or
-/// [`Error::UnknownComment`] when the session has no such comment.
-fn require_comment_in_log(log: &SessionLog, id: Ulid) -> Result<CommentState> {
-    let state = fold(&read_records(log.path())?)?;
+/// Fold `records` and return the current state of comment `id`, or
+/// [`Error::UnknownComment`] when they hold no such comment.
+fn require_comment_in_records(records: &[Record], id: Ulid) -> Result<CommentState> {
+    let state = fold(records)?;
     state
         .comments
         .into_iter()

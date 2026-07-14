@@ -7,8 +7,8 @@ use wiff_core::record::{Anchor, Author, AuthorKind, CommentTarget, SourceKind};
 use wiff_core::review::{CommentState, fold};
 use wiff_core::session::read_records;
 use wiff_core::{
-    CapturedDiff, DraftComment, ProjectIdentity, RefreshOutcome, SessionLog, create_session,
-    refresh_session,
+    CapturedDiff, DraftComment, LockWait, ProjectIdentity, RefreshOutcome, SessionLog,
+    create_session, refresh_session,
 };
 use wiff_diff::{LineNo, Side};
 
@@ -56,7 +56,7 @@ fn session_with_gamma_comment() -> (tempfile::TempDir, SessionLog, Ulid) {
         },
         body: "why gamma?".to_string(),
     }
-    .append(&mut log)
+    .append(&mut log, LockWait::Block)
     .unwrap();
     (base, log, added.id)
 }
@@ -125,7 +125,7 @@ new file mode 100644
 +gamma
 +delta
 ";
-    let outcome = refresh_session(&mut log, v1).unwrap();
+    let outcome = refresh_session(&mut log, v1, LockWait::Block).unwrap();
     wince::assert_eq!(
         outcome,
         Some(RefreshOutcome {
@@ -162,7 +162,7 @@ new file mode 100644
 +gamma is now different
 +delta
 ";
-    let outcome = refresh_session(&mut log, v1).unwrap();
+    let outcome = refresh_session(&mut log, v1, LockWait::Block).unwrap();
     wince::assert_eq!(
         outcome,
         Some(RefreshOutcome {
@@ -200,7 +200,7 @@ new file mode 100644
 +beta
 +delta
 ";
-    let outcome = refresh_session(&mut log, v1).unwrap();
+    let outcome = refresh_session(&mut log, v1, LockWait::Block).unwrap();
     wince::assert_eq!(
         outcome,
         Some(RefreshOutcome {
@@ -225,7 +225,7 @@ new file mode 100644
 #[test]
 fn an_identical_diff_captures_nothing() {
     let (_base, mut log, id) = session_with_gamma_comment();
-    let outcome = refresh_session(&mut log, V0).unwrap();
+    let outcome = refresh_session(&mut log, V0, LockWait::Block).unwrap();
     wince::assert_eq!(outcome, None);
     // The comment stays anchored to v0, untouched.
     wince::assert_eq!(
