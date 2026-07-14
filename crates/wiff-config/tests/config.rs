@@ -23,6 +23,8 @@ display_context = 5
 tab_width = 8
 editor = \"vim +{line} {file}\"
 wrap_lines = true
+diff_mode = \"side_by_side\"
+side_by_side_min_width = 160
 nudge_to_detach = false
 disable_default_keymap = false
 
@@ -53,6 +55,8 @@ quit = [\"q\", \"ctrl-c\"]
             tab_width: 8,
             editor: Some("vim +{line} {file}".to_string()),
             wrap_lines: true,
+            diff_mode: wiff_tui::render::DiffMode::SideBySide,
+            side_by_side_min_width: 160,
             nudge_to_detach: false,
             author: AuthorDefaults {
                 names: [
@@ -119,7 +123,7 @@ fn an_unknown_field_is_rejected() {
         "  |\n",
         "1 | wibble = true\n",
         "  | ^^^^^^\n",
-        "unknown field `wibble`, expected one of `on_exit`, `display_context`, `tab_width`, `editor`, `wrap_lines`, `nudge_to_detach`, `author`, `section`, `disable_default_keymap`, `keymap`\n",
+        "unknown field `wibble`, expected one of `on_exit`, `display_context`, `tab_width`, `editor`, `wrap_lines`, `diff_mode`, `side_by_side_min_width`, `nudge_to_detach`, `author`, `section`, `disable_default_keymap`, `keymap`\n",
     );
 }
 

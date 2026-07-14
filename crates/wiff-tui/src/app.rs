@@ -613,8 +613,8 @@ impl App {
         self
     }
 
-    /// Adopt the reviewer's diff layout choice and the width auto mode switches
-    /// to side-by-side at, from their configured defaults.
+    /// Adopt the reviewer's diff layout `mode` and the `min_width` at which auto
+    /// mode switches to side-by-side.
     pub fn with_diff_mode(mut self, mode: DiffMode, min_width: usize) -> Self {
         self.diff_mode = mode;
         self.side_by_side_min_width = min_width;
@@ -795,6 +795,32 @@ impl App {
         Update::Handled
     }
 
+    /// Switch the active diff layout to `mode`, re-rendering at the current width
+    /// and keeping the cursor on the same content line. The switch is
+    /// session-local; it is not written back to config. Passes through when no
+    /// review is being edited.
+    fn set_diff_mode(&mut self, mode: DiffMode) -> Update {
+        if self.review.is_none() {
+            return Update::Passed(Self::diff_mode_action(mode));
+        }
+        if mode == self.diff_mode {
+            return Update::Handled;
+        }
+        self.diff_mode = mode;
+        self.reflow();
+        Update::Handled
+    }
+
+    /// The action that selects diff `mode`, used when passing the intent back to
+    /// the host on a read-only view.
+    fn diff_mode_action(mode: DiffMode) -> Action {
+        match mode {
+            DiffMode::Auto => Action::DiffModeAuto,
+            DiffMode::SideBySide => Action::DiffModeSideBySide,
+            DiffMode::Unified => Action::DiffModeUnified,
+        }
+    }
+
     /// Handle a navigation action, or pass any other action back to the host.
     pub fn update(&mut self, action: Action) -> Update {
         // Any action clears a lingering refresh note or search tally so neither
@@ -829,6 +855,9 @@ impl App {
             Action::ToggleFold => self.toggle_fold(),
             Action::ToggleComment => self.toggle_comment(),
             Action::ToggleWrap => return self.toggle_wrap(),
+            Action::DiffModeAuto => return self.set_diff_mode(DiffMode::Auto),
+            Action::DiffModeSideBySide => return self.set_diff_mode(DiffMode::SideBySide),
+            Action::DiffModeUnified => return self.set_diff_mode(DiffMode::Unified),
             Action::HideComments => self.toggle_comments_hidden(),
             Action::PickFile => self.open_file_picker(),
             Action::PickComment => self.open_comment_picker(),
@@ -3090,6 +3119,9 @@ fn is_navigation(action: Action) -> bool {
             | Action::PrevComment
             | Action::ToggleFold
             | Action::ToggleWrap
+            | Action::DiffModeAuto
+            | Action::DiffModeSideBySide
+            | Action::DiffModeUnified
             | Action::HideComments
             | Action::SearchForward
             | Action::SearchBackward
@@ -5418,8 +5450,8 @@ mod tests {
         // types itself; submitting then shows the appended text in the draft.
         let mut app = composing_on_added_line(8, "why 2?");
         app.compose_key(detach());
-        // '2' is unbound in the review keymap, so it re-enters and inserts.
-        app.compose_key(ch('2'));
+        // '5' is unbound in the review keymap, so it re-enters and inserts.
+        app.compose_key(ch('5'));
         wince::assert_eq!(float_has_cursor(&app), true);
         app.compose_key(submit());
         wince::assert_eq!(app.composing(), false);
@@ -5431,7 +5463,7 @@ mod tests {
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
             "<#f6f9f4|#65737e|->┌ <#f9fafb|#65737e|->wez (human)<#f6f9f4|#65737e|-> [draft]<#cfd1d4|#65737e|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#f6f9f4|#65737e|-> <#f6f9f4|#65737e|->┐\n",
-            "<#a3be8c|-|->│<#c0c5ce|-|->why 2?2<-|-|->                               <#a3be8c|-|->│\n",
+            "<#a3be8c|-|->│<#c0c5ce|-|->why 2?5<-|-|->                               <#a3be8c|-|->│\n",
             "<#a3be8c|-|->└──────────┬───────────────────────────┘\n",
             "<#9ea1a9|#414a4a|->        2 +<#a8c192|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
         );
@@ -5822,6 +5854,45 @@ mod tests {
             "<-|-|->                         <#7d828c|-|->│<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->         <#767b84|-|->│\n",
             "<-|-|->                         <#7d828c|-|->│<#767b84|-|->└─────┬──────────────────┘\n",
             "<-|-|->                         <#7d828c|-|->│<#9ea1a9|#414a4a|->   2 +<#989ca3|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->         \n",
+        );
+    }
+
+    #[test]
+    fn the_diff_mode_actions_switch_the_layout_and_keep_the_cursor() {
+        // Reviewing unified with the cursor on the added line, the side-by-side
+        // action splits the diff into two columns without moving the cursor: the
+        // added line's selection wash follows it into the right column. The
+        // unified action then folds it back to one column.
+        let mut app = App::reviewing(plain_review(), 6, &theme());
+        app.set_width(44);
+        app.update(Action::Top);
+        for _ in 0..4 {
+            app.update(Action::LineDown);
+        }
+        let seat = app.cursor();
+
+        app.update(Action::DiffModeSideBySide);
+        wince::assert_eq!(app.cursor(), seat);
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(44)),
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#7d828c|-|->   1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;<-|-|->    <#7d828c|-|->│<#7d828c|-|->   1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;<-|-|->     \n",
+            "<-|#65737e|->                     <#d8dadd|#65737e|->│<#f5f6f6|#65737e|->   2 + <#faf7f9|#65737e|->let<#f6f6f8|#65737e|-> y <#f6f6f8|#65737e|->=<#f6f6f8|#65737e|-> <#fcf7f5|#65737e|->2<#f6f6f8|#65737e|->;<-|#65737e|->     \n",
+        );
+
+        app.update(Action::DiffModeUnified);
+        wince::assert_eq!(app.cursor(), seat);
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(44)),
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#f5f6f6|#65737e|->        2 + <#faf7f9|#65737e|->let<#f6f6f8|#65737e|-> y <#f6f6f8|#65737e|->=<#f6f6f8|#65737e|-> <#fcf7f5|#65737e|->2<#f6f6f8|#65737e|->;<-|#65737e|->                      \n",
         );
     }
 

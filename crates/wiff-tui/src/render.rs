@@ -17,6 +17,7 @@ use std::ops::Range;
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use serde::Deserialize;
 use ulid::Ulid;
 use wiff_core::LineOrigin;
 use wiff_core::record::{Author, CommentTarget, Confidence};
@@ -208,7 +209,8 @@ pub const DEFAULT_SIDE_BY_SIDE_MIN_WIDTH: usize = 130;
 
 /// The diff layout a reviewer selects: always one column, always two, or two
 /// only once the viewport reaches a configured width.
-#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DiffMode {
     /// Side-by-side when the viewport is wide enough, else unified.
     #[default]

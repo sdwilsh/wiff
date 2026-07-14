@@ -66,6 +66,7 @@ pub fn open(session_path: &Path, config: &Config, offer_refresh: bool) -> anyhow
         .with_exit_default(exit_default(config.on_exit))
         .with_keymap(keymap.clone())
         .with_wrap_content(config.wrap_lines)
+        .with_diff_mode(config.diff_mode, config.side_by_side_min_width)
         .with_tab_width(config.tab_width)
         .with_nudge_to_detach(config.nudge_to_detach);
     // A resumed session whose source has moved on opens over the existing state

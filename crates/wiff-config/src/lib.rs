@@ -14,7 +14,7 @@ use serde::Deserialize;
 use wiff_core::AuthorDefaults;
 use wiff_diff::DEFAULT_TAB_WIDTH;
 use wiff_tui::keymap::Keymap;
-use wiff_tui::render::DEFAULT_DISPLAY_CONTEXT;
+use wiff_tui::render::{DEFAULT_DISPLAY_CONTEXT, DEFAULT_SIDE_BY_SIDE_MIN_WIDTH, DiffMode};
 use wiff_tui::{KeymapError, KeymapOverrides};
 
 /// The environment variable that overrides the config directory.
@@ -51,6 +51,13 @@ pub struct Config {
     /// Whether diff content wraps to the viewport width instead of being clipped
     /// at the edge. The `toggle_wrap` action flips it within a session.
     pub wrap_lines: bool,
+    /// The starting diff layout: one column, two columns, or auto (two once the
+    /// terminal is wide enough). The `diff_mode_*` actions switch it within a
+    /// session.
+    pub diff_mode: DiffMode,
+    /// The terminal width in columns at or above which `auto` mode chooses the
+    /// side-by-side layout.
+    pub side_by_side_min_width: usize,
     /// Whether pressing an arrow past the top or bottom of the open comment
     /// editor detaches it, floating it at a screen edge to free the cursor for
     /// navigating the diff. When false, only the `detach_editor` binding
@@ -77,6 +84,8 @@ impl Default for Config {
             tab_width: DEFAULT_TAB_WIDTH,
             editor: None,
             wrap_lines: true,
+            diff_mode: DiffMode::default(),
+            side_by_side_min_width: DEFAULT_SIDE_BY_SIDE_MIN_WIDTH,
             nudge_to_detach: true,
             author: AuthorDefaults::default(),
             section: BTreeMap::new(),

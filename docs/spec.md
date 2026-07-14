@@ -582,6 +582,11 @@ after the rest of v0.
 - `wrap_lines` (default on) soft-wraps diff content to the viewport width rather
   than clipping it at the edge; the `toggle_wrap` action flips it within a
   session.
+- `diff_mode` (`unified`, `side_by_side`, or `auto`; default `auto`) selects the
+  starting diff layout; `side_by_side_min_width` (default 130) is the terminal
+  width at or above which `auto` chooses side-by-side. The `diff_mode_auto`,
+  `diff_mode_side_by_side`, and `diff_mode_unified` actions switch it within a
+  session.
 - `editor` is a command template (`{file}`, `{line}` placeholders) for
   `open_in_editor`; when unset, `$VISUAL` then `$EDITOR` then a default is used.
 - Where user choices are persisted back (e.g. remembered view options), use

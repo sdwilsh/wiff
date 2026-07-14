@@ -41,6 +41,13 @@ pub enum Action {
     ToggleComment,
     /// Toggle whether diff content wraps to the viewport width or is clipped.
     ToggleWrap,
+    /// Switch the diff layout to auto: side-by-side once the viewport is wide
+    /// enough, else unified.
+    DiffModeAuto,
+    /// Switch the diff layout to always side-by-side.
+    DiffModeSideBySide,
+    /// Switch the diff layout to always unified.
+    DiffModeUnified,
     /// Toggle whether comments are shown at all, so the code reads without the
     /// annotations in the way.
     HideComments,
@@ -116,6 +123,9 @@ impl Action {
             Action::ToggleFold => "toggle_fold",
             Action::ToggleComment => "toggle_comment",
             Action::ToggleWrap => "toggle_wrap",
+            Action::DiffModeAuto => "diff_mode_auto",
+            Action::DiffModeSideBySide => "diff_mode_side_by_side",
+            Action::DiffModeUnified => "diff_mode_unified",
             Action::HideComments => "hide_comments",
             Action::PickFile => "pick_file",
             Action::PickComment => "pick_comment",
