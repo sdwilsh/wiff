@@ -44,10 +44,10 @@ const GUTTER_WIDTH: usize = LINENO_WIDTH * 2 + 4;
 /// The width of one side-by-side column's gutter: a single line number, the
 /// change marker, a leading space, and a trailing space that hosts the anchor
 /// rail just left of the content.
-const COLUMN_GUTTER_WIDTH: usize = LINENO_WIDTH + 3;
+pub(crate) const COLUMN_GUTTER_WIDTH: usize = LINENO_WIDTH + 3;
 
 /// The single-cell rule drawn between the two side-by-side columns.
-const COLUMN_DIVIDER: char = '\u{2502}';
+pub(crate) const COLUMN_DIVIDER: char = '\u{2502}';
 
 /// The shortest run of unchanged lines worth collapsing. Hiding a single line
 /// behind a one-line marker saves nothing, so only runs of two or more fold.
@@ -77,14 +77,43 @@ pub(crate) const RAIL_COLUMN: usize = GUTTER_WIDTH - 1;
 /// The tee joining a comment box's bottom edge down into the anchor rail.
 pub(crate) const RAIL_TEE: char = '\u{252c}';
 
-/// The anchor rail a content row draws in its last gutter cell.
+/// The anchor rail a content row draws in one gutter cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RailCell {
+    /// The character column the glyph occupies in the gutter.
+    pub column: usize,
     /// The rail glyph: the body tracing the range down, or the corner closing it
     /// on the range's final line.
     pub glyph: char,
     /// The comment-box border color, matching the rail to its box.
     pub color: Rgb,
+}
+
+/// The character column the anchor rail for a comment on `side` occupies.
+pub(crate) fn rail_column(mode: LayoutMode, side: Side, width: usize) -> usize {
+    match mode {
+        LayoutMode::Unified => RAIL_COLUMN,
+        LayoutMode::SideBySide => match side {
+            Side::Before => COLUMN_GUTTER_WIDTH - 1,
+            Side::After => ColumnGeometry::split(width).left + 1 + COLUMN_GUTTER_WIDTH - 1,
+        },
+    }
+}
+
+/// The character column of the divider rule between the two side-by-side
+/// columns, in a viewport `width` columns wide.
+pub(crate) fn divider_column(width: usize) -> usize {
+    ColumnGeometry::split(width).left
+}
+
+/// The `(start_column, width)` of the `side` column, in a viewport `width`
+/// columns wide.
+pub(crate) fn column_bounds(width: usize, side: Side) -> (usize, usize) {
+    let geo = ColumnGeometry::split(width);
+    match side {
+        Side::Before => (0, geo.left),
+        Side::After => (geo.left + 1, geo.right),
+    }
 }
 
 /// The file index for rows not tied to a file: the review summary and its
@@ -114,16 +143,34 @@ pub struct Document {
     /// rows that carry nothing worth matching, such as hunk headers and box
     /// edges.
     pub text: Vec<String>,
-    /// The anchor rail each row draws in the last gutter cell, parallel to
-    /// `lines`; `None` for a row no comment range covers. Applied when comments
-    /// are shown and dropped with them, since the rail is annotation chrome.
-    pub rails: Vec<Option<RailCell>>,
+    /// The anchor rails each row draws, parallel to `lines`; empty for rows no
+    /// comment range covers. Applied when comments are shown and dropped with
+    /// them, since the rail is annotation chrome.
+    pub rails: Vec<Vec<RailCell>>,
+    /// The per-column text of each side-by-side content row, parallel to
+    /// `lines`; `None` for unified and non-content rows.
+    pub row_columns: Vec<Option<ColumnSplit>>,
+    /// The column a side-by-side comment box row is scoped to, parallel to
+    /// `lines`: `Some(side)` for a line comment's box drawn in that side's
+    /// column, `None` for a full-width box and for non-box rows.
+    pub box_columns: Vec<Option<Side>>,
     /// The foldable runs of unchanged rows, in row order, non-overlapping.
     pub folds: Vec<Fold>,
     /// The collapsible comment bodies, in row order.
     pub comments: Vec<CommentRegion>,
     /// The display path of each file, indexed by [`Row::file`].
     pub files: Vec<String>,
+    /// The layout mode the document was rendered in; used by the draw pipeline to
+    /// align per-column chrome.
+    pub mode: LayoutMode,
+}
+
+/// The per-column visible text of a side-by-side content row.
+pub struct ColumnSplit {
+    /// The left (before) column's visible content.
+    pub left: String,
+    /// The right (after) column's visible content.
+    pub right: String,
 }
 
 /// A rendered comment box: its top-edge header row and the body rows that
@@ -237,6 +284,18 @@ struct FileRender<'a> {
     highlight: FileHighlight<'a>,
     pending: &'a [Ulid],
     layout: ViewLayout,
+}
+
+/// Where and how wide to draw a comment box, and whether it anchors a rail.
+#[derive(Clone, Copy)]
+struct BoxPlacement {
+    /// The width to draw the comment box at.
+    width: usize,
+    /// The side-by-side column to scope the box to, or `None` for full width.
+    column: Option<Side>,
+    /// Whether the box anchors a line range, dropping a tee into the rail its
+    /// covered lines trace.
+    rail: bool,
 }
 
 /// The shared inputs for rendering a hunk's content rows, passed to both the
@@ -388,7 +447,25 @@ impl Document {
         self.fills.push(fill);
         self.rows.push(Row { file, kind });
         self.text.push(text);
-        self.rails.push(None);
+        self.rails.push(Vec::new());
+        self.row_columns.push(None);
+        self.box_columns.push(None);
+    }
+
+    /// Append a side-by-side content row, recording its two column text runs so
+    /// the search wash can find a match within the column it falls in.
+    fn push_columns(
+        &mut self,
+        file: usize,
+        kind: RowKind,
+        text: String,
+        line: Line<'static>,
+        columns: ColumnSplit,
+    ) {
+        self.push(file, kind, None, text, line);
+        if let Some(slot) = self.row_columns.last_mut() {
+            *slot = Some(columns);
+        }
     }
 }
 
@@ -689,6 +766,8 @@ impl DiffView {
         let mut doc = Document {
             lines: Vec::new(),
             rails: Vec::new(),
+            row_columns: Vec::new(),
+            box_columns: Vec::new(),
             fills: Vec::new(),
             rows: Vec::new(),
             text: Vec::new(),
@@ -699,6 +778,7 @@ impl DiffView {
                 .iter()
                 .map(|f| f.display_path().to_string())
                 .collect(),
+            mode: layout.mode,
         };
         let placement = Placement::new(diff, comments, origins);
         if review_row {
@@ -715,8 +795,11 @@ impl DiffView {
                     NO_FILE,
                     comment,
                     pending.contains(&comment.id),
-                    layout.width,
-                    false,
+                    BoxPlacement {
+                        width: layout.width,
+                        column: None,
+                        rail: false,
+                    },
                 );
             }
         }
@@ -768,8 +851,11 @@ impl DiffView {
                 index,
                 comment,
                 pending.contains(&comment.id),
-                width,
-                false,
+                BoxPlacement {
+                    width,
+                    column: None,
+                    rail: false,
+                },
             );
         }
         // Paint from the cached highlight when it has arrived; render plain
@@ -859,7 +945,7 @@ impl DiffView {
                 });
             }
         }
-        self.trace_rails(doc, placement, pending, &first_row);
+        self.trace_rails(doc, placement, pending, &first_row, layout);
     }
 
     /// Emit one hunk's content rows in the unified layout: each diff line becomes
@@ -898,8 +984,11 @@ impl DiffView {
                         e.index,
                         comment,
                         e.pending.contains(&comment.id),
-                        width,
-                        true,
+                        BoxPlacement {
+                            width,
+                            column: None,
+                            rail: true,
+                        },
                     );
                 }
             }
@@ -988,12 +1077,15 @@ impl DiffView {
                 };
                 spans.push(divider.clone());
                 spans.extend(right_spans);
-                doc.push(
+                doc.push_columns(
                     e.index,
                     kind.clone(),
-                    None,
                     join_column_text(&left_text, &right_text),
                     Line::from(spans),
+                    ColumnSplit {
+                        left: left_text,
+                        right: right_text,
+                    },
                 );
             }
             let end = doc.rows.len();
@@ -1022,14 +1114,18 @@ impl DiffView {
             Side::After => e.hunk.lines[i].new_lineno,
         };
         let Some(n) = number else { return };
+        let (_, col_width) = column_bounds(e.layout.width, side);
         for comment in e.placement.at(side, n.get()) {
             self.push_comment(
                 doc,
                 e.index,
                 comment,
                 e.pending.contains(&comment.id),
-                e.layout.width,
-                true,
+                BoxPlacement {
+                    width: col_width,
+                    column: Some(side),
+                    rail: true,
+                },
             );
         }
     }
@@ -1096,18 +1192,21 @@ impl DiffView {
     /// display row of its end line, closing with the corner there; every row
     /// between traces the body glyph, including the opposite-side rows a unified
     /// diff interleaves, so the rail reads as one unbroken stroke down the
-    /// gutter. Where spans overlap the one column, the box reaching deepest wins
-    /// the row: its color and, at its last line, the closing corner.
+    /// gutter. Each rail sits in the gutter of the side its comment anchors to,
+    /// so a side-by-side row may trace one down each column. Where two comments
+    /// overlap the same gutter column, the one reaching deepest wins the row: its
+    /// color and, at its last line, the closing corner.
     fn trace_rails(
         &self,
         doc: &mut Document,
         placement: &FilePlacement,
         pending: &[Ulid],
         first_row: &HashMap<(Side, u32), usize>,
+        layout: ViewLayout,
     ) {
-        // The deepest closing row recorded for each railed row, so a shallower
-        // comment does not overwrite a deeper one sharing the column.
-        let mut reach: HashMap<usize, usize> = HashMap::new();
+        // The deepest closing row recorded for each railed (row, column), so a
+        // shallower comment does not overwrite a deeper one sharing the column.
+        let mut reach: HashMap<(usize, usize), usize> = HashMap::new();
         for lc in &placement.lines {
             let (Some(&start_row), Some(&end_row)) = (
                 first_row.get(&(lc.side, lc.start)),
@@ -1116,16 +1215,27 @@ impl DiffView {
                 continue;
             };
             let color = self.comment_border(pending.contains(&lc.comment.id));
+            let column = rail_column(layout.mode, lc.side, layout.width);
             for row in start_row..=end_row {
                 if !matches!(doc.rows[row].kind, RowKind::Content { .. }) {
                     continue;
                 }
-                if reach.get(&row).is_some_and(|&deepest| deepest >= end_row) {
+                if reach
+                    .get(&(row, column))
+                    .is_some_and(|&deepest| deepest >= end_row)
+                {
                     continue;
                 }
-                reach.insert(row, end_row);
+                reach.insert((row, column), end_row);
                 let glyph = if row == end_row { RAIL_END } else { RAIL_BODY };
-                doc.rails[row] = Some(RailCell { glyph, color });
+                let cell = RailCell {
+                    column,
+                    glyph,
+                    color,
+                };
+                let rails = &mut doc.rails[row];
+                rails.retain(|c| c.column != column);
+                rails.push(cell);
             }
         }
     }
@@ -1164,17 +1274,23 @@ impl DiffView {
     /// lines is wrapped to fit the box interior at `width`, so a long line an
     /// agent writes on one row spreads across several rows the reviewer can read
     /// without scrolling sideways. The header and bottom rows stay visible when
-    /// the body collapses, so a folded comment still reads as a closed box.
-    /// Records the collapsible body range so a resolved comment starts collapsed.
+    /// the body collapses, so a folded comment still reads as a closed box. A
+    /// `column` scopes the box to one side-by-side column, `width` columns wide;
+    /// `None` draws it full width. Records the collapsible body range so a
+    /// resolved comment starts collapsed.
     fn push_comment(
         &self,
         doc: &mut Document,
         file: usize,
         comment: &CommentState,
         pending: bool,
-        width: usize,
-        rail: bool,
+        placement: BoxPlacement,
     ) {
+        let BoxPlacement {
+            width,
+            column,
+            rail,
+        } = placement;
         let border = self.comment_border(pending);
         let header = doc.rows.len();
         doc.push(
@@ -1219,6 +1335,13 @@ impl DiffView {
             collapsed_default: comment.resolved || comment.deleted,
             anchor_rail: rail,
         });
+        // A side-by-side line comment's box is scoped to its column; record the
+        // column on each of the box's rows so the draw pipeline places it there.
+        if column.is_some() {
+            for slot in &mut doc.box_columns[header..doc.rows.len()] {
+                *slot = column;
+            }
+        }
     }
 
     /// The box border color for a comment: the draft accent while it has
@@ -2408,7 +2531,7 @@ mod tests {
         let rail: String = doc
             .rails
             .iter()
-            .map(|cell| cell.map_or('.', |c| c.glyph))
+            .map(|cells| cells.first().map_or('.', |c| c.glyph))
             .collect();
         wince::assert_eq!(rail, "......\u{2502}\u{2502}\u{2514}");
     }
@@ -2445,7 +2568,7 @@ mod tests {
         let rail: String = doc
             .rails
             .iter()
-            .map(|cell| cell.map_or('.', |c| c.glyph))
+            .map(|cells| cells.first().map_or('.', |c| c.glyph))
             .collect();
         wince::assert_eq!(rail, "......\u{2502}\u{2502}\u{2502}\u{2514}");
     }

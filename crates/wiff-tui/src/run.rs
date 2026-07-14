@@ -27,14 +27,14 @@ use wiff_core::record::RecordBody;
 use wiff_diff::Rgb;
 
 use crate::action::Action;
-use crate::app::{App, CompareRequest, ComposeView, FloatView, Update};
+use crate::app::{App, CompareRequest, ComposeColumn, ComposeView, FloatView, Update};
 use crate::event::to_key_press;
 use crate::exit::Exit;
 use crate::input::Input;
 use crate::key::Key;
 use crate::keymap::Keymap;
 use crate::picker::Picker;
-use crate::render::color;
+use crate::render::{COLUMN_DIVIDER, color};
 
 /// How long the loop waits for a key before waking to pick up another actor's
 /// changes to the session. Long enough that an idle review costs almost nothing,
@@ -183,6 +183,12 @@ fn render_compose(frame: &mut Frame, area: Rect, view: ComposeView) {
     };
     frame.render_widget(Paragraph::new(view.above), above_area);
     frame.render_widget(Paragraph::new(view.below), below_area);
+    // In a side-by-side layout the editor stands in its column; fill the band
+    // beside it and shrink the box to that column.
+    let editor_area = match view.column {
+        Some(column) => scope_editor_band(frame, editor_area, &column),
+        None => editor_area,
+    };
     draw_editor_box(
         frame,
         editor_area,
@@ -191,6 +197,37 @@ fn render_compose(frame: &mut Frame, area: Rect, view: ComposeView) {
         view.editor_cursor,
         view.editor_scroll,
     );
+}
+
+/// Fill the editor band beside its column and run the divider rule down it,
+/// returning the box's own Rect within the column. `band` is the full-width span
+/// the editor occupies vertically; the opposite column reads blank and the rule
+/// aligns with the divider in the document rows above and below.
+fn scope_editor_band(frame: &mut Frame, band: Rect, column: &ComposeColumn) -> Rect {
+    frame.render_widget(
+        Paragraph::new("").style(Style::default().bg(color(column.background))),
+        band,
+    );
+    let divider_x = band.x + column.divider;
+    if divider_x < band.right() {
+        let rule = std::iter::repeat_n(COLUMN_DIVIDER, band.height as usize)
+            .map(|c| c.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        frame.render_widget(
+            Paragraph::new(rule).style(Style::default().fg(color(column.divider_fg))),
+            Rect {
+                x: divider_x,
+                width: 1,
+                ..band
+            },
+        );
+    }
+    Rect {
+        x: band.x + column.x,
+        width: column.width,
+        ..band
+    }
 }
 
 /// Draw the detached editor floating over the diff on the row it tracks the
@@ -536,6 +573,124 @@ mod tests {
             "@@ -1,1 +1,1 @@               \n",
             "   1    1   let x = 1;        \n",
             "src/lib.rs         0 open  50%\n",
+        );
+    }
+
+    #[test]
+    fn a_side_by_side_editor_stands_in_its_target_column() {
+        use crate::render::DiffMode;
+        // Commenting on the added line, whose after-side lives in the right
+        // column, opens the editor scoped to that column: it stands under the
+        // right-column content with the left column showing the before-side and
+        // the divider running unbroken through the editor band. The anchor-rail
+        // corner below sits in the right gutter, where the comment anchors.
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[
+                    (LineKind::Context, "let x = 1;", 1),
+                    (LineKind::Added, "let y = 2;", 2),
+                ],
+            )],
+        };
+        let view = DiffView::new(theme()).expect("view");
+        let author = Author {
+            name: "wez".to_string(),
+            kind: AuthorKind::Human,
+        };
+        let mut app = App::reviewing(Review::new(view, diff, author, 0, Vec::new()), 0, &theme())
+            .with_diff_mode(DiffMode::SideBySide, 0);
+        for _ in 0..4 {
+            app.update(Action::LineDown);
+        }
+        app.update(Action::AddComment);
+        for c in "why 2?".chars() {
+            app.compose_key(KeyPress::new(Key::Char(c)));
+        }
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            screen(60, 9, app),
+            "Review [press c here to draft the review comment]           \n",
+            "modified  src/lib.rs                                        \n",
+            "@@ -1,2 +1,2 @@                                             \n",
+            "   1   let x = 1;            │   1   let x = 1;             \n",
+            "                             │┌ new comment  src/lib.rs:2  ┐\n",
+            "                             ││why 2?                      │\n",
+            "                             │└────────────────────────────┘\n",
+            "                             │   2 +└let y = 2;             \n",
+            "src/lib.rs                                      0 open  100%\n",
+        );
+    }
+
+    #[test]
+    fn editing_a_side_by_side_comment_reopens_the_editor_in_its_column() {
+        use crate::render::DiffMode;
+        use ulid::Ulid;
+        use wiff_core::record::CommentTarget;
+        use wiff_core::review::CommentState;
+        use wiff_diff::Side;
+        // An existing after-side comment on the added line renders its box in the
+        // right column. Editing it reopens the editor in that same column,
+        // seeded with the body, standing where the box was.
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[
+                    (LineKind::Context, "let x = 1;", 1),
+                    (LineKind::Added, "let y = 2;", 2),
+                ],
+            )],
+        };
+        let comment = CommentState {
+            id: Ulid(2),
+            author: Author {
+                name: "wez".to_string(),
+                kind: AuthorKind::Human,
+            },
+            target: CommentTarget::Lines {
+                file: "src/lib.rs".to_string(),
+                side: Side::After,
+                start_line: crate::render::testutil::ln(2),
+                end_line: crate::render::testutil::ln(2),
+            },
+            version: 0,
+            anchor: None,
+            body: "why 2?".to_string(),
+            resolved: false,
+            resolved_by: None,
+            deleted: false,
+            deleted_by: None,
+            confidence: None,
+            created_seq: 0,
+            updated_seq: 0,
+        };
+        let view = DiffView::new(theme()).expect("view");
+        let author = Author {
+            name: "wez".to_string(),
+            kind: AuthorKind::Human,
+        };
+        let mut app = App::reviewing(
+            Review::new(view, diff, author, 0, vec![comment]),
+            0,
+            &theme(),
+        )
+        .with_diff_mode(DiffMode::SideBySide, 0);
+        app.update(Action::NextComment);
+        app.update(Action::EditComment);
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            screen(60, 9, app),
+            "Review [press c here to draft the review comment]           \n",
+            "modified  src/lib.rs                                        \n",
+            "@@ -1,2 +1,2 @@                                             \n",
+            "   1   let x = 1;            │   1   let x = 1;             \n",
+            "                             │┌ edit comment  ctrl-d submit┐\n",
+            "                             ││why 2?                      │\n",
+            "                             │└────────────────────────────┘\n",
+            "                             │   2 +└let y = 2;             \n",
+            "src/lib.rs                                       1 open  57%\n",
         );
     }
 

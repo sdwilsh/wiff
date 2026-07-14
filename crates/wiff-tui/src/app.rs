@@ -35,8 +35,9 @@ use crate::key::{Key, KeyPress};
 use crate::keymap::{Keymap, Resolution};
 use crate::picker::{Picker, PickerColors, PickerRow, RowSpan};
 use crate::render::{
-    DEFAULT_SIDE_BY_SIDE_MIN_WIDTH, DiffMode, Document, RAIL_COLUMN, RAIL_TEE, RailCell, RowKind,
-    ViewLayout, color,
+    COLUMN_DIVIDER, COLUMN_GUTTER_WIDTH, DEFAULT_SIDE_BY_SIDE_MIN_WIDTH, DiffMode, Document,
+    LayoutMode, RAIL_COLUMN, RAIL_TEE, RailCell, RowKind, ViewLayout, color, column_bounds,
+    divider_column, rail_column,
 };
 use crate::review::{CommentSync, Review};
 use crate::search::{Direction, Matcher, Search, SearchInput};
@@ -68,6 +69,25 @@ pub struct ComposeView {
     pub editor_scroll: Option<Scroll>,
     /// The document lines shown below the editor.
     pub below: Vec<Line<'static>>,
+    /// The side-by-side column the editor box is scoped to, or `None` when it
+    /// spans the full width.
+    pub column: Option<ComposeColumn>,
+}
+
+/// The placement of a side-by-side-scoped inline editor: where its box sits
+/// horizontally and the divider rule drawn beside it, all as column offsets from
+/// the view's left edge.
+pub struct ComposeColumn {
+    /// The box's left edge.
+    pub x: u16,
+    /// The box width.
+    pub width: u16,
+    /// The divider's column offset from the view's left edge.
+    pub divider: u16,
+    /// The divider glyph color.
+    pub divider_fg: Rgb,
+    /// The background color of the band outside the editor's column.
+    pub background: Rgb,
 }
 
 /// Where the cursor sits while the editor floats detached from its anchor.
@@ -472,6 +492,8 @@ pub struct App {
     search_match_bg: Rgb,
     status_fg: Rgb,
     status_bg: Rgb,
+    /// The color of the rule dividing the two side-by-side columns.
+    divider_fg: Rgb,
     /// The border color of the inline comment editor.
     compose_border: Rgb,
     /// The active bindings, resolving a press to an action. In the review view
@@ -542,6 +564,7 @@ impl App {
             search_match_bg: theme.search_match_bg,
             status_fg: theme.status_fg,
             status_bg: theme.status_bg,
+            divider_fg: theme.gutter_fg,
             compose_border: theme.comment_draft_fg,
             keymap: Keymap::defaults(),
             picker_colors: PickerColors {
@@ -1323,8 +1346,15 @@ impl App {
         if self.height == 0 {
             return None;
         }
+        // In a side-by-side layout the editor stands in its target column, where
+        // its rendered box will sit, rather than spanning both.
+        let column_side = self.compose_column();
+        let (editor_x, editor_width) = match column_side {
+            Some(side) => column_bounds(width, side),
+            None => (0, width),
+        };
         // The border takes a column on each side; the body wraps into the rest.
-        let interior = width.saturating_sub(2);
+        let interior = editor_width.saturating_sub(2);
         let max_interior = self.editor_max_interior();
         let editor = compose.layout(interior, max_interior);
         let editor_height = editor.rows.len() + 2;
@@ -1351,6 +1381,13 @@ impl App {
         let below = (below_start..below_end)
             .map(|i| self.decorate(i, width, compose_span))
             .collect();
+        let column = column_side.map(|_| ComposeColumn {
+            x: editor_x as u16,
+            width: editor_width as u16,
+            divider: divider_column(width) as u16,
+            divider_fg: self.divider_fg,
+            background: self.background,
+        });
         Some(ComposeView {
             above,
             editor_block: compose.block(&self.editor_hint()),
@@ -1358,7 +1395,28 @@ impl App {
             editor_cursor: editor.cursor,
             editor_scroll: editor.scroll,
             below,
+            column,
         })
+    }
+
+    /// The side-by-side column the inline editor belongs in, derived from its
+    /// target comment's placement. `None` for a full-width editor: a unified
+    /// layout, or a review- or file-level comment that no column owns.
+    fn compose_column(&self) -> Option<Side> {
+        if self.document.mode != LayoutMode::SideBySide {
+            return None;
+        }
+        let compose = self.compose.as_ref()?;
+        if let Some(id) = compose.editing() {
+            // The edited comment's box is already rendered in its column; scope
+            // the editor to match it.
+            let region = self.document.comments.iter().find(|r| r.id == id)?;
+            return self.document.box_columns[region.header];
+        }
+        match compose.add_target()? {
+            CommentTarget::Lines { side, .. } => Some(*side),
+            _ => None,
+        }
     }
 
     /// The floating editor drawn over the ordinary document while it is detached
@@ -1850,6 +1908,7 @@ impl App {
         self.search_match_bg = theme.search_match_bg;
         self.status_fg = theme.status_fg;
         self.status_bg = theme.status_bg;
+        self.divider_fg = theme.gutter_fg;
         self.compose_border = theme.comment_draft_fg;
         self.picker_colors = PickerColors {
             border: theme.review_fg,
@@ -2370,7 +2429,7 @@ impl App {
                     line = wash(line, self.cursor_bg, width, self.background);
                 }
                 if let (Some(matcher), ViewRow::Row(row)) = (&matcher, &self.view[i]) {
-                    line = self.highlight_matches(line, *row, matcher);
+                    line = self.highlight_matches(line, *row, matcher, width);
                 }
                 line
             })
@@ -2393,27 +2452,48 @@ impl App {
 
     /// Wash the search-match background over each occurrence of `matcher` in the
     /// already-decorated `line` for document `row`, so every visible match reads
-    /// as highlighted on top of whatever tint the row and cursor gave it.
+    /// as highlighted on top of whatever tint the row and cursor gave it. A
+    /// side-by-side content row washes each column against its own text, since
+    /// the two runs are separated by a gutter and the divider rule.
     fn highlight_matches(
         &self,
         line: Line<'static>,
         row: usize,
         matcher: &Matcher,
+        width: usize,
     ) -> Line<'static> {
-        let text = &self.document.text[row];
+        if let Some(split) = self.document.row_columns[row].as_ref() {
+            // Split at the divider column, not on the glyph, since an anchor rail
+            // in a gutter draws the same glyph as the divider.
+            let (left, rest) = split_line_at(line, divider_column(width));
+            let (divider, right) = split_line_at(rest, 1);
+            let left = self.wash_run(left, &split.left, matcher);
+            let right = self.wash_run(right, &split.right, matcher);
+            let mut spans = left.spans;
+            spans.extend(divider.spans);
+            spans.extend(right.spans);
+            return Line::from(spans);
+        }
+        self.wash_run(line, &self.document.text[row], matcher)
+    }
+
+    /// Wash the search-match background over each occurrence of `matcher` in
+    /// `line`, whose content contains `text` as one contiguous run past any
+    /// gutter, header prefix, or box edge; locating that run once maps each
+    /// match's offset within `text` to the line. `text` is assumed to appear in
+    /// the line once; a second occurrence in the surrounding chrome would shift
+    /// the mapping.
+    fn wash_run(&self, line: Line<'static>, text: &str, matcher: &Matcher) -> Line<'static> {
         let ranges = matcher.ranges(text);
         if ranges.is_empty() {
             return line;
         }
-        // The searchable text is a contiguous run of the row's rendered content,
-        // sitting past any gutter, header prefix, or box edge, so locating it
-        // once maps each match's offset within the text to the line.
         let content: String = line
             .spans
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
-        let Some(base) = content.find(text.as_str()) else {
+        let Some(base) = content.find(text) else {
             return line;
         };
         let ranges: Vec<Range<usize>> = ranges
@@ -2430,7 +2510,7 @@ impl App {
         &self,
         index: usize,
         width: usize,
-        compose_span: Option<(usize, usize)>,
+        compose_span: Option<(usize, usize, Side)>,
     ) -> Line<'static> {
         match self.view[index] {
             ViewRow::Fold(fold) => {
@@ -2441,24 +2521,74 @@ impl App {
                 let line = self.document.lines[row].clone();
                 let fill = self.document.fills[row];
                 match self.document.rows[row].kind {
-                    RowKind::CommentHeader { .. } => box_top(line, fill, width),
-                    RowKind::CommentBody { .. } => box_side(line, fill, width),
+                    RowKind::CommentHeader { .. } => match self.document.box_columns[row] {
+                        Some(side) => {
+                            let (_, w) = column_bounds(width, side);
+                            // Clip the title to the box interior; a column is too
+                            // narrow for the full author-and-hints line, and an
+                            // overflow would push the divider out of alignment.
+                            let title = split_line_at(line, w.saturating_sub(4)).0;
+                            self.place_in_column(box_top(title, fill, w), width, side)
+                        }
+                        None => box_top(line, fill, width),
+                    },
+                    RowKind::CommentBody { .. } => match self.document.box_columns[row] {
+                        Some(side) => {
+                            let (_, w) = column_bounds(width, side);
+                            self.place_in_column(box_side(line, fill, w), width, side)
+                        }
+                        None => box_side(line, fill, width),
+                    },
                     RowKind::CommentBottom { id } => {
-                        box_bottom(fill, width, self.box_anchors_rail(id))
+                        let anchors = self.box_anchors_rail(id);
+                        match self.document.box_columns[row] {
+                            Some(side) => {
+                                let (_, w) = column_bounds(width, side);
+                                let tee = anchors.then_some(COLUMN_GUTTER_WIDTH - 1);
+                                self.place_in_column(box_bottom(fill, w, tee), width, side)
+                            }
+                            None => box_bottom(fill, width, anchors.then_some(RAIL_COLUMN)),
+                        }
                     }
                     RowKind::Content { .. } => {
-                        let line = fill_line(line, fill, width);
+                        let mut line = fill_line(line, fill, width);
                         // The rail is comment chrome, so it shows only while
                         // comments do and is dropped when they are hidden.
-                        match self.rail_at(row, compose_span) {
-                            Some(cell) if !self.comments_hidden => {
-                                overlay_rail(line, cell.glyph, fill, cell.color, self.background)
+                        if !self.comments_hidden {
+                            for cell in self.row_rails(row, compose_span) {
+                                line = overlay_rail(line, cell, self.background);
                             }
-                            _ => line,
                         }
+                        line
                     }
                     _ => fill_line(line, fill, width),
                 }
+            }
+        }
+    }
+
+    /// Place a column-scoped comment box line at its `side` column of a viewport
+    /// `width` columns wide, filling the opposite column with blanks and drawing
+    /// the divider rule between the two. `box_line` is the box edge already drawn
+    /// at the column's width.
+    fn place_in_column(&self, box_line: Line<'static>, width: usize, side: Side) -> Line<'static> {
+        let divider = Span::styled(
+            COLUMN_DIVIDER.to_string(),
+            Style::default().fg(color(self.divider_fg)),
+        );
+        let left_width = divider_column(width);
+        let right_width = width.saturating_sub(left_width + 1);
+        match side {
+            Side::Before => {
+                let mut spans = box_line.spans;
+                spans.push(divider);
+                spans.push(Span::raw(" ".repeat(right_width)));
+                Line::from(spans)
+            }
+            Side::After => {
+                let mut spans = vec![Span::raw(" ".repeat(left_width)), divider];
+                spans.extend(box_line.spans);
+                Line::from(spans)
             }
         }
     }
@@ -2506,21 +2636,26 @@ impl App {
             .any(|region| region.id == id && region.anchor_rail)
     }
 
-    /// The anchor rail document `row` draws: the one baked in by the render, or,
-    /// while a range comment is being authored, a preview of the rail its target
-    /// will keep, so the reviewer sees the covered span before saving.
-    /// `compose_span` is the covered row span from [`compose_rail_span`], passed
-    /// in so a full render resolves it once rather than for every drawn row.
-    fn rail_at(&self, row: usize, compose_span: Option<(usize, usize)>) -> Option<RailCell> {
-        self.compose_rail(row, compose_span)
-            .or(self.document.rails[row])
+    /// The anchor rails document `row` draws: the ones baked in by the render,
+    /// plus, while a range comment is being authored, a preview of the rail its
+    /// target will keep, so the reviewer sees the covered span before saving.
+    /// `compose_span` is the covered span from [`compose_rail_span`], passed in
+    /// so a full render resolves it once rather than for every drawn row.
+    fn row_rails(&self, row: usize, compose_span: Option<(usize, usize, Side)>) -> Vec<RailCell> {
+        let mut rails = self.document.rails[row].clone();
+        if let Some(cell) = self.compose_rail(row, compose_span) {
+            rails.retain(|c| c.column != cell.column);
+            rails.push(cell);
+        }
+        rails
     }
 
     /// The inclusive document-row span the in-progress range comment previews its
-    /// rail over. `None` when not authoring a range comment or when its lines are
-    /// not currently rendered. Resolved once per render and handed to
-    /// [`rail_at`] so the per-row preview does not rescan the document.
-    fn compose_rail_span(&self) -> Option<(usize, usize)> {
+    /// rail over, and the side it anchors to. `None` when not authoring a range
+    /// comment or when its lines are not currently rendered. Resolved once per
+    /// render and handed to [`row_rails`] so the per-row preview does not rescan
+    /// the document.
+    fn compose_rail_span(&self) -> Option<(usize, usize, Side)> {
         let CommentTarget::Lines {
             file,
             side,
@@ -2532,7 +2667,7 @@ impl App {
         };
         let start_row = self.first_content_row(file, *side, start_line.get())?;
         let end_row = self.first_content_row(file, *side, end_line.get())?;
-        Some((start_row, end_row))
+        Some((start_row, end_row, *side))
     }
 
     /// The preview rail cell for document `row` within `compose_span`, the covered
@@ -2541,8 +2676,12 @@ impl App {
     /// the span draws it, including the opposite-side rows a unified diff
     /// interleaves, so the preview reads as one unbroken stroke. `None` outside
     /// the span or on a non-content row.
-    fn compose_rail(&self, row: usize, compose_span: Option<(usize, usize)>) -> Option<RailCell> {
-        let (start_row, end_row) = compose_span?;
+    fn compose_rail(
+        &self,
+        row: usize,
+        compose_span: Option<(usize, usize, Side)>,
+    ) -> Option<RailCell> {
+        let (start_row, end_row, side) = compose_span?;
         if row < start_row || row > end_row {
             return None;
         }
@@ -2557,6 +2696,9 @@ impl App {
             '\u{2502}'
         };
         Some(RailCell {
+            // The render width places the column the baked document rails sit
+            // in, so the preview aligns with them.
+            column: rail_column(self.document.mode, side, self.width),
             glyph,
             color: self.compose_border,
         })
@@ -3018,54 +3160,97 @@ fn box_side(content: Line<'static>, border: Option<Rgb>, width: usize) -> Line<'
 }
 
 /// Draw the bottom edge of a comment box out to `width`: the corners joined by a
-/// rule. When `rail` is set the box anchors a line range, so the rule drops a tee
-/// at the rail column to join the anchor rail tracing the lines below.
-fn box_bottom(border: Option<Rgb>, width: usize, rail: bool) -> Line<'static> {
+/// rule. When `tee` names a column within the box's own `width` the box anchors
+/// a line range, so the rule drops a tee there to join the anchor rail tracing
+/// the lines below.
+fn box_bottom(border: Option<Rgb>, width: usize, tee: Option<usize>) -> Line<'static> {
     let style = border_style(border);
     let mut chars = vec!['\u{2514}'];
     if width > 2 {
         chars.extend(std::iter::repeat_n('\u{2500}', width - 2));
     }
     chars.push('\u{2518}');
-    if rail && width > RAIL_COLUMN + 1 {
-        chars[RAIL_COLUMN] = RAIL_TEE;
+    if let Some(col) = tee.filter(|&c| c > 0 && c + 1 < width) {
+        chars[col] = RAIL_TEE;
     }
     Line::from(Span::styled(chars.into_iter().collect::<String>(), style))
 }
 
-/// Overlay the anchor rail on a content line's gutter: swap the last gutter cell
-/// for `glyph` in the rail color, lifted to read over any row tint, leaving the
-/// rest of the gutter untouched.
-fn overlay_rail(
-    line: Line<'static>,
-    glyph: char,
-    fill: Option<Rgb>,
-    rail: Rgb,
-    base: Rgb,
-) -> Line<'static> {
-    let mut spans = line.spans;
-    if spans.is_empty() {
-        return Line::from(spans);
+/// Overlay one anchor rail on a content line: swap the single cell at
+/// `cell.column` for its glyph in the rail color, lifted to read over the tint
+/// of the gutter it sits in, leaving every other cell untouched. A column past
+/// the line's end leaves the line unchanged. Each span is expected to have an
+/// explicit background, the tint the glyph must stay legible over; a span with
+/// none takes the rail color unadjusted.
+fn overlay_rail(line: Line<'static>, cell: RailCell, base: Rgb) -> Line<'static> {
+    let mut out = Vec::with_capacity(line.spans.len() + 2);
+    let mut offset = 0;
+    let mut placed = false;
+    for span in line.spans {
+        let count = span.content.chars().count();
+        if placed || cell.column < offset || cell.column >= offset + count {
+            offset += count;
+            out.push(span);
+            continue;
+        }
+        let cut = cell.column - offset;
+        let chars: Vec<char> = span.content.chars().collect();
+        let before: String = chars[..cut].iter().collect();
+        let after: String = chars[cut + 1..].iter().collect();
+        let fg = match rgb_of(span.style.bg) {
+            Some(bg) => legible_over(cell.color, bg, base),
+            None => cell.color,
+        };
+        out.push(Span::styled(before, span.style));
+        out.push(Span::styled(
+            cell.glyph.to_string(),
+            span.style.fg(color(fg)),
+        ));
+        out.push(Span::styled(after, span.style));
+        offset += count;
+        placed = true;
     }
-    let gutter = spans.remove(0);
-    let chars: Vec<char> = gutter.content.chars().collect();
-    if chars.len() <= RAIL_COLUMN {
-        spans.insert(0, gutter);
-        return Line::from(spans);
-    }
-    let fg = match fill {
-        Some(bg) => legible_over(rail, bg, base),
-        None => rail,
-    };
-    let before: String = chars[..RAIL_COLUMN].iter().collect();
-    let after: String = chars[RAIL_COLUMN + 1..].iter().collect();
-    let mut out = vec![
-        Span::styled(before, gutter.style),
-        Span::styled(glyph.to_string(), gutter.style.fg(color(fg))),
-        Span::styled(after, gutter.style),
-    ];
-    out.extend(spans);
     Line::from(out)
+}
+
+/// Split `line` at character column `at` into the cells before it and the cells
+/// from it on, dividing the span that straddles the column and keeping every
+/// style. A column past the line's end returns the whole line and an empty tail.
+fn split_line_at(line: Line<'static>, at: usize) -> (Line<'static>, Line<'static>) {
+    let mut left = Vec::new();
+    let mut right = Vec::new();
+    let mut offset = 0;
+    for span in line.spans {
+        let count = span.content.chars().count();
+        if offset >= at {
+            right.push(span);
+        } else if offset + count <= at {
+            offset += count;
+            left.push(span);
+        } else {
+            let cut = at - offset;
+            let chars: Vec<char> = span.content.chars().collect();
+            left.push(Span::styled(
+                chars[..cut].iter().collect::<String>(),
+                span.style,
+            ));
+            right.push(Span::styled(
+                chars[cut..].iter().collect::<String>(),
+                span.style,
+            ));
+            offset += count;
+        }
+    }
+    (Line::from(left), Line::from(right))
+}
+
+/// The RGB behind a span background, or `None` when it is unset or a non-RGB
+/// terminal color, so the rail lift only fires over a known tint.
+fn rgb_of(bg: Option<Color>) -> Option<Rgb> {
+    match bg {
+        Some(Color::Rgb(r, g, b)) => Some(Rgb { r, g, b }),
+        _ => None,
+    }
 }
 
 /// Return `line` padded with blank cells in `fill` out to `width`, so a row that
@@ -3197,7 +3382,7 @@ mod tests {
     use crate::key::{Chord, Key, KeyPress};
     use crate::keymap::{Keymap, KeymapOverrides};
     use crate::render::testutil::{dump, file, ln, theme};
-    use crate::render::{DiffView, RowKind, ViewLayout};
+    use crate::render::{DiffMode, DiffView, RowKind, ViewLayout};
     use crate::review::Review;
     use crate::theme::Theme;
 
@@ -5611,6 +5796,54 @@ mod tests {
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
             "<#d8dadd|#65737e|->   1    1   <#fbf9fb|#65737e|->let<#f6f6f8|#65737e|-> x <#f6f6f8|#65737e|->=<#f6f6f8|#65737e|-> <#fdf9f8|#65737e|->1<#f6f6f8|#65737e|->;<-|#65737e|->                  \n",
+        );
+    }
+
+    #[test]
+    fn a_side_by_side_after_comment_opens_a_box_scoped_to_the_right_column() {
+        // Both comments anchor to after-side lines, so each box sits in the right
+        // column with the left column blank and the divider running unbroken
+        // between them. A narrow column clips the header title so the box keeps
+        // its shape. The box's bottom-edge tee and the anchor rail in the content
+        // row below sit in the same right-gutter column.
+        let mut app = App::reviewing(commented_review(), 10, &theme())
+            .with_diff_mode(DiffMode::SideBySide, 0);
+        app.set_width(52);
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(52)),
+            "<#fcf7ee|#65737e|b>Review<#f7f7f8|#65737e|-> [press c here to draft the review comment]<-|#65737e|->   \n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<-|-|->                         <#7d828c|-|->│<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved<#767b84|-|-> <#767b84|-|->┐\n",
+            "<-|-|->                         <#7d828c|-|->│<#767b84|-|->└─────┬──────────────────┘\n",
+            "<#7d828c|-|->   1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;<-|-|->        <#7d828c|-|->│<#7d828c|-|->   1  <#767b84|-|->└<#7d828c|-|-><#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;<-|-|->         \n",
+            "<-|-|->                         <#7d828c|-|->│<#767b84|-|->┌ <#8fa1b3|-|->wez (human)<#767b84|-|->  press e t<#767b84|-|-> <#767b84|-|->┐\n",
+            "<-|-|->                         <#7d828c|-|->│<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->         <#767b84|-|->│\n",
+            "<-|-|->                         <#7d828c|-|->│<#767b84|-|->└─────┬──────────────────┘\n",
+            "<-|-|->                         <#7d828c|-|->│<#9ea1a9|#414a4a|->   2 +<#989ca3|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->         \n",
+        );
+    }
+
+    #[test]
+    fn a_side_by_side_search_washes_the_match_within_each_column() {
+        // At a width that resolves to two columns, the context line shows on both
+        // sides and the added line only on the right. Searching "let" washes the
+        // match in whichever column holds it: both columns of the context row,
+        // and the right column of the added row, past the divider rule that
+        // separates the two content runs.
+        let mut app =
+            App::reviewing(plain_review(), 6, &theme()).with_diff_mode(DiffMode::SideBySide, 0);
+        app.set_width(44);
+        search_for(&mut app, Action::SearchForward, "let");
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(44)),
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#d8dadd|#65737e|->   1   <#fbf9fb|#686255|->let<#f6f6f8|#65737e|-> x <#f6f6f8|#65737e|->=<#f6f6f8|#65737e|-> <#fdf9f8|#65737e|->1<#f6f6f8|#65737e|->;<-|#65737e|->    <#d8dadd|#65737e|->│<#d8dadd|#65737e|->   1   <#fbf9fb|#686255|->let<#f6f6f8|#65737e|-> x <#f6f6f8|#65737e|->=<#f6f6f8|#65737e|-> <#fdf9f8|#65737e|->1<#f6f6f8|#65737e|->;<-|#65737e|->     \n",
+            "<-|-|->                     <#7d828c|-|->│<#9ea1a9|#414a4a|->   2 + <#e8dbe5|#686255|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->     \n",
         );
     }
 
