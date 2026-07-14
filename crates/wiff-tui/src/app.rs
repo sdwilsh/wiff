@@ -34,7 +34,10 @@ use crate::exit::{Exit, ExitDefault, ExitPlan, plan_exit};
 use crate::key::{Key, KeyPress};
 use crate::keymap::{Keymap, Resolution};
 use crate::picker::{Picker, PickerColors, PickerRow, RowSpan};
-use crate::render::{Document, RAIL_COLUMN, RAIL_TEE, RailCell, RowKind, ViewLayout, color};
+use crate::render::{
+    DEFAULT_SIDE_BY_SIDE_MIN_WIDTH, DiffMode, Document, RAIL_COLUMN, RAIL_TEE, RailCell, RowKind,
+    ViewLayout, color,
+};
 use crate::review::{CommentSync, Review};
 use crate::search::{Direction, Matcher, Search, SearchInput};
 use crate::theme::{Theme, legible_over};
@@ -450,6 +453,10 @@ pub struct App {
     /// Whether diff content lines wrap to the viewport width rather than being
     /// clipped at the edge, toggled by [`Action::ToggleWrap`].
     wrap: bool,
+    /// The reviewer's chosen diff layout, resolved against the width each render.
+    diff_mode: DiffMode,
+    /// The minimum viewport width at which `DiffMode::Auto` selects side-by-side.
+    side_by_side_min_width: usize,
     /// Columns per tab stop for the comment editor.
     tab_width: usize,
     /// Whether the initial cursor has been centered in the viewport, which
@@ -525,6 +532,8 @@ impl App {
             height,
             width: 0,
             wrap: false,
+            diff_mode: DiffMode::default(),
+            side_by_side_min_width: DEFAULT_SIDE_BY_SIDE_MIN_WIDTH,
             tab_width: wiff_diff::DEFAULT_TAB_WIDTH,
             positioned: false,
             background: theme.background,
@@ -578,6 +587,14 @@ impl App {
     /// only records the choice; the first draw reflows to it.
     pub fn with_wrap_content(mut self, wrap: bool) -> Self {
         self.wrap = wrap;
+        self
+    }
+
+    /// Adopt the reviewer's diff layout choice and the width auto mode switches
+    /// to side-by-side at, from their configured defaults.
+    pub fn with_diff_mode(mut self, mode: DiffMode, min_width: usize) -> Self {
+        self.diff_mode = mode;
+        self.side_by_side_min_width = min_width;
         self
     }
 
@@ -705,6 +722,9 @@ impl App {
         ViewLayout {
             width: self.width,
             wrap_content: self.wrap,
+            mode: self
+                .diff_mode
+                .resolve(self.width, self.side_by_side_min_width),
         }
     }
 

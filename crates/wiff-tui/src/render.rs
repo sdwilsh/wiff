@@ -41,6 +41,14 @@ const LINENO_WIDTH: usize = 4;
 /// it aligns under the code column.
 const GUTTER_WIDTH: usize = LINENO_WIDTH * 2 + 4;
 
+/// The width of one side-by-side column's gutter: a single line number, the
+/// change marker, a leading space, and a trailing space that hosts the anchor
+/// rail just left of the content.
+const COLUMN_GUTTER_WIDTH: usize = LINENO_WIDTH + 3;
+
+/// The single-cell rule drawn between the two side-by-side columns.
+const COLUMN_DIVIDER: char = '\u{2502}';
+
 /// The shortest run of unchanged lines worth collapsing. Hiding a single line
 /// behind a one-line marker saves nothing, so only runs of two or more fold.
 const MIN_FOLD: usize = 2;
@@ -135,6 +143,48 @@ pub struct CommentRegion {
     pub anchor_rail: bool,
 }
 
+/// Which layout a render targets: the interleaved single column, or two columns
+/// side by side with the old content on the left and the new on the right. Auto
+/// selection resolves to one of these from the viewport width before rendering.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub enum LayoutMode {
+    /// One column, removed and added lines interleaved.
+    #[default]
+    Unified,
+    /// Two columns, before on the left and after on the right.
+    SideBySide,
+}
+
+/// The default width, in columns, at or above which auto mode chooses the
+/// side-by-side layout.
+pub const DEFAULT_SIDE_BY_SIDE_MIN_WIDTH: usize = 130;
+
+/// The diff layout a reviewer selects: always one column, always two, or two
+/// only once the viewport reaches a configured width.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub enum DiffMode {
+    /// Side-by-side when the viewport is wide enough, else unified.
+    #[default]
+    Auto,
+    /// Always one interleaved column.
+    Unified,
+    /// Always two columns.
+    SideBySide,
+}
+
+impl DiffMode {
+    /// The concrete layout for a viewport `width` columns wide, taking
+    /// side-by-side in auto mode only at or above `min_width`.
+    pub fn resolve(self, width: usize, min_width: usize) -> LayoutMode {
+        match self {
+            DiffMode::Unified => LayoutMode::Unified,
+            DiffMode::SideBySide => LayoutMode::SideBySide,
+            DiffMode::Auto if width >= min_width => LayoutMode::SideBySide,
+            DiffMode::Auto => LayoutMode::Unified,
+        }
+    }
+}
+
 /// The view width a render targets and whether the diff content wraps to it.
 /// Comment bodies always wrap to the width; `wrap_content` additionally wraps
 /// the diff lines instead of clipping them at the edge. A width of zero leaves
@@ -145,6 +195,35 @@ pub struct ViewLayout {
     pub width: usize,
     /// Whether diff content lines wrap to the width rather than clip.
     pub wrap_content: bool,
+    /// Whether the diff renders in one column or two.
+    pub mode: LayoutMode,
+}
+
+/// The width of each side-by-side column, derived from a total view width.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ColumnGeometry {
+    left: usize,
+    right: usize,
+}
+
+impl ColumnGeometry {
+    /// Split `width` columns into two, reserving one cell for the divider. The
+    /// right column takes the odd cell when the width does not halve evenly, so
+    /// the new-content side is the wider one.
+    fn split(width: usize) -> Self {
+        let available = width.saturating_sub(1);
+        let left = available / 2;
+        Self {
+            left,
+            right: available - left,
+        }
+    }
+
+    /// The content width of a column: the column less its gutter, or zero when
+    /// the gutter alone already fills it.
+    fn content_width(column: usize) -> usize {
+        column.saturating_sub(COLUMN_GUTTER_WIDTH)
+    }
 }
 
 /// The inputs to rendering one file: the file and its index, where its comments
@@ -156,6 +235,21 @@ struct FileRender<'a> {
     file: &'a FileDiff,
     placement: &'a FilePlacement<'a>,
     highlight: FileHighlight<'a>,
+    pending: &'a [Ulid],
+    layout: ViewLayout,
+}
+
+/// The shared inputs for rendering a hunk's content rows, passed to both the
+/// unified and side-by-side emission paths.
+#[derive(Clone, Copy)]
+struct HunkEmission<'a> {
+    index: usize,
+    hunk: &'a wiff_diff::Hunk,
+    emphasis: &'a [Vec<Range<usize>>],
+    before: &'a BTreeMap<LineNo, HighlightedLine>,
+    after: &'a BTreeMap<LineNo, HighlightedLine>,
+    fold_marks: &'a [Option<char>],
+    placement: &'a FilePlacement<'a>,
     pending: &'a [Ulid],
     layout: ViewLayout,
 }
@@ -202,11 +296,8 @@ pub enum RowKind {
         /// The hunk's index within the file.
         hunk: usize,
     },
-    /// A content line, anchorable to `(side, lineno)` on the diff. A row
-    /// addresses a Before-side line in its left column and an After-side line in
-    /// its right column. Unified fills only one column per row; side-by-side may
-    /// fill both, with the other column blank filler where the sides differ in
-    /// length.
+    /// A content line addressing a Before-side line in its left column and an
+    /// After-side line in its right column, either of which may be blank.
     Content {
         /// The Before-side line, drawn in the left column.
         before: ColumnLine,
@@ -715,14 +806,10 @@ impl DiffView {
             );
             let emphasis = intraline::refine(&hunk.lines);
             // A wrapped content line spans several rows, so a fold needs the row
-            // one past a line's last row, not one past its first; track both.
-            let mut line_row = Vec::with_capacity(hunk.lines.len());
-            let mut line_end = Vec::with_capacity(hunk.lines.len());
-            let content_wrap = if layout.wrap_content && width > GUTTER_WIDTH {
-                Some(width - GUTTER_WIDTH)
-            } else {
-                None
-            };
+            // one past a line's last row, not one past its first; track both,
+            // indexed by hunk line so a fold run's boundaries resolve directly.
+            let mut line_row = vec![0usize; hunk.lines.len()];
+            let mut line_end = vec![0usize; hunk.lines.len()];
             // Work out the foldable runs up front so each context line inside
             // one can show a fold-column glyph, marking the region as
             // collapsible even while it is expanded.
@@ -734,55 +821,32 @@ impl DiffView {
                 .collect();
             let runs = foldable_runs(&kinds, self.display_context, &anchored);
             let fold_marks = fold_column(&runs, hunk.lines.len());
-            for (line_index, (line, ranges)) in hunk.lines.iter().zip(&emphasis).enumerate() {
-                let (side, lineno, highlighted) = match line.kind {
-                    LineKind::Removed => (
-                        Side::Before,
-                        line.old_lineno,
-                        line.old_lineno.and_then(|n| before.get(&n)),
-                    ),
-                    LineKind::Context | LineKind::Added => (
-                        Side::After,
-                        line.new_lineno,
-                        line.new_lineno.and_then(|n| after.get(&n)),
-                    ),
-                };
-                if let Some(n) = lineno {
-                    for comment in placement.at(side, n.get()) {
-                        self.push_comment(
-                            doc,
-                            index,
-                            comment,
-                            pending.contains(&comment.id),
-                            width,
-                            true,
-                        );
-                    }
-                }
-                line_row.push(doc.rows.len());
-                // Remember the first display row of each content line, keyed by
-                // side and number, so the rail post-pass can walk a comment's
-                // covered span in document order.
-                if let Some(n) = lineno {
-                    first_row.entry((side, n.get())).or_insert(doc.rows.len());
-                }
-                let (fill, rows) = self.content_rows(
-                    line,
-                    highlighted,
-                    ranges,
-                    content_wrap,
-                    fold_marks[line_index],
-                );
-                for (rendered, text) in rows {
-                    doc.push(
-                        index,
-                        RowKind::content(side, lineno),
-                        fill,
-                        text,
-                        rendered,
-                    );
-                }
-                line_end.push(doc.rows.len());
+            let emission = HunkEmission {
+                index,
+                hunk,
+                emphasis: &emphasis,
+                before,
+                after,
+                fold_marks: &fold_marks,
+                placement,
+                pending,
+                layout,
+            };
+            match layout.mode {
+                LayoutMode::Unified => self.emit_hunk_unified(
+                    doc,
+                    &emission,
+                    &mut line_row,
+                    &mut line_end,
+                    &mut first_row,
+                ),
+                LayoutMode::SideBySide => self.emit_hunk_columns(
+                    doc,
+                    &emission,
+                    &mut line_row,
+                    &mut line_end,
+                    &mut first_row,
+                ),
             }
             let section = self.sections.for_path(file.display_path());
             for run in runs {
@@ -796,6 +860,235 @@ impl DiffView {
             }
         }
         self.trace_rails(doc, placement, pending, &first_row);
+    }
+
+    /// Emit one hunk's content rows in the unified layout: each diff line becomes
+    /// its own display rows, with any line comments woven in above it.
+    fn emit_hunk_unified(
+        &self,
+        doc: &mut Document,
+        e: &HunkEmission,
+        line_row: &mut [usize],
+        line_end: &mut [usize],
+        first_row: &mut HashMap<(Side, u32), usize>,
+    ) {
+        let width = e.layout.width;
+        let content_wrap = if e.layout.wrap_content && width > GUTTER_WIDTH {
+            Some(width - GUTTER_WIDTH)
+        } else {
+            None
+        };
+        for (line_index, (line, ranges)) in e.hunk.lines.iter().zip(e.emphasis).enumerate() {
+            let (side, lineno, highlighted) = match line.kind {
+                LineKind::Removed => (
+                    Side::Before,
+                    line.old_lineno,
+                    line.old_lineno.and_then(|n| e.before.get(&n)),
+                ),
+                LineKind::Context | LineKind::Added => (
+                    Side::After,
+                    line.new_lineno,
+                    line.new_lineno.and_then(|n| e.after.get(&n)),
+                ),
+            };
+            if let Some(n) = lineno {
+                for comment in e.placement.at(side, n.get()) {
+                    self.push_comment(
+                        doc,
+                        e.index,
+                        comment,
+                        e.pending.contains(&comment.id),
+                        width,
+                        true,
+                    );
+                }
+            }
+            line_row[line_index] = doc.rows.len();
+            // Remember the first display row of each content line, keyed by side
+            // and number, so the rail post-pass can walk a comment's covered
+            // span in document order.
+            if let Some(n) = lineno {
+                first_row.entry((side, n.get())).or_insert(doc.rows.len());
+            }
+            let (fill, rows) = self.content_rows(
+                line,
+                highlighted,
+                ranges,
+                content_wrap,
+                e.fold_marks[line_index],
+            );
+            for (rendered, text) in rows {
+                doc.push(
+                    e.index,
+                    RowKind::content(side, lineno),
+                    fill,
+                    text,
+                    rendered,
+                );
+            }
+            line_end[line_index] = doc.rows.len();
+        }
+    }
+
+    /// Emit one hunk's content rows in the side-by-side layout: removed and added
+    /// lines pair across the two columns, a context line shows on both, and a
+    /// line comment opens in the column of the side it anchors to.
+    fn emit_hunk_columns(
+        &self,
+        doc: &mut Document,
+        e: &HunkEmission,
+        line_row: &mut [usize],
+        line_end: &mut [usize],
+        first_row: &mut HashMap<(Side, u32), usize>,
+    ) {
+        let geo = ColumnGeometry::split(e.layout.width);
+        let wrap = e.layout.wrap_content;
+        let divider = Span::styled(
+            COLUMN_DIVIDER.to_string(),
+            Style::default().fg(color(self.theme.gutter_fg)),
+        );
+        for pair in pair_hunk_lines(&e.hunk.lines) {
+            self.push_column_comments(doc, e, pair.left, Side::Before);
+            self.push_column_comments(doc, e, pair.right, Side::After);
+
+            let left_rows = self.column_side(e, pair.left, Side::Before, geo.left, wrap);
+            let right_rows = self.column_side(e, pair.right, Side::After, geo.right, wrap);
+            let height = left_rows.len().max(right_rows.len()).max(1);
+
+            let start = doc.rows.len();
+            if let Some(i) = pair.left {
+                line_row[i] = start;
+                if let Some(n) = e.hunk.lines[i].old_lineno {
+                    first_row.entry((Side::Before, n.get())).or_insert(start);
+                }
+            }
+            if let Some(i) = pair.right {
+                line_row[i] = start;
+                if let Some(n) = e.hunk.lines[i].new_lineno {
+                    first_row.entry((Side::After, n.get())).or_insert(start);
+                }
+            }
+            let before = match pair.left {
+                Some(i) => ColumnLine::Line(e.hunk.lines[i].old_lineno),
+                None => ColumnLine::Blank,
+            };
+            let after = match pair.right {
+                Some(i) => ColumnLine::Line(e.hunk.lines[i].new_lineno),
+                None => ColumnLine::Blank,
+            };
+            let kind = RowKind::Content { before, after };
+            for r in 0..height {
+                let (mut spans, left_text) = match left_rows.get(r) {
+                    Some((s, t)) => (s.clone(), t.clone()),
+                    None => (blank_column(geo.left), String::new()),
+                };
+                let (right_spans, right_text) = match right_rows.get(r) {
+                    Some((s, t)) => (s.clone(), t.clone()),
+                    None => (blank_column(geo.right), String::new()),
+                };
+                spans.push(divider.clone());
+                spans.extend(right_spans);
+                doc.push(
+                    e.index,
+                    kind.clone(),
+                    None,
+                    join_column_text(&left_text, &right_text),
+                    Line::from(spans),
+                );
+            }
+            let end = doc.rows.len();
+            if let Some(i) = pair.left {
+                line_end[i] = end;
+            }
+            if let Some(i) = pair.right {
+                line_end[i] = end;
+            }
+        }
+    }
+
+    /// Push the comments anchored to the `side` line at hunk index `idx`, above
+    /// its row, in that side's column. A blank column or an unnumbered line has
+    /// none.
+    fn push_column_comments(
+        &self,
+        doc: &mut Document,
+        e: &HunkEmission,
+        idx: Option<usize>,
+        side: Side,
+    ) {
+        let Some(i) = idx else { return };
+        let number = match side {
+            Side::Before => e.hunk.lines[i].old_lineno,
+            Side::After => e.hunk.lines[i].new_lineno,
+        };
+        let Some(n) = number else { return };
+        for comment in e.placement.at(side, n.get()) {
+            self.push_comment(
+                doc,
+                e.index,
+                comment,
+                e.pending.contains(&comment.id),
+                e.layout.width,
+                true,
+            );
+        }
+    }
+
+    /// Render the `side` column of a logical row `col_width` columns wide: the
+    /// display rows of the line at hunk index `idx`, or no rows when the column
+    /// is blank filler. Each row is a one-number gutter, the syntax-colored
+    /// content bounded to the column (wrapped when `wrap`, else clipped), and
+    /// background padding to the column's right edge so the row tint reaches the
+    /// divider. Returns each display row's spans and its plain text.
+    fn column_side(
+        &self,
+        e: &HunkEmission,
+        idx: Option<usize>,
+        side: Side,
+        col_width: usize,
+        wrap: bool,
+    ) -> Vec<(Vec<Span<'static>>, String)> {
+        let Some(i) = idx else { return Vec::new() };
+        let line = &e.hunk.lines[i];
+        let (number, map) = match side {
+            Side::Before => (line.old_lineno, e.before),
+            Side::After => (line.new_lineno, e.after),
+        };
+        let highlighted = number.and_then(|n| map.get(&n));
+        let StyledLine {
+            marker,
+            row_bg,
+            gutter_style,
+            content,
+        } = self.style_line(line, highlighted, &e.emphasis[i], e.fold_marks[i]);
+        let gutter = Span::styled(format!("{} {} ", lineno(number), marker), gutter_style);
+        let blank_gutter = Span::styled(" ".repeat(COLUMN_GUTTER_WIDTH), gutter_style);
+        let content_width = ColumnGeometry::content_width(col_width);
+        let content = Line::from(content);
+        let visual = if wrap {
+            wrap_line(&content, content_width)
+        } else {
+            vec![clip_line(&content, content_width)]
+        };
+        visual
+            .into_iter()
+            .enumerate()
+            .map(|(row, visual)| {
+                let text: String = visual.spans.iter().map(|s| s.content.as_ref()).collect();
+                let lead = if row == 0 {
+                    gutter.clone()
+                } else {
+                    blank_gutter.clone()
+                };
+                let mut spans = vec![lead];
+                spans.extend(visual.spans);
+                let used = text.chars().count();
+                if content_width > used {
+                    spans.push(pad_span(content_width - used, row_bg));
+                }
+                (spans, text)
+            })
+            .collect()
     }
 
     /// Draw each line comment's anchor rail into `doc.rails`. A comment's rail
@@ -1050,6 +1343,70 @@ impl DiffView {
         wrap: Option<usize>,
         fold_mark: Option<char>,
     ) -> (Option<Rgb>, Vec<ContentRow>) {
+        let StyledLine {
+            marker,
+            row_bg,
+            gutter_style,
+            content,
+        } = self.style_line(line, highlighted, ranges, fold_mark);
+        let gutter = Span::styled(
+            format!(
+                "{} {} {} ",
+                lineno(line.old_lineno),
+                lineno(line.new_lineno),
+                marker,
+            ),
+            gutter_style,
+        );
+        let Some(content_width) = wrap else {
+            let mut spans = vec![gutter];
+            spans.extend(content);
+            return (row_bg, vec![(Line::from(spans), line.text.clone())]);
+        };
+        // Wrap the content into the columns beside the gutter, leading the first
+        // row with the gutter and each continuation with a blank gutter so the
+        // wrapped code aligns under the first row.
+        let blank_gutter = Span::styled(" ".repeat(GUTTER_WIDTH), gutter_style);
+        let rows = wrap_line(&Line::from(content), content_width)
+            .into_iter()
+            .enumerate()
+            .map(|(row, mut visual)| {
+                let text: String = visual.spans.iter().map(|s| s.content.as_ref()).collect();
+                let lead = if row == 0 {
+                    gutter.clone()
+                } else {
+                    blank_gutter.clone()
+                };
+                let mut spans = vec![lead];
+                spans.append(&mut visual.spans);
+                (Line::from(spans), text)
+            })
+            .collect();
+        (row_bg, rows)
+    }
+}
+
+/// The role tint and syntax-colored spans of one diff line, shared by the
+/// unified and side-by-side layouts, which assemble their own gutters around it.
+struct StyledLine {
+    marker: char,
+    row_bg: Option<Rgb>,
+    gutter_style: Style,
+    content: Vec<Span<'static>>,
+}
+
+impl DiffView {
+    /// Style one diff line into its change marker, row tint, gutter style, and
+    /// syntax-colored content spans, leaving the gutter text to the caller so
+    /// each layout can frame it. A foldable context line takes `fold_mark` in its
+    /// marker column.
+    fn style_line(
+        &self,
+        line: &DiffLine,
+        highlighted: Option<&HighlightedLine>,
+        ranges: &[Range<usize>],
+        fold_mark: Option<char>,
+    ) -> StyledLine {
         let (marker, row_bg, emphasis_bg) = match line.kind {
             LineKind::Context => (fold_mark.unwrap_or(' '), None, None),
             LineKind::Added => (
@@ -1068,15 +1425,6 @@ impl DiffView {
             None => self.theme.gutter_fg,
         };
         let gutter_style = with_bg(Style::default().fg(color(gutter_fg)), row_bg);
-        let gutter = Span::styled(
-            format!(
-                "{} {} {} ",
-                lineno(line.old_lineno),
-                lineno(line.new_lineno),
-                marker,
-            ),
-            gutter_style,
-        );
         let mut content = Vec::new();
         for piece in split_pieces(
             highlighted.map(Vec::as_slice).unwrap_or(&[]),
@@ -1105,31 +1453,102 @@ impl DiffView {
         if line.kind == LineKind::Added {
             mark_trailing_whitespace(&mut content, &line.text, self.theme.whitespace_bg);
         }
-        let Some(content_width) = wrap else {
-            let mut spans = vec![gutter];
-            spans.extend(content);
-            return (row_bg, vec![(Line::from(spans), line.text.clone())]);
-        };
-        // Wrap the content into the columns beside the gutter, leading the first
-        // row with the gutter and each continuation with a blank gutter so the
-        // wrapped code aligns under the first row.
-        let blank_gutter = Span::styled(" ".repeat(GUTTER_WIDTH), gutter_style);
-        let rows = wrap_line(&Line::from(content), content_width)
-            .into_iter()
-            .enumerate()
-            .map(|(row, mut visual)| {
-                let text: String = visual.spans.iter().map(|s| s.content.as_ref()).collect();
-                let lead = if row == 0 {
-                    gutter.clone()
-                } else {
-                    blank_gutter.clone()
-                };
-                let mut spans = vec![lead];
-                spans.append(&mut visual.spans);
-                (Line::from(spans), text)
-            })
-            .collect();
-        (row_bg, rows)
+        StyledLine {
+            marker,
+            row_bg,
+            gutter_style,
+            content,
+        }
+    }
+}
+
+/// One logical side-by-side row: the hunk-line indices shown in the left
+/// (before) and right (after) columns, either absent where that column is blank
+/// filler.
+struct LinePair {
+    left: Option<usize>,
+    right: Option<usize>,
+}
+
+/// Pair a hunk's lines into side-by-side rows: a context line shows on both
+/// sides, and a run of removed lines pairs index-wise against the run of added
+/// lines that follows it, the shorter run filled with blanks.
+fn pair_hunk_lines(lines: &[DiffLine]) -> Vec<LinePair> {
+    let mut rows = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].kind == LineKind::Context {
+            rows.push(LinePair {
+                left: Some(i),
+                right: Some(i),
+            });
+            i += 1;
+            continue;
+        }
+        let mut removed = Vec::new();
+        while i < lines.len() && lines[i].kind == LineKind::Removed {
+            removed.push(i);
+            i += 1;
+        }
+        let mut added = Vec::new();
+        while i < lines.len() && lines[i].kind == LineKind::Added {
+            added.push(i);
+            i += 1;
+        }
+        let height = removed.len().max(added.len());
+        for k in 0..height {
+            rows.push(LinePair {
+                left: removed.get(k).copied(),
+                right: added.get(k).copied(),
+            });
+        }
+    }
+    rows
+}
+
+/// Hard-clip `line` to at most `width` display columns, counted in characters,
+/// dropping any content past the limit so a side-by-side column never spills
+/// past its bounds.
+fn clip_line(line: &Line<'static>, width: usize) -> Line<'static> {
+    let mut out = Vec::new();
+    let mut used = 0;
+    for span in &line.spans {
+        if used >= width {
+            break;
+        }
+        let count = span.content.chars().count();
+        if used + count <= width {
+            out.push(span.clone());
+            used += count;
+        } else {
+            let text: String = span.content.chars().take(width - used).collect();
+            out.push(Span::styled(text, span.style));
+            break;
+        }
+    }
+    Line::from(out)
+}
+
+/// A blank filler column `width` columns wide, for the side of a logical row the
+/// other column outgrows.
+fn blank_column(width: usize) -> Vec<Span<'static>> {
+    vec![Span::styled(" ".repeat(width), Style::default())]
+}
+
+/// A run of `width` background cells in `bg`, padding a column's content out to
+/// its right edge so the row tint reaches the divider.
+fn pad_span(width: usize, bg: Option<Rgb>) -> Span<'static> {
+    Span::styled(" ".repeat(width), with_bg(Style::default(), bg))
+}
+
+/// Join a side-by-side row's two columns into one searchable string, a space
+/// between them, so a match in either column is found.
+fn join_column_text(left: &str, right: &str) -> String {
+    match (left.is_empty(), right.is_empty()) {
+        (false, false) => format!("{left} {right}"),
+        (false, true) => left.to_string(),
+        (true, false) => right.to_string(),
+        (true, true) => String::new(),
     }
 }
 
@@ -1733,6 +2152,43 @@ mod tests {
             ));
         }
         out
+    }
+
+    #[test]
+    fn side_by_side_pairs_changes_across_columns_and_fills_the_short_side() {
+        // A context line shows on both sides; a removed line pairs against the
+        // first added line of the following run; the surplus added line pairs
+        // against a blank left column. Each column has its own line-number
+        // gutter and clips to its half, split by the divider rule.
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[
+                    (LineKind::Context, "let x = 1;", 1),
+                    (LineKind::Removed, "let y = 2;", 2),
+                    (LineKind::Added, "let y = 3;", 2),
+                    (LineKind::Added, "let z = 4;", 3),
+                ],
+            )],
+        };
+        let view = DiffView::new(theme()).unwrap();
+        let layout = ViewLayout {
+            width: 44,
+            wrap_content: false,
+            mode: super::LayoutMode::SideBySide,
+        };
+
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&view.render_review(&diff, &[], &[], layout).lines),
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,4 +1,4 @@\n",
+            "<#7d828c|-|->   1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;<-|-|->    <#7d828c|-|->│<#7d828c|-|->   1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;<-|-|->     \n",
+            "<#91959d|#463943|->   2 - <#bf9fb9|#463943|->let<#c0c5ce|#463943|-> y <#c0c5ce|#463943|->=<#c0c5ce|#463943|-> <#e3b7a9|#66444e|->2<#c0c5ce|#66444e|->;<-|#463943|->    <#7d828c|-|->│<#9ea1a9|#414a4a|->   2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#f3e1db|#5b695b|->3<#e3e5e9|#5b695b|->;<-|#414a4a|->     \n",
+            "<-|-|->                     <#7d828c|-|->│<#9ea1a9|#414a4a|->   3 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> z <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->4<#c0c5ce|#414a4a|->;<-|#414a4a|->     \n",
+        );
     }
 
     #[test]
