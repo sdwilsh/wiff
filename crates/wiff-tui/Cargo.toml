@@ -19,4 +19,5 @@ wiff-core.workspace = true
 wiff-diff.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
 wince.workspace = true

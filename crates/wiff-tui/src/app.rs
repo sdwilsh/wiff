@@ -31,6 +31,7 @@ use wiff_diff::{Diff, LineNo, LiveHighlighter, Rgb, Side};
 use crate::action::Action;
 use crate::compose::{Compose, ComposeKind, Scroll};
 use crate::exit::{Exit, ExitDefault, ExitPlan, plan_exit};
+use crate::help::{Help, HelpColors};
 use crate::key::{Key, KeyPress};
 use crate::keymap::{Keymap, Resolution};
 use crate::picker::{Picker, PickerColors, PickerRow, RowSpan};
@@ -439,6 +440,8 @@ pub struct App {
     exit: Option<Exit>,
     /// The open modal list, present while the reviewer is choosing from it.
     picker: Option<Picker<App>>,
+    /// The open help overlay, present while the reviewer is reading it.
+    help: Option<Help>,
     /// The version comparison the reviewer chose from the picker, present until
     /// the host takes it to reconstruct the diff.
     pending_compare: Option<CompareRequest>,
@@ -502,6 +505,8 @@ pub struct App {
     keymap: Keymap,
     /// The colors the modal list paints with.
     picker_colors: PickerColors,
+    /// The colors the help overlay paints with.
+    help_colors: HelpColors,
     /// The colors the comment picker paints its status markers with.
     comment_marker_colors: CommentMarkerColors,
     /// A transient note shown in the status line until the next key press, used
@@ -540,6 +545,7 @@ impl App {
             nudge_to_detach: true,
             exit: None,
             picker: None,
+            help: None,
             pending_compare: None,
             compare_on_cancel: None,
             pending_refresh: false,
@@ -571,6 +577,13 @@ impl App {
                 border: theme.review_fg,
                 background: theme.background,
                 selected_bg: theme.cursor_bg,
+                text: theme.comment_fg,
+                hint: theme.fold_fg,
+            },
+            help_colors: HelpColors {
+                border: theme.review_fg,
+                background: theme.background,
+                keys: theme.comment_author_fg,
                 text: theme.comment_fg,
                 hint: theme.fold_fg,
             },
@@ -862,6 +875,7 @@ impl App {
             Action::PickFile => self.open_file_picker(),
             Action::PickComment => self.open_comment_picker(),
             Action::PickTheme => self.open_theme_picker(),
+            Action::Help => self.open_help(),
             Action::CompareVersions => self.open_compare_picker(),
             Action::ResolveComment => return self.resolve_comment(),
             Action::DeleteComment => return self.delete_comment(),
@@ -1914,6 +1928,51 @@ impl App {
         self.picker = None;
     }
 
+    /// Open the help overlay, listing the bindings active in the current keymap.
+    fn open_help(&mut self) {
+        self.help = Some(Help::new(&self.keymap, self.help_colors));
+    }
+
+    /// Whether the help overlay is open.
+    pub fn helping(&self) -> bool {
+        self.help.is_some()
+    }
+
+    /// The open help overlay, for the host to render centered over the view.
+    pub fn help(&self) -> Option<&Help> {
+        self.help.as_ref()
+    }
+
+    /// Set how many rows the open help overlay shows, from the space the host
+    /// gives it. Does nothing when the overlay is closed.
+    pub fn help_set_height(&mut self, height: usize) {
+        if let Some(help) = self.help.as_mut() {
+            help.set_height(height);
+        }
+    }
+
+    /// Scroll the open help overlay with a resolved navigation action. Ignores
+    /// any non-movement action, and does nothing when the overlay is closed.
+    pub fn help_nav(&mut self, action: Action) {
+        let Some(help) = self.help.as_mut() else {
+            return;
+        };
+        match action {
+            Action::LineDown => help.scroll_down(),
+            Action::LineUp => help.scroll_up(),
+            Action::PageDown => help.page_down(),
+            Action::PageUp => help.page_up(),
+            Action::Top => help.to_top(),
+            Action::Bottom => help.to_bottom(),
+            _ => {}
+        }
+    }
+
+    /// Close the help overlay.
+    pub fn close_help(&mut self) {
+        self.help = None;
+    }
+
     /// The background the whole view fills with, for the host to paint behind the
     /// document so the theme reads over the terminal's own background.
     pub fn background(&self) -> Rgb {
@@ -1943,6 +2002,13 @@ impl App {
             border: theme.review_fg,
             background: theme.background,
             selected_bg: theme.cursor_bg,
+            text: theme.comment_fg,
+            hint: theme.fold_fg,
+        };
+        self.help_colors = HelpColors {
+            border: theme.review_fg,
+            background: theme.background,
+            keys: theme.comment_author_fg,
             text: theme.comment_fg,
             hint: theme.fold_fg,
         };

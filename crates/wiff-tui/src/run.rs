@@ -33,7 +33,6 @@ use crate::exit::Exit;
 use crate::input::Input;
 use crate::key::Key;
 use crate::keymap::Keymap;
-use crate::picker::Picker;
 use crate::render::{COLUMN_DIVIDER, color};
 
 /// How long the loop waits for a key before waking to pick up another actor's
@@ -118,27 +117,22 @@ pub fn draw<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
         if app.picking() {
             render_picker(frame, doc_area, app);
         }
+        // The help overlay floats centered like the modal list.
+        if app.helping() {
+            render_help(frame, doc_area, app);
+        }
     })?;
     Ok(())
 }
 
-/// Draw the modal list centered over `area`, clearing the cells behind it. The
-/// list's window is first sized to the space left inside the border, spacer, and
-/// hint, so a list taller than the screen scrolls rather than overflowing.
-fn render_picker(frame: &mut Frame, area: Rect, app: &mut App) {
-    // The border takes two rows and the spacer and hint one each; the rest is
-    // the room the list has to show its rows.
+/// The centered rectangle, content width, and visible row count for a scrolling
+/// modal overlay of `total` rows and `content_width` columns floating over
+/// `area`. The border, spacer, and hint take four rows; the rest is the room the
+/// rows have, so an overlay taller than that scrolls rather than overflowing.
+fn centered_modal(area: Rect, total: usize, content_width: usize) -> (Rect, usize, usize) {
     let chrome = 4u16;
-    let visible = app
-        .picker()
-        .map(Picker::list_len)
-        .unwrap_or(0)
-        .min(area.height.saturating_sub(chrome) as usize);
-    app.picker_set_height(visible);
-    let Some(picker) = app.picker() else {
-        return;
-    };
-    let inner = picker.width().min(area.width.saturating_sub(2) as usize);
+    let visible = total.min(area.height.saturating_sub(chrome) as usize);
+    let inner = content_width.min(area.width.saturating_sub(2) as usize);
     let width = (inner as u16 + 2).min(area.width);
     let height = (visible as u16 + chrome).min(area.height);
     let rect = Rect {
@@ -146,6 +140,20 @@ fn render_picker(frame: &mut Frame, area: Rect, app: &mut App) {
         y: area.y + area.height.saturating_sub(height) / 2,
         width,
         height,
+    };
+    (rect, inner, visible)
+}
+
+/// Draw the modal list centered over `area`, clearing the cells behind it, its
+/// window sized so a list taller than the space scrolls rather than overflowing.
+fn render_picker(frame: &mut Frame, area: Rect, app: &mut App) {
+    let Some((total, content_width)) = app.picker().map(|p| (p.list_len(), p.width())) else {
+        return;
+    };
+    let (rect, inner, visible) = centered_modal(area, total, content_width);
+    app.picker_set_height(visible);
+    let Some(picker) = app.picker() else {
+        return;
     };
     let background = Style::default().bg(color(picker.background()));
     let block = Block::default()
@@ -155,6 +163,46 @@ fn render_picker(frame: &mut Frame, area: Rect, app: &mut App) {
         .title(picker.title().to_string());
     frame.render_widget(Clear, rect);
     frame.render_widget(Paragraph::new(picker.lines(inner)).block(block), rect);
+}
+
+/// Draw the help overlay centered over `area`, clearing the cells behind it, its
+/// window sized so a reference taller than the space scrolls rather than
+/// overflowing.
+fn render_help(frame: &mut Frame, area: Rect, app: &mut App) {
+    let Some((total, content_width)) = app.help().map(|h| (h.list_len(), h.width())) else {
+        return;
+    };
+    let (rect, inner, visible) = centered_modal(area, total, content_width);
+    app.help_set_height(visible);
+    let Some(help) = app.help() else {
+        return;
+    };
+    let top = help.top();
+    let background = Style::default().bg(color(help.background()));
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(background.fg(color(help.border())))
+        .style(background)
+        .title(help.title().to_string());
+    frame.render_widget(Clear, rect);
+    frame.render_widget(Paragraph::new(help.lines(inner)).block(block), rect);
+    // More rows than the window shows draws a scrollbar down the right border,
+    // spanning the content rows above the spacer and hint, so the reviewer can
+    // see there is more of the reference off-screen.
+    if total > visible {
+        let mut state = ScrollbarState::new(total.saturating_sub(visible) + 1)
+            .position(top)
+            .viewport_content_length(visible);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None);
+        let track = Rect {
+            y: rect.y + 1,
+            height: visible as u16,
+            ..rect
+        };
+        frame.render_stateful_widget(scrollbar, track, &mut state);
+    }
 }
 
 /// Draw the inline comment editor into `area`: the document lines above it, the
@@ -360,7 +408,7 @@ fn event_loop<B: Backend>(
         // A modal view -- the comment editor, search prompt, or picker (the
         // file, comment, theme, or exit list) -- owns a spot or buffer that
         // folding a document change in would disturb.
-        let modal = app.composing() || app.searching() || app.picking();
+        let modal = app.composing() || app.searching() || app.picking() || app.helping();
         // Reveal files as their background highlight arrives, repainting
         // immediately only when the change is on screen.
         if !modal && app.poll_highlights() {
@@ -398,6 +446,23 @@ fn event_loop<B: Backend>(
             app.search_key(press);
         } else if app.composing() {
             app.compose_key(press);
+        } else if app.helping() {
+            // The overlay is a reference to read: navigation scrolls it and
+            // every other key closes it. A press that only begins a multi-press
+            // chord leaves it open until the chord resolves or is abandoned.
+            match input.press(press) {
+                Some(
+                    action @ (Action::LineDown
+                    | Action::LineUp
+                    | Action::PageDown
+                    | Action::PageUp
+                    | Action::Top
+                    | Action::Bottom),
+                ) => app.help_nav(action),
+                Some(_) => app.close_help(),
+                None if input.is_pending() => {}
+                None => app.close_help(),
+            }
         } else if app.picking() {
             // Enter activates the highlight and escape closes the list; every
             // other press resolves through the keymap so the list moves with the
@@ -443,7 +508,7 @@ fn event_loop<B: Backend>(
         // modal owns a spot or buffer it would disturb, and the watcher holds
         // the change until the modal closes. The change gate is a cheap stat, so
         // syncing per key costs almost nothing when the file is untouched.
-        if !(app.composing() || app.searching() || app.picking()) {
+        if !(app.composing() || app.searching() || app.picking() || app.helping()) {
             sync(&mut app);
         }
     }
@@ -573,6 +638,44 @@ mod tests {
             "@@ -1,1 +1,1 @@               \n",
             "   1    1   let x = 1;        \n",
             "src/lib.rs         0 open  50%\n",
+        );
+    }
+
+    #[test]
+    fn pressing_h_opens_the_help_overlay_centered_over_the_view() {
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[(LineKind::Context, "let x = 1;", 1)],
+            )],
+        };
+        let document = DiffView::new(theme()).expect("view").render(&diff);
+        let mut app = App::new(document, 0, &theme());
+        app.update(Action::Help);
+
+        // The overlay floats centered over the diff, clearing the cells behind
+        // it: a border titled "Key bindings", the first bindings grouped under
+        // their heading with keys and descriptions, then the dismissal hint. The
+        // reference is taller than the screen, so a scrollbar runs down the right
+        // border with its thumb at the top where the window opens.
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            screen(70, 14, app),
+            "m┌Key bindings──────────────────────────────────────────────────────┐ \n",
+            "@│Navigation                                                        █ \n",
+            " │  down, j                  Move down one line                     █ \n",
+            " │  up, k                    Move up one line                       ║ \n",
+            " │  space, ctrl-f, pagedown  Scroll down one page                   ║ \n",
+            " │  b, ctrl-b, pageup        Scroll up one page                     ║ \n",
+            " │  g, <, home               Jump to the top                        ║ \n",
+            " │  G, >, end                Jump to the bottom                     ║ \n",
+            " │  .                        Next file                              ║ \n",
+            " │  ,                        Previous file                          ║ \n",
+            " │                                                                  │ \n",
+            " │any key to close                                                  │ \n",
+            " └──────────────────────────────────────────────────────────────────┘ \n",
+            "src/lib.rs                                                0 open  100%\n",
         );
     }
 

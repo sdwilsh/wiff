@@ -184,6 +184,7 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
         (Action::Refresh, vec![chord("R")]),
         (Action::CompareVersions, vec![chord("V")]),
         (Action::OpenInEditor, vec![chord("o")]),
+        (Action::Help, vec![chord("h")]),
         (Action::Quit, vec![chord("q")]),
     ]
     .into_iter()
@@ -247,6 +248,7 @@ mod tests {
             Resolution::Action(Action::Refresh)
         );
         wince::assert_eq!(map.resolve(&presses("q")), Resolution::Action(Action::Quit));
+        wince::assert_eq!(map.resolve(&presses("h")), Resolution::Action(Action::Help));
         wince::assert_eq!(
             map.resolve(&presses("H")),
             Resolution::Action(Action::HideComments)
