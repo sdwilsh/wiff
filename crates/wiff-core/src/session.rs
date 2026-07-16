@@ -16,7 +16,7 @@ use time::OffsetDateTime;
 use ulid::Ulid;
 
 use crate::error::{Error, Result};
-use crate::record::{Record, RecordBody};
+use crate::record::{Record, RecordBody, Seq, VersionNumber};
 
 /// The environment variable that overrides the base data directory.
 pub const DATA_DIR_ENV: &str = "WIFF_DATA_DIR";
@@ -109,7 +109,7 @@ impl SessionLog {
 
     /// Read the raw unified-diff text of captured version `number` from the
     /// sideband `vN.diff`.
-    pub fn read_diff(&self, number: u32) -> Result<String> {
+    pub fn read_diff(&self, number: VersionNumber) -> Result<String> {
         let path = self.sideband_dir().join(format!("v{number}.diff"));
         std::fs::read_to_string(&path).map_err(|source| Error::io(&path, source))
     }
@@ -159,7 +159,10 @@ impl SessionLog {
     pub fn open(path: &Path) -> Result<Self> {
         let ulid = ulid_from_path(path)?;
         let records = read_records(path)?;
-        let next_seq = records.last().map(|record| record.seq + 1).unwrap_or(0);
+        let next_seq = records
+            .last()
+            .map(|record| record.seq.next().get())
+            .unwrap_or(0);
         Ok(Self {
             path: path.to_path_buf(),
             ulid,
@@ -169,12 +172,12 @@ impl SessionLog {
 
     /// Append `body` as the next record through the held `lock`, flushing it to
     /// disk. Returns the assigned sequence number.
-    pub fn append(&mut self, lock: &mut SessionLock, body: RecordBody) -> Result<u64> {
+    pub fn append(&mut self, lock: &mut SessionLock, body: RecordBody) -> Result<Seq> {
         debug_assert_eq!(
             lock.path, self.path,
             "the lock guard belongs to a different session"
         );
-        let seq = self.next_seq;
+        let seq = Seq(self.next_seq);
         let record = Record {
             seq,
             at: OffsetDateTime::now_utc(),
@@ -195,7 +198,7 @@ impl SessionLog {
     /// Append `body` by taking the lock transiently. Fails without writing if
     /// the lock is contended or the file has diverged from our position, since
     /// appending then would duplicate a sequence number.
-    pub fn append_locked(&mut self, body: RecordBody) -> Result<u64> {
+    pub fn append_locked(&mut self, body: RecordBody) -> Result<Seq> {
         match self.lock()? {
             LockAttempt::Acquired {
                 mut lock,
@@ -214,7 +217,7 @@ impl SessionLog {
     /// once up front, so a contended or diverged file fails without writing any
     /// of the batch; a caller can then retry the whole batch without the risk
     /// that a partially written prefix duplicates on the next attempt.
-    pub fn append_all_locked(&mut self, bodies: Vec<RecordBody>) -> Result<Vec<u64>> {
+    pub fn append_all_locked(&mut self, bodies: Vec<RecordBody>) -> Result<Vec<Seq>> {
         match self.lock()? {
             LockAttempt::Acquired {
                 mut lock,
@@ -249,7 +252,7 @@ impl SessionLog {
         };
         let file_next_seq = read_records(&self.path)?
             .last()
-            .map(|record| record.seq + 1)
+            .map(|record| record.seq.next().get())
             .unwrap_or(0);
         let sync = if file_next_seq == self.next_seq {
             SyncState::Synced
@@ -287,7 +290,10 @@ impl SessionLog {
             Err((_, errno)) => return Err(Error::io(&self.path, errno.into())),
         };
         let records = read_records(&self.path)?;
-        self.next_seq = records.last().map(|record| record.seq + 1).unwrap_or(0);
+        self.next_seq = records
+            .last()
+            .map(|record| record.seq.next().get())
+            .unwrap_or(0);
         let lock = SessionLock {
             file: locked,
             path: self.path.clone(),
@@ -307,23 +313,29 @@ pub fn read_records(path: &Path) -> Result<Vec<Record>> {
         Err(source) => return Err(Error::io(path, source)),
     };
     // A lock-free reader can catch an appender mid-write and see a final line
-    // that is not yet newline-terminated. Every complete record ends in a
-    // newline, so parse only through the last one and hold back any unterminated
-    // remainder; a later read picks it up once the append finishes. A malformed
-    // line that is newline-terminated is genuine corruption and still errors.
-    // This relies on a serialized record never containing a raw newline of its
-    // own: serde_json escapes newlines within strings, so the sole newline in a
-    // record line is its terminator.
-    let complete = match text.rfind('\n') {
-        Some(last) => &text[..=last],
+    // not yet newline-terminated. That line is held back; a later read picks it
+    // up once the append completes. An append writes the record and its
+    // terminating newline in one call, so a present terminator means the whole
+    // line reached disk. Everything up to the last newline is committed and must
+    // parse: a newline-terminated line that fails to parse (including a blank
+    // one) is genuine corruption, not a torn tail, and errors. The only
+    // tolerance is the unterminated remainder after the last newline. This
+    // relies on a serialized record never containing a raw newline of its own:
+    // serde_json escapes newlines within strings, so the sole newline in a
+    // record line is its terminator, and `str::lines` therefore splits on
+    // record boundaries.
+    //
+    // Splitting at the last newline reads back the committed body without
+    // scanning past it, so the length of the log ahead of the tail costs
+    // nothing here.
+    let committed = match text.rsplit_once('\n') {
+        Some((body, _in_flight)) => body,
+        // No newline at all: the whole file is an unterminated in-flight append.
         None => "",
     };
     let mut records = Vec::new();
-    for line in complete.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        records.push(serde_json::from_str(line)?);
+    for line in committed.lines() {
+        records.push(serde_json::from_str::<Record>(line).map_err(Error::Decode)?);
     }
     Ok(records)
 }
@@ -479,20 +491,26 @@ mod tests {
 
     use super::{SessionWatcher, read_records};
     use crate::error::Error;
-    use crate::record::{Author, AuthorKind, CommentDelete, Record, RecordBody};
+    use crate::record::{
+        Author, AuthorKind, CommentEvent, CommentEventKind, Record, RecordBody, Seq,
+    };
 
     /// A minimal well-formed record whose serialized line seeds the torn-read
     /// tests.
     fn sample_record() -> Record {
         Record {
-            seq: 0,
+            seq: Seq(0),
             at: OffsetDateTime::from_unix_timestamp(0).expect("epoch"),
-            body: RecordBody::CommentDelete(CommentDelete {
+            body: RecordBody::CommentEvent(CommentEvent {
                 id: Ulid::from_string("00000000000000000000000000").expect("ulid"),
                 author: Author {
                     name: "reviewer".to_string(),
                     kind: AuthorKind::Human,
                 },
+                authored_at: None,
+                origin: None,
+                synced_marker: None,
+                kind: CommentEventKind::Delete,
             }),
         }
     }
@@ -538,19 +556,51 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_file_and_a_blank_only_file_both_read_as_no_records() {
-        // An empty log and one holding only blank lines have no records; the
-        // blank lines are skipped rather than parsed.
+    fn a_newline_terminated_but_unparseable_final_line_is_rejected_as_corruption() {
+        // A garbled final line that ends at a real newline is not a torn tail:
+        // the terminator means the write completed, so it is genuine corruption
+        // and errors rather than being silently dropped.
+        let record = sample_record();
+        let mut line = serde_json::to_string(&record).expect("serialize");
+        line.push('\n');
+        let mut file = tempfile::NamedTempFile::new().expect("temp file");
+        file.write_all(line.as_bytes()).expect("whole record");
+        file.write_all(b"{\"seq\":1,\"at\":\"tor\n")
+            .expect("garbled terminated line");
+        file.flush().expect("flush");
+
+        let outcome = match read_records(file.path()) {
+            Ok(records) => format!("ok with {} records", records.len()),
+            Err(Error::Decode(_)) => "decode error".to_string(),
+            Err(other) => format!("other error: {other}"),
+        };
+        wince::assert_eq!(outcome, "decode error".to_string());
+    }
+
+    #[test]
+    fn an_empty_file_reads_as_no_records() {
         let empty = tempfile::NamedTempFile::new().expect("temp file");
         empty.as_file().sync_all().expect("flush");
 
+        let records = read_records(empty.path()).expect("read empty");
+        wince::assert_eq!(records, Vec::new());
+    }
+
+    #[test]
+    fn a_file_of_blank_lines_is_rejected_as_corruption() {
+        // A valid log holds only newline-terminated records; a blank line where
+        // a record belongs is not a torn tail but corruption, so it errors
+        // rather than being skipped.
         let mut blank = tempfile::NamedTempFile::new().expect("temp file");
         blank.write_all(b"\n   \n\n").expect("blank lines");
         blank.flush().expect("flush");
 
-        let empty_records = read_records(empty.path()).expect("read empty");
-        let blank_records = read_records(blank.path()).expect("read blank");
-        wince::assert_eq!((empty_records, blank_records), (Vec::new(), Vec::new()));
+        let outcome = match read_records(blank.path()) {
+            Ok(records) => format!("ok with {} records", records.len()),
+            Err(Error::Decode(_)) => "decode error".to_string(),
+            Err(other) => format!("other error: {other}"),
+        };
+        wince::assert_eq!(outcome, "decode error".to_string());
     }
 
     #[test]

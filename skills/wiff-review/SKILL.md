@@ -46,7 +46,10 @@ wiff comment list
   the one command you need to read the review and to pick up the ids you act on
   below.
 - `wiff render --format json` prints the same folded state as JSON for
-  programmatic use.
+  programmatic use. Each comment reports `updated_seq` and `updated_at`. To order
+  changes or find the most recent one, use `updated_seq`, which always advances;
+  `updated_at` is a display timestamp and, for a comment imported from a forge,
+  can predate an earlier change.
 - `wiff comment list` is an optional compact form: one comment per line, id
   first, with its status and location, when you want a terse pass without the
   bodies and snippets.

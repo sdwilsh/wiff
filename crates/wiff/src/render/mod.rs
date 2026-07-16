@@ -51,11 +51,12 @@ fn latest_files(state: &ReviewState) -> &[FileSummary] {
 
 #[cfg(test)]
 mod fixture {
+    use time::OffsetDateTime;
     use ulid::Ulid;
     use wiff_core::SidebandHash;
     use wiff_core::record::{
         Anchor, Author, AuthorKind, CommentTarget, Confidence, DiffVersionRecord, FORMAT_VERSION,
-        FileSummary, SessionHeader, SourceKind,
+        FileSummary, Seq, SessionHeader, SourceKind, VersionNumber,
     };
     use wiff_core::review::{CommentState, ReviewState};
     use wiff_diff::{FileStatus, LineNo, Side};
@@ -80,18 +81,25 @@ mod fixture {
     ) -> CommentState {
         CommentState {
             id: ulid(id),
-            author,
+            author: author.clone(),
             target,
-            version: 0,
+            version: VersionNumber(0),
             anchor: None,
             body: body.to_string(),
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+            updated_by: author,
             resolved: false,
             resolved_by: None,
+            resolved_at: None,
             deleted: false,
             deleted_by: None,
+            deleted_at: None,
             confidence: None,
-            created_seq: seq,
-            updated_seq: seq,
+            origin: None,
+            synced_marker: None,
+            created_seq: Seq(seq),
+            updated_seq: Seq(seq),
         }
     }
 
@@ -130,7 +138,9 @@ mod fixture {
         );
         whole.resolved = true;
         whole.resolved_by = Some(author("wez", AuthorKind::Human));
-        whole.updated_seq = 9;
+        whole.resolved_at = Some(OffsetDateTime::UNIX_EPOCH);
+        whole.updated_by = author("wez", AuthorKind::Human);
+        whole.updated_seq = Seq(9);
         let review = comment(
             "00000000000000000000000003",
             author("wez", AuthorKind::Human),
@@ -146,7 +156,11 @@ mod fixture {
             5,
         );
         shifted.confidence = Some(Confidence::Approximate);
-        shifted.updated_seq = 6;
+        // An agent later edited this human's comment, so it is attributed to the
+        // agent while its author stays the human. A reanchor alone would leave
+        // `updated_by` as the author.
+        shifted.updated_by = author("opus", AuthorKind::Agent);
+        shifted.updated_seq = Seq(6);
         let mut gone = comment(
             "00000000000000000000000005",
             author("wez", AuthorKind::Human),
@@ -155,7 +169,9 @@ mod fixture {
             7,
         );
         gone.deleted = true;
-        gone.updated_seq = 8;
+        gone.deleted_by = Some(author("wez", AuthorKind::Human));
+        gone.deleted_at = Some(OffsetDateTime::UNIX_EPOCH);
+        gone.updated_seq = Seq(8);
 
         ReviewState {
             session: SessionHeader {
@@ -167,7 +183,7 @@ mod fixture {
                 source: SourceKind::GitWorktree,
             },
             versions: vec![DiffVersionRecord {
-                number: 0,
+                number: VersionNumber(0),
                 diff_hash: SidebandHash::of(b"main.rs"),
                 files: vec![FileSummary {
                     old_path: "main.rs".to_string(),

@@ -80,13 +80,14 @@ pub enum Error {
     #[error("no comment {0} in this session")]
     UnknownComment(Ulid),
 
-    /// A session was written by a newer format than this build understands, so
-    /// it cannot be safely interpreted.
-    #[error("session format version {found} is newer than supported version {supported}")]
+    /// A session was written by a format version that does not match this
+    /// build's, older or newer, so it cannot be safely interpreted. wiff is
+    /// pre-release with no migration: discard the session and re-capture.
+    #[error("session format version {found} does not match supported version {supported}")]
     UnsupportedVersion {
         /// The version recorded in the session header.
         found: u32,
-        /// The newest version this build understands.
+        /// The version this build reads and writes.
         supported: u32,
     },
 

@@ -21,7 +21,7 @@ pub use capture::{create_session, write_diff_version};
 pub use comment::{AddedComment, DraftComment, delete_comment, set_resolved};
 pub use compare::{Comparison, LineOrigin, compare_versions};
 pub use config::AuthorDefaults;
-pub use draft::{DraftBuffer, EffectiveComment, draft_record};
+pub use draft::{DraftBuffer, EffectiveComment, draft_create};
 pub use error::{Error, Result};
 pub use hash::SidebandHash;
 pub use identity::{ProjectIdentity, ScmType};

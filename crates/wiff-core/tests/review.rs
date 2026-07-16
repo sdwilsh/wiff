@@ -2,10 +2,11 @@
 
 use time::OffsetDateTime;
 use ulid::Ulid;
+use wiff_core::comment::{delete_event, edit_event, reanchor_event, resolve_event};
 use wiff_core::record::{
-    Anchor, Author, AuthorKind, CommentDelete, CommentEdit, CommentReanchor, CommentRecord,
-    CommentResolve, CommentTarget, Confidence, DiffVersionRecord, FORMAT_VERSION, FileSummary,
-    Record, RecordBody, SessionHeader, SourceKind,
+    Anchor, Author, AuthorKind, CommentCreate, CommentEvent, CommentEventKind, CommentReanchor,
+    CommentTarget, Confidence, DiffVersionRecord, FORMAT_VERSION, FileSummary, Record, RecordBody,
+    Seq, SessionHeader, SourceKind, VersionNumber,
 };
 use wiff_core::review::{CommentState, ReviewState, fold};
 use wiff_core::{Error, SidebandHash};
@@ -32,10 +33,34 @@ fn human(name: &str) -> Author {
 
 fn rec(seq: u64, body: RecordBody) -> Record {
     Record {
-        seq,
+        seq: Seq(seq),
         at: OffsetDateTime::UNIX_EPOCH,
         body,
     }
+}
+
+/// A create event for `id`, the record every other event in a chain mutates.
+fn create_event(
+    id: Ulid,
+    author: Author,
+    target: CommentTarget,
+    version: u32,
+    anchor: Option<Anchor>,
+    body: &str,
+) -> RecordBody {
+    RecordBody::CommentEvent(CommentEvent {
+        id,
+        author,
+        authored_at: None,
+        origin: None,
+        synced_marker: None,
+        kind: CommentEventKind::Create(CommentCreate {
+            target,
+            version: VersionNumber(version),
+            anchor,
+            body: body.to_string(),
+        }),
+    })
 }
 
 fn header() -> SessionHeader {
@@ -51,7 +76,7 @@ fn header() -> SessionHeader {
 
 fn version(number: u32, path: &str) -> DiffVersionRecord {
     DiffVersionRecord {
-        number,
+        number: VersionNumber(number),
         diff_hash: SidebandHash::of(path.as_bytes()),
         files: vec![FileSummary {
             old_path: path.to_string(),
@@ -83,72 +108,59 @@ fn folds_versions_and_comment_chains() {
         rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
         rec(
             2,
-            RecordBody::Comment(CommentRecord {
-                id: comment_a(),
-                author: human("wez"),
-                target: lines_target(),
-                version: 0,
-                anchor: Some(anchor.clone()),
-                body: "why?".to_string(),
-            }),
+            create_event(
+                comment_a(),
+                human("wez"),
+                lines_target(),
+                0,
+                Some(anchor.clone()),
+                "why?",
+            ),
         ),
         rec(
             3,
-            RecordBody::Comment(CommentRecord {
-                id: comment_b(),
-                author: human("dev"),
-                target: CommentTarget::File {
+            create_event(
+                comment_b(),
+                human("dev"),
+                CommentTarget::File {
                     file: "src/main.rs".to_string(),
                 },
-                version: 0,
-                anchor: None,
-                body: "typo".to_string(),
-            }),
+                0,
+                None,
+                "typo",
+            ),
         ),
         rec(4, RecordBody::DiffVersion(version(1, "src/lib.rs"))),
         rec(
             5,
-            RecordBody::CommentEdit(CommentEdit {
-                id: comment_a(),
-                body: "why 3?".to_string(),
-            }),
+            edit_event(comment_a(), human("wez"), "why 3?".to_string()),
         ),
-        rec(
-            6,
-            RecordBody::CommentResolve(CommentResolve {
-                id: comment_a(),
-                resolved: true,
-                author: human("wez"),
-            }),
-        ),
+        rec(6, resolve_event(comment_a(), human("wez"), true)),
         rec(
             7,
-            RecordBody::CommentReanchor(CommentReanchor {
-                id: comment_b(),
-                version: 1,
-                target: CommentTarget::File {
-                    file: "src/lib.rs".to_string(),
+            reanchor_event(
+                comment_b(),
+                human("dev"),
+                CommentReanchor {
+                    version: VersionNumber(1),
+                    target: CommentTarget::File {
+                        file: "src/lib.rs".to_string(),
+                    },
+                    confidence: Confidence::Approximate,
                 },
-                confidence: Confidence::Approximate,
-            }),
+            ),
         ),
-        rec(
-            8,
-            RecordBody::CommentDelete(CommentDelete {
-                id: comment_b(),
-                author: human("dev"),
-            }),
-        ),
+        rec(8, delete_event(comment_b(), human("dev"))),
         rec(
             9,
-            RecordBody::Comment(CommentRecord {
-                id: comment_c(),
-                author: human("wez"),
-                target: CommentTarget::Review,
-                version: 1,
-                anchor: None,
-                body: "LGTM overall".to_string(),
-            }),
+            create_event(
+                comment_c(),
+                human("wez"),
+                CommentTarget::Review,
+                1,
+                None,
+                "LGTM overall",
+            ),
         ),
     ];
 
@@ -162,16 +174,23 @@ fn folds_versions_and_comment_chains() {
                 id: comment_a(),
                 author: human("wez"),
                 target: lines_target(),
-                version: 0,
+                version: VersionNumber(0),
                 anchor: Some(anchor),
                 body: "why 3?".to_string(),
+                created_at: OffsetDateTime::UNIX_EPOCH,
+                updated_at: OffsetDateTime::UNIX_EPOCH,
+                updated_by: human("wez"),
                 resolved: true,
                 resolved_by: Some(human("wez")),
+                resolved_at: Some(OffsetDateTime::UNIX_EPOCH),
                 deleted: false,
                 deleted_by: None,
+                deleted_at: None,
                 confidence: None,
-                created_seq: 2,
-                updated_seq: 6,
+                origin: None,
+                synced_marker: None,
+                created_seq: Seq(2),
+                updated_seq: Seq(6),
             },
             CommentState {
                 id: comment_b(),
@@ -179,31 +198,45 @@ fn folds_versions_and_comment_chains() {
                 target: CommentTarget::File {
                     file: "src/lib.rs".to_string(),
                 },
-                version: 1,
+                version: VersionNumber(1),
                 anchor: None,
                 body: "typo".to_string(),
+                created_at: OffsetDateTime::UNIX_EPOCH,
+                updated_at: OffsetDateTime::UNIX_EPOCH,
+                updated_by: human("dev"),
                 resolved: false,
                 resolved_by: None,
+                resolved_at: None,
                 deleted: true,
                 deleted_by: Some(human("dev")),
+                deleted_at: Some(OffsetDateTime::UNIX_EPOCH),
                 confidence: Some(Confidence::Approximate),
-                created_seq: 3,
-                updated_seq: 8,
+                origin: None,
+                synced_marker: None,
+                created_seq: Seq(3),
+                updated_seq: Seq(8),
             },
             CommentState {
                 id: comment_c(),
                 author: human("wez"),
                 target: CommentTarget::Review,
-                version: 1,
+                version: VersionNumber(1),
                 anchor: None,
                 body: "LGTM overall".to_string(),
+                created_at: OffsetDateTime::UNIX_EPOCH,
+                updated_at: OffsetDateTime::UNIX_EPOCH,
+                updated_by: human("wez"),
                 resolved: false,
                 resolved_by: None,
+                resolved_at: None,
                 deleted: false,
                 deleted_by: None,
+                deleted_at: None,
                 confidence: None,
-                created_seq: 9,
-                updated_seq: 9,
+                origin: None,
+                synced_marker: None,
+                created_seq: Seq(9),
+                updated_seq: Seq(9),
             },
         ],
     };
@@ -212,15 +245,164 @@ fn folds_versions_and_comment_chains() {
 }
 
 #[test]
+fn an_edit_by_another_actor_updates_updated_by_but_not_author() {
+    // A reviewer's comment reworded by an agent keeps its original author while
+    // recording the agent as the most recent editor.
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            create_event(
+                comment_a(),
+                human("wez"),
+                CommentTarget::Review,
+                0,
+                None,
+                "wip",
+            ),
+        ),
+        rec(
+            3,
+            edit_event(
+                comment_a(),
+                Author {
+                    name: "assistant".to_string(),
+                    kind: AuthorKind::Agent,
+                },
+                "polished".to_string(),
+            ),
+        ),
+    ];
+
+    let state = fold(&records).unwrap();
+    wince::assert_eq!(state.comments.len(), 1);
+    let comment = &state.comments[0];
+    wince::assert_eq!(
+        (
+            comment.author.clone(),
+            comment.updated_by.clone(),
+            comment.body.clone()
+        ),
+        (
+            human("wez"),
+            Author {
+                name: "assistant".to_string(),
+                kind: AuthorKind::Agent,
+            },
+            "polished".to_string()
+        )
+    );
+}
+
+#[test]
+fn an_imported_events_folded_time_comes_from_its_authored_time() {
+    // An imported event records the authoritative time it was authored on the
+    // originating forge in `authored_at`, distinct from when wiff recorded it in
+    // `Record::at`. Its folded times come from `authored_at`; a local event,
+    // with no `authored_at`, falls back to `Record::at`.
+    let recorded = OffsetDateTime::UNIX_EPOCH;
+    let authored_create = OffsetDateTime::from_unix_timestamp(1_000_000).unwrap();
+    let authored_edit = OffsetDateTime::from_unix_timestamp(2_000_000).unwrap();
+
+    let imported_create = RecordBody::CommentEvent(CommentEvent {
+        id: comment_a(),
+        author: human("wez"),
+        authored_at: Some(authored_create),
+        origin: None,
+        synced_marker: None,
+        kind: CommentEventKind::Create(CommentCreate {
+            target: CommentTarget::Review,
+            version: VersionNumber(0),
+            anchor: None,
+            body: "imported".to_string(),
+        }),
+    });
+    let imported_edit = RecordBody::CommentEvent(CommentEvent {
+        id: comment_a(),
+        author: human("dev"),
+        authored_at: Some(authored_edit),
+        origin: None,
+        synced_marker: None,
+        kind: CommentEventKind::Edit {
+            body: "imported, edited".to_string(),
+        },
+    });
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(2, imported_create),
+        rec(3, imported_edit),
+        // A local create at seq 4, recorded at the epoch with no authored time.
+        rec(
+            4,
+            create_event(
+                comment_b(),
+                human("wez"),
+                CommentTarget::Review,
+                0,
+                None,
+                "local",
+            ),
+        ),
+    ];
+
+    let state = fold(&records).unwrap();
+    let times: Vec<(OffsetDateTime, OffsetDateTime)> = state
+        .comments
+        .iter()
+        .map(|comment| (comment.created_at, comment.updated_at))
+        .collect();
+    wince::assert_eq!(
+        times,
+        vec![(authored_create, authored_edit), (recorded, recorded),]
+    );
+}
+
+#[test]
+fn a_second_create_for_an_existing_comment_is_a_corrupt_log() {
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            create_event(
+                comment_a(),
+                human("wez"),
+                CommentTarget::Review,
+                0,
+                None,
+                "first",
+            ),
+        ),
+        rec(
+            3,
+            create_event(
+                comment_a(),
+                human("wez"),
+                CommentTarget::Review,
+                0,
+                None,
+                "again",
+            ),
+        ),
+    ];
+
+    let error = fold(&records).unwrap_err();
+    wince::assert_eq!(matches!(error, Error::InconsistentLog(_)), true);
+    wince::snapshot_display!(
+        error,
+        "inconsistent session log: record at seq 3 re-creates existing comment 00000000000000000000000000"
+    );
+}
+
+#[test]
 fn a_mutation_referencing_an_unknown_comment_is_a_corrupt_log() {
     let records = vec![
         rec(0, RecordBody::Session(header())),
         rec(
             1,
-            RecordBody::CommentEdit(CommentEdit {
-                id: comment_a(),
-                body: "orphan".to_string(),
-            }),
+            edit_event(comment_a(), human("wez"), "orphan".to_string()),
         ),
     ];
 
@@ -261,7 +443,25 @@ fn a_newer_format_version_is_refused() {
     );
     wince::snapshot_display!(
         error,
-        "session format version 2 is newer than supported version 1"
+        "session format version 3 does not match supported version 2"
+    );
+}
+
+#[test]
+fn an_older_format_version_is_refused() {
+    let mut older = header();
+    older.version = FORMAT_VERSION - 1;
+    let records = vec![rec(0, RecordBody::Session(older))];
+
+    let error = fold(&records).unwrap_err();
+    wince::assert_eq!(
+        matches!(error, Error::UnsupportedVersion { found, supported }
+            if found == FORMAT_VERSION - 1 && supported == FORMAT_VERSION),
+        true
+    );
+    wince::snapshot_display!(
+        error,
+        "session format version 1 does not match supported version 2"
     );
 }
 

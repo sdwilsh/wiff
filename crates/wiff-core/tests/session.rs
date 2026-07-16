@@ -2,7 +2,8 @@
 
 use ulid::Ulid;
 use wiff_core::record::{
-    Author, AuthorKind, CommentRecord, CommentTarget, RecordBody, SessionHeader, SourceKind,
+    Author, AuthorKind, CommentCreate, CommentEvent, CommentEventKind, CommentTarget, RecordBody,
+    Seq, SessionHeader, SourceKind, VersionNumber,
 };
 use wiff_core::session::{
     LockAttempt, LockWait, SessionLog, SyncState, active_session, list_projects, list_sessions,
@@ -22,21 +23,26 @@ fn header(ulid: Ulid) -> RecordBody {
 }
 
 fn comment() -> RecordBody {
-    RecordBody::Comment(CommentRecord {
+    RecordBody::CommentEvent(CommentEvent {
         id: Ulid::from_string("00000000000000000000000000").unwrap(),
         author: Author {
             name: "wez".to_string(),
             kind: AuthorKind::Human,
         },
-        target: CommentTarget::Lines {
-            file: "src/main.rs".to_string(),
-            side: Side::After,
-            start_line: LineNo::new(2).unwrap(),
-            end_line: LineNo::new(2).unwrap(),
-        },
-        version: 0,
-        anchor: None,
-        body: "why 3?".to_string(),
+        authored_at: None,
+        origin: None,
+        synced_marker: None,
+        kind: CommentEventKind::Create(CommentCreate {
+            target: CommentTarget::Lines {
+                file: "src/main.rs".to_string(),
+                side: Side::After,
+                start_line: LineNo::new(2).unwrap(),
+                end_line: LineNo::new(2).unwrap(),
+            },
+            version: VersionNumber(0),
+            anchor: None,
+            body: "why 3?".to_string(),
+        }),
     })
 }
 
@@ -45,7 +51,7 @@ fn create_append_and_read_round_trip() {
     let base = tempfile::tempdir().unwrap();
     let (mut log, mut lock) = SessionLog::create(base.path(), "demo", header).unwrap();
     let seq = log.append(&mut lock, comment()).unwrap();
-    wince::assert_eq!(seq, 1);
+    wince::assert_eq!(seq, Seq(1));
     drop(lock);
 
     let records = read_records(log.path()).unwrap();
@@ -53,7 +59,7 @@ fn create_append_and_read_round_trip() {
     // timestamp is the only non-deterministic field and is excluded.
     let got: Vec<(u64, RecordBody)> = records
         .into_iter()
-        .map(|record| (record.seq, record.body))
+        .map(|record| (record.seq.get(), record.body))
         .collect();
     wince::assert_eq!(got, vec![(0, header(log.ulid())), (1, comment())]);
 }
@@ -68,7 +74,7 @@ fn reopen_continues_the_sequence() {
     let mut reopened = SessionLog::open(&path).unwrap();
     wince::assert_eq!(reopened.next_seq(), 1);
     let seq = reopened.append_locked(comment()).unwrap();
-    wince::assert_eq!(seq, 1);
+    wince::assert_eq!(seq, Seq(1));
     wince::assert_eq!(read_records(&path).unwrap().len(), 2);
 }
 
@@ -114,13 +120,13 @@ fn lock_and_sync_resyncs_a_stale_handle_and_appends_at_the_tail() {
 
     let (mut guard, _records) = stale.lock_and_sync(LockWait::Block).unwrap();
     let seq = stale.append(&mut guard, comment()).unwrap();
-    wince::assert_eq!(seq, 2);
+    wince::assert_eq!(seq, Seq(2));
     drop(guard);
 
     let got: Vec<(u64, RecordBody)> = read_records(writer.path())
         .unwrap()
         .into_iter()
-        .map(|record| (record.seq, record.body))
+        .map(|record| (record.seq.get(), record.body))
         .collect();
     wince::assert_eq!(
         got,
@@ -139,11 +145,11 @@ fn a_locked_batch_appends_every_record_in_order() {
     let seqs = reopened
         .append_all_locked(vec![comment(), comment()])
         .unwrap();
-    wince::assert_eq!(seqs, vec![1, 2]);
+    wince::assert_eq!(seqs, vec![Seq(1), Seq(2)]);
     let got: Vec<(u64, RecordBody)> = read_records(&path)
         .unwrap()
         .into_iter()
-        .map(|record| (record.seq, record.body))
+        .map(|record| (record.seq.get(), record.body))
         .collect();
     wince::assert_eq!(
         got,
@@ -176,7 +182,7 @@ fn a_diverged_batch_writes_none_of_its_records() {
     let got: Vec<(u64, RecordBody)> = read_records(writer.path())
         .unwrap()
         .into_iter()
-        .map(|record| (record.seq, record.body))
+        .map(|record| (record.seq.get(), record.body))
         .collect();
     wince::assert_eq!(got, vec![(0, header(writer.ulid())), (1, comment())]);
 }

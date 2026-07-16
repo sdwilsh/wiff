@@ -12,7 +12,9 @@ use wiff_diff::parse::parse;
 use crate::error::{Error, Result};
 use crate::hash::SidebandHash;
 use crate::identity::ProjectIdentity;
-use crate::record::{DiffVersionRecord, FORMAT_VERSION, FileSummary, RecordBody, SessionHeader};
+use crate::record::{
+    DiffVersionRecord, FORMAT_VERSION, FileSummary, RecordBody, Seq, SessionHeader, VersionNumber,
+};
 use crate::session::{SessionLock, SessionLog};
 use crate::source::CapturedDiff;
 
@@ -41,7 +43,7 @@ pub fn create_session(
             source,
         })
     })?;
-    write_diff_version(&mut log, &mut lock, 0, &captured.text)?;
+    write_diff_version(&mut log, &mut lock, VersionNumber(0), &captured.text)?;
     Ok(log)
 }
 
@@ -51,9 +53,9 @@ pub fn create_session(
 pub fn write_diff_version(
     log: &mut SessionLog,
     lock: &mut SessionLock,
-    number: u32,
+    number: VersionNumber,
     diff_text: &str,
-) -> Result<u64> {
+) -> Result<Seq> {
     let diff = parse(diff_text)?;
     let dir = log.sideband_dir();
     std::fs::create_dir_all(&dir).map_err(|source| Error::io(&dir, source))?;

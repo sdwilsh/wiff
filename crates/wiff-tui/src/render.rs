@@ -1883,8 +1883,8 @@ enum BadgeStyle {
 }
 
 /// A comment's status badges, in display order. A pending comment leads with a
-/// `draft` badge so uncommitted work stands out. A resolved or withdrawn comment
-/// names who acted, so the reviewer sees at a glance who cleared it. A deleted
+/// `draft` badge. A resolved or withdrawn comment names who acted, and a comment
+/// last changed by someone other than its author names that actor. A deleted
 /// comment shows only that it is withdrawn, its other status being moot until it
 /// is restored.
 fn badges(comment: &CommentState, pending: bool) -> Vec<(String, BadgeStyle)> {
@@ -1903,6 +1903,9 @@ fn badges(comment: &CommentState, pending: bool) -> Vec<(String, BadgeStyle)> {
         Some(Confidence::Approximate) => out.push(("shifted".to_string(), BadgeStyle::Warn)),
         Some(Confidence::Outdated) => out.push(("outdated".to_string(), BadgeStyle::Warn)),
         Some(Confidence::Exact) | None => {}
+    }
+    if let Some(author) = comment.last_changed_by() {
+        out.push((format!("changed by {}", author.name), BadgeStyle::Muted));
     }
     out
 }
@@ -1968,7 +1971,7 @@ impl CommentOrigins {
         match self {
             CommentOrigins::Literal => Some(*side),
             CommentOrigins::Origins { after, before } => {
-                if comment.version == after.version && *side == after.side {
+                if comment.version.get() == after.version && *side == after.side {
                     return Some(Side::After);
                 }
                 let before = match before {
@@ -1978,7 +1981,8 @@ impl CommentOrigins {
                     },
                     BeforeOrigins::PerFile(map) => *map.get(file)?,
                 };
-                (comment.version == before.version && *side == before.side).then_some(Side::Before)
+                (comment.version.get() == before.version && *side == before.side)
+                    .then_some(Side::Before)
             }
         }
     }
@@ -2216,8 +2220,9 @@ pub(crate) mod testutil {
 #[cfg(test)]
 mod tests {
     use ratatui::text::Line;
+    use time::OffsetDateTime;
     use ulid::Ulid;
-    use wiff_core::record::{Author, AuthorKind, CommentTarget, Confidence};
+    use wiff_core::record::{Author, AuthorKind, CommentTarget, Confidence, Seq, VersionNumber};
     use wiff_core::review::CommentState;
     use wiff_diff::{Diff, FileStatus, LineKind, Side};
 
@@ -2239,16 +2244,26 @@ mod tests {
                 kind: author.1,
             },
             target,
-            version: 0,
+            version: VersionNumber(0),
             anchor: None,
             body: body.to_string(),
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+            updated_by: Author {
+                name: author.0.to_string(),
+                kind: author.1,
+            },
             resolved: false,
             resolved_by: None,
+            resolved_at: None,
             deleted: false,
             deleted_by: None,
+            deleted_at: None,
             confidence: None,
-            created_seq: 0,
-            updated_seq: 0,
+            origin: None,
+            synced_marker: None,
+            created_seq: Seq(0),
+            updated_seq: Seq(0),
         }
     }
 
@@ -2749,6 +2764,48 @@ mod tests {
             "<#c0c5ce|-|->stale\n",
             "\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
+            "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;\n",
+        );
+    }
+
+    #[test]
+    fn a_comment_changed_by_another_actor_names_that_actor_in_a_badge() {
+        // An agent that reanchored or edited a human's comment is named in a
+        // muted badge, so the reviewer sees their comment was touched and by
+        // whom.
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[(LineKind::Added, "let y = 2;", 1)],
+            )],
+        };
+        let mut changed = comment(
+            8,
+            ("wez", AuthorKind::Human),
+            on_lines("src/lib.rs", 1, 1),
+            "why 2?",
+        );
+        changed.updated_by = Author {
+            name: "opus".to_string(),
+            kind: AuthorKind::Agent,
+        };
+        changed.updated_seq = Seq(3);
+        let doc = DiffView::new(theme()).unwrap().render_review(
+            &diff,
+            &[changed],
+            &[],
+            ViewLayout::default(),
+        );
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&doc.lines),
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
+            "<#8fa1b3|-|->wez (human)<#767b84|-|-> [changed by opus]<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse\n",
+            "<#c0c5ce|-|->why 2?\n",
+            "\n",
             "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;\n",
         );
     }

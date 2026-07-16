@@ -5,6 +5,7 @@ use std::path::Path;
 use wiff_core::hash::SidebandHash;
 use wiff_core::record::{
     DiffVersionRecord, FORMAT_VERSION, FileSummary, Record, RecordBody, SessionHeader, SourceKind,
+    VersionNumber,
 };
 use wiff_core::session::read_records;
 use wiff_core::{CapturedDiff, DiffSource, ProjectIdentity, create_session};
@@ -60,7 +61,7 @@ fn create_session_writes_header_version_and_sideband() {
     let records = read_records(log.path()).unwrap();
     let bodies: Vec<(u64, RecordBody)> = records
         .iter()
-        .map(|Record { seq, body, .. }| (*seq, body.clone()))
+        .map(|Record { seq, body, .. }| (seq.get(), body.clone()))
         .collect();
     let expected = vec![
         (
@@ -77,7 +78,7 @@ fn create_session_writes_header_version_and_sideband() {
         (
             1,
             RecordBody::DiffVersion(DiffVersionRecord {
-                number: 0,
+                number: VersionNumber(0),
                 diff_hash: SidebandHash::of(DIFF.as_bytes()),
                 files: vec![
                     FileSummary {

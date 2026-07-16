@@ -7,7 +7,7 @@ use wiff_core::record::SessionHeader;
 use wiff_core::review::ReviewState;
 use wiff_core::{LockWait, RefreshOutcome, SessionLog, refresh_session};
 
-use super::{read_piped_stdin, recapture_diff, resolve_session};
+use super::{read_piped_stdin, recapture_diff, resolve_author, resolve_session};
 
 /// Arguments for `wiff refresh`.
 #[derive(Debug, Args)]
@@ -18,6 +18,12 @@ pub struct RefreshArgs {
     /// Force the project bucket name when it cannot be derived from the cwd.
     #[arg(long)]
     project: Option<String>,
+    /// Attribute the reanchoring to an agent rather than the human reviewer.
+    #[arg(long)]
+    agent: bool,
+    /// Override the acting author's display name.
+    #[arg(long)]
+    author: Option<String>,
 }
 
 impl RefreshArgs {
@@ -27,11 +33,12 @@ impl RefreshArgs {
         let path = resolve_session(self.session.as_deref(), self.project.as_deref())?;
         let state = ReviewState::load(&path)?;
         let diff_text = recapture(&state.session).await?;
+        let author = resolve_author(self.agent, self.author)?;
         let mut log = SessionLog::open(&path)?;
-        match refresh_session(&mut log, &diff_text, LockWait::Block)? {
+        match refresh_session(&mut log, &diff_text, author, LockWait::Block)? {
             Some(outcome) => report(&outcome),
             None => {
-                let current = state.latest_version().map(|v| v.number).unwrap_or(0);
+                let current = state.latest_version().map(|v| v.number.get()).unwrap_or(0);
                 println!("no changes since v{current}");
             }
         }

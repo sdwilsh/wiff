@@ -3,13 +3,12 @@
 use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
 use ulid::Ulid;
-use wiff_config::Config;
-use wiff_core::record::{Author, AuthorKind, CommentTarget};
+use wiff_core::record::CommentTarget;
 use wiff_core::review::ReviewState;
 use wiff_core::{DraftComment, LockWait, SessionLog, delete_comment, set_resolved};
 use wiff_diff::{LineNo, Side};
 
-use super::{read_piped_stdin, resolve_session};
+use super::{read_piped_stdin, resolve_author, resolve_session};
 use crate::render::render_list;
 
 /// Arguments for `wiff comment`.
@@ -209,22 +208,6 @@ impl CommentRmArgs {
 /// Parse a comment id from its ULID text.
 fn parse_id(id: &str) -> anyhow::Result<Ulid> {
     Ulid::from_string(id).with_context(|| format!("{id} is not a valid comment id"))
-}
-
-/// The author an action is attributed to: the default name for the kind acted
-/// as -- an agent annotates as "assistant", a human as $USER -- honoring any
-/// configured name, which an explicit `--author` overrides in turn.
-fn resolve_author(agent: bool, name: Option<String>) -> anyhow::Result<Author> {
-    let kind = if agent {
-        AuthorKind::Agent
-    } else {
-        AuthorKind::Human
-    };
-    let mut author = Config::load()?.author.resolve(kind);
-    if let Some(name) = name {
-        author.name = name;
-    }
-    Ok(author)
 }
 
 /// Which side of the diff a line-range comment refers to.

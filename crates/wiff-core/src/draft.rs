@@ -19,23 +19,34 @@
 //! at commit time a drafted addition that is still deleted, and any edits folded
 //! into a comment that ends deleted, are pruned so they never reach the log.
 
+use time::OffsetDateTime;
 use ulid::Ulid;
 use wiff_diff::Diff;
 
+use crate::comment::{delete_event, edit_event, resolve_event};
 use crate::error::Result;
 use crate::rebase::rebase_line_comment;
 use crate::record::{
-    Author, CommentDelete, CommentEdit, CommentRecord, CommentResolve, CommentTarget, RecordBody,
+    Anchor, Author, CommentCreate, CommentEvent, CommentEventKind, CommentTarget, RecordBody, Seq,
+    VersionNumber,
 };
 use crate::review::CommentState;
 
 /// One buffered change to the review.
+// `Add` (a full create event) is the large variant and the common one; the
+// mutation variants are small. Boxing to equalize would heap-allocate the hot
+// path, so the size spread is kept.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 enum DraftOp {
-    /// A newly authored comment.
-    Add(CommentRecord),
-    /// A revision to a comment's body.
-    Edit { id: Ulid, body: String },
+    /// A newly authored comment, as its create event.
+    Add(CommentEvent),
+    /// A revision to a comment's body, and who made it.
+    Edit {
+        id: Ulid,
+        author: Author,
+        body: String,
+    },
     /// A change to a comment's resolved state, and who made it.
     Resolve {
         id: Ulid,
@@ -50,7 +61,7 @@ impl DraftOp {
     /// The comment this change applies to.
     fn id(&self) -> Ulid {
         match self {
-            DraftOp::Add(record) => record.id,
+            DraftOp::Add(event) => event.id,
             DraftOp::Edit { id, .. } | DraftOp::Resolve { id, .. } | DraftOp::Delete { id, .. } => {
                 *id
             }
@@ -85,29 +96,29 @@ impl DraftBuffer {
     }
 
     /// Buffer a newly authored comment, returning its identity so later edits
-    /// can name it. The record's anchor and authored-against version are kept so
-    /// a refresh can rebase the draft before it is ever committed.
-    pub fn add(&mut self, record: CommentRecord) -> Ulid {
-        let id = record.id;
-        self.ops.push(DraftOp::Add(record));
+    /// can name it.
+    pub fn add(&mut self, event: CommentEvent) -> Ulid {
+        let id = event.id;
+        self.ops.push(DraftOp::Add(event));
         id
     }
 
-    /// Buffer a new body for comment `id`. Editing a drafted addition rewrites
-    /// that draft in place; editing a committed comment replaces any earlier
-    /// buffered edit so only the latest body is committed.
-    pub fn edit(&mut self, id: Ulid, body: String) {
+    /// Buffer a new body for comment `id` by `author`. Editing a drafted
+    /// addition rewrites that draft in place; editing a committed comment
+    /// replaces any earlier buffered edit so only the latest body is committed.
+    pub fn edit(&mut self, id: Ulid, author: Author, body: String) {
         for op in &mut self.ops {
-            if let DraftOp::Add(record) = op
-                && record.id == id
+            if let DraftOp::Add(event) = op
+                && event.id == id
+                && let CommentEventKind::Create(create) = &mut event.kind
             {
-                record.body = body;
+                create.body = body;
                 return;
             }
         }
         self.ops
             .retain(|op| !matches!(op, DraftOp::Edit { id: other, .. } if *other == id));
-        self.ops.push(DraftOp::Edit { id, body });
+        self.ops.push(DraftOp::Edit { id, author, body });
     }
 
     /// Buffer a resolved-state change for comment `id` by `author`, replacing any
@@ -123,8 +134,8 @@ impl DraftBuffer {
     }
 
     /// Buffer a withdrawal of comment `id`, marking it deleted until commit. The
-    /// comment stays in the effective set so it can be shown as deleted and the
-    /// withdrawal undone with [`restore`](Self::restore). Deleting is idempotent.
+    /// comment stays in the effective set; the withdrawal is undone with
+    /// [`restore`](Self::restore). Deleting is idempotent.
     pub fn delete(&mut self, id: Ulid, author: Author) {
         if self.is_deleting(id) {
             return;
@@ -157,20 +168,21 @@ impl DraftBuffer {
     /// by identity and so need no move.
     pub fn rebase(
         &mut self,
-        new_version: u32,
+        new_version: VersionNumber,
         new_diff: &Diff,
-        mut old_diff: impl FnMut(u32) -> Result<Diff>,
+        mut old_diff: impl FnMut(VersionNumber) -> Result<Diff>,
     ) -> Result<()> {
         for op in &mut self.ops {
-            if let DraftOp::Add(record) = op
-                && matches!(record.target, CommentTarget::Lines { .. })
+            if let DraftOp::Add(event) = op
+                && let CommentEventKind::Create(create) = &mut event.kind
+                && matches!(create.target, CommentTarget::Lines { .. })
             {
-                let old = old_diff(record.version)?;
+                let old = old_diff(create.version)?;
                 if let Some(rebased) =
-                    rebase_line_comment(&record.target, record.anchor.as_ref(), &old, new_diff)
+                    rebase_line_comment(&create.target, create.anchor.as_ref(), &old, new_diff)
                 {
-                    record.target = rebased.target;
-                    record.version = new_version;
+                    create.target = rebased.target;
+                    create.version = new_version;
                 }
             }
         }
@@ -189,11 +201,24 @@ impl DraftBuffer {
             .collect();
         for op in &self.ops {
             match op {
-                DraftOp::Add(record) => {
-                    order.push(record.id);
-                    states.push((record.id, CommentState::created(record, 0)));
+                DraftOp::Add(event) => {
+                    let CommentEventKind::Create(create) = &event.kind else {
+                        // A buffered addition is only ever built by
+                        // `draft_create`, which yields a Create; any other kind
+                        // is a programming error, not a state to render.
+                        unreachable!("a buffered addition is always a create event");
+                    };
+                    order.push(event.id);
+                    // A draft has no authored time until it is committed (its
+                    // real time is the record's `at`); the preview uses the
+                    // epoch as a stable placeholder.
+                    let at = event.authored_at.unwrap_or(OffsetDateTime::UNIX_EPOCH);
+                    states.push((
+                        event.id,
+                        CommentState::from_create(event, create, at, Seq(0)),
+                    ));
                 }
-                DraftOp::Edit { id, body } => {
+                DraftOp::Edit { id, body, .. } => {
                     if let Some(state) = find_mut(&mut states, *id) {
                         state.body = body.clone();
                     }
@@ -265,41 +290,40 @@ impl DraftBuffer {
                 !added.contains(&id) && matches!(op, DraftOp::Delete { .. })
             })
             .map(|op| match op {
-                DraftOp::Add(record) => RecordBody::Comment(record),
-                DraftOp::Edit { id, body } => RecordBody::CommentEdit(CommentEdit { id, body }),
+                DraftOp::Add(event) => RecordBody::CommentEvent(event),
+                DraftOp::Edit { id, author, body } => edit_event(id, author, body),
                 DraftOp::Resolve {
                     id,
                     resolved,
                     author,
-                } => RecordBody::CommentResolve(CommentResolve {
-                    id,
-                    resolved,
-                    author,
-                }),
-                DraftOp::Delete { id, author } => {
-                    RecordBody::CommentDelete(CommentDelete { id, author })
-                }
+                } => resolve_event(id, author, resolved),
+                DraftOp::Delete { id, author } => delete_event(id, author),
             })
             .collect()
     }
 }
 
-/// A fresh comment record for a body drafted against diff `version`, with the
-/// caller-supplied `target` and `anchor`, assigned a new identity.
-pub fn draft_record(
-    author: crate::record::Author,
+/// A fresh comment create event for a body drafted against diff `version`, with
+/// the caller-supplied `target` and `anchor`, assigned a new identity.
+pub fn draft_create(
+    author: Author,
     target: CommentTarget,
-    version: u32,
-    anchor: Option<crate::record::Anchor>,
+    version: VersionNumber,
+    anchor: Option<Anchor>,
     body: String,
-) -> CommentRecord {
-    CommentRecord {
+) -> CommentEvent {
+    CommentEvent {
         id: Ulid::new(),
         author,
-        target,
-        version,
-        anchor,
-        body,
+        authored_at: None,
+        origin: None,
+        synced_marker: None,
+        kind: CommentEventKind::Create(CommentCreate {
+            target,
+            version,
+            anchor,
+            body,
+        }),
     }
 }
 
@@ -313,16 +337,21 @@ fn find_mut(states: &mut [(Ulid, CommentState)], id: Ulid) -> Option<&mut Commen
 
 #[cfg(test)]
 mod tests {
+    use time::OffsetDateTime;
     use ulid::Ulid;
 
     use wiff_diff::parse::parse;
     use wiff_diff::{Diff, LineNo, Side};
 
-    use super::{DraftBuffer, EffectiveComment, draft_record};
-    use crate::record::{Author, AuthorKind, CommentRecord, CommentTarget, RecordBody};
+    use super::{DraftBuffer, EffectiveComment, draft_create};
+    use crate::comment::{delete_event, edit_event, resolve_event};
+    use crate::record::{
+        Author, AuthorKind, CommentEvent, CommentTarget, RecordBody, Seq, VersionNumber,
+    };
     use crate::review::CommentState;
 
-    /// The human reviewer whose resolves and deletes the buffer attributes.
+    /// The human reviewer whose edits, resolves, and deletes the buffer
+    /// attributes.
     fn actor() -> Author {
         Author {
             name: "wez".to_string(),
@@ -330,44 +359,67 @@ mod tests {
         }
     }
 
-    /// A committed review comment with the given identity, body, and resolved
-    /// state, targeting the review overall.
-    fn committed_comment(id: u128, body: &str, resolved: bool) -> CommentState {
-        CommentState {
-            id: Ulid(id),
-            author: Author {
-                name: "wez".to_string(),
-                kind: AuthorKind::Human,
-            },
-            target: CommentTarget::Review,
-            version: 0,
-            anchor: None,
-            body: body.to_string(),
-            resolved,
-            resolved_by: None,
-            deleted: false,
-            deleted_by: None,
-            confidence: None,
-            created_seq: 3,
-            updated_seq: 3,
+    /// The agent that authors drafted additions in these tests.
+    fn agent() -> Author {
+        Author {
+            name: "opus".to_string(),
+            kind: AuthorKind::Agent,
         }
     }
 
-    /// A drafted review-level comment record by an agent with the given identity
-    /// and body.
-    fn drafted(id: u128, body: &str) -> crate::record::CommentRecord {
-        let mut record = draft_record(
-            Author {
-                name: "opus".to_string(),
-                kind: AuthorKind::Agent,
-            },
+    /// A committed review comment with the given identity, body, and resolved
+    /// state, targeting the review overall. Its folded times are fixed so a
+    /// preview asserts deterministically.
+    fn committed_comment(id: u128, body: &str, resolved: bool) -> CommentState {
+        CommentState {
+            id: Ulid(id),
+            author: actor(),
+            target: CommentTarget::Review,
+            version: VersionNumber(0),
+            anchor: None,
+            body: body.to_string(),
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+            updated_by: actor(),
+            resolved,
+            resolved_by: None,
+            resolved_at: None,
+            deleted: false,
+            deleted_by: None,
+            deleted_at: None,
+            confidence: None,
+            origin: None,
+            synced_marker: None,
+            created_seq: Seq(3),
+            updated_seq: Seq(3),
+        }
+    }
+
+    /// The preview state of a drafted review comment by `author`: the same shape
+    /// [`DraftBuffer::apply`] yields, with the placeholder sequence and epoch
+    /// time a not-yet-committed draft has.
+    fn drafted_state(id: u128, author: Author, body: &str) -> CommentState {
+        CommentState {
+            author: author.clone(),
+            updated_by: author,
+            created_seq: Seq(0),
+            updated_seq: Seq(0),
+            ..committed_comment(id, body, false)
+        }
+    }
+
+    /// A drafted review-level comment by an agent with the given identity and
+    /// body.
+    fn drafted(id: u128, body: &str) -> CommentEvent {
+        let mut event = draft_create(
+            agent(),
             CommentTarget::Review,
-            0,
+            VersionNumber(0),
             None,
             body.to_string(),
         );
-        record.id = Ulid(id);
-        record
+        event.id = Ulid(id);
+        event
     }
 
     #[test]
@@ -389,15 +441,6 @@ mod tests {
         let committed = vec![committed_comment(1, "looks fine", false)];
         let mut buffer = DraftBuffer::new();
         buffer.add(drafted(2, "one more thing"));
-        let mut expected_new = CommentState {
-            author: Author {
-                name: "opus".to_string(),
-                kind: AuthorKind::Agent,
-            },
-            ..committed_comment(2, "one more thing", false)
-        };
-        expected_new.created_seq = 0;
-        expected_new.updated_seq = 0;
         wince::assert_eq!(
             buffer.apply(&committed),
             vec![
@@ -406,7 +449,7 @@ mod tests {
                     pending: false,
                 },
                 EffectiveComment {
-                    comment: expected_new,
+                    comment: drafted_state(2, agent(), "one more thing"),
                     pending: true,
                 },
             ]
@@ -417,12 +460,10 @@ mod tests {
     fn editing_and_resolving_a_committed_comment_marks_it_pending() {
         let committed = vec![committed_comment(1, "old body", false)];
         let mut buffer = DraftBuffer::new();
-        buffer.edit(Ulid(1), "new body".to_string());
+        buffer.edit(Ulid(1), actor(), "new body".to_string());
         buffer.resolve(Ulid(1), true, actor());
         let mut expected = committed_comment(1, "new body", true);
         expected.resolved_by = Some(actor());
-        expected.created_seq = 3;
-        expected.updated_seq = 3;
         wince::assert_eq!(
             buffer.apply(&committed),
             vec![EffectiveComment {
@@ -478,34 +519,20 @@ mod tests {
     #[test]
     fn deleting_a_committed_comment_commits_only_its_tombstone() {
         let mut buffer = DraftBuffer::new();
-        buffer.edit(Ulid(1), "reworded".to_string());
+        buffer.edit(Ulid(1), actor(), "reworded".to_string());
         buffer.delete(Ulid(1), actor());
-        wince::assert_eq!(
-            buffer.into_records(),
-            vec![RecordBody::CommentDelete(crate::record::CommentDelete {
-                id: Ulid(1),
-                author: actor(),
-            })]
-        );
+        wince::assert_eq!(buffer.into_records(), vec![delete_event(Ulid(1), actor())]);
     }
 
     #[test]
     fn a_deleted_drafted_comment_stays_shown_but_leaves_no_records() {
         let mut buffer = DraftBuffer::new();
         let id = buffer.add(drafted(2, "never mind"));
-        buffer.edit(id, "second thoughts".to_string());
+        buffer.edit(id, actor(), "second thoughts".to_string());
         buffer.delete(id, actor());
-        let mut deleted = CommentState {
-            author: Author {
-                name: "opus".to_string(),
-                kind: AuthorKind::Agent,
-            },
-            ..committed_comment(2, "second thoughts", false)
-        };
+        let mut deleted = drafted_state(2, agent(), "second thoughts");
         deleted.deleted = true;
         deleted.deleted_by = Some(actor());
-        deleted.created_seq = 0;
-        deleted.updated_seq = 0;
         wince::assert_eq!(
             buffer.apply(&[]),
             vec![EffectiveComment {
@@ -524,21 +551,18 @@ mod tests {
         buffer.restore(id);
         wince::assert_eq!(
             buffer.into_records(),
-            vec![RecordBody::Comment(drafted(2, "keep me"))]
+            vec![RecordBody::CommentEvent(drafted(2, "keep me"))]
         );
     }
 
     #[test]
     fn repeated_edits_to_one_comment_commit_as_a_single_event() {
         let mut buffer = DraftBuffer::new();
-        buffer.edit(Ulid(1), "first".to_string());
-        buffer.edit(Ulid(1), "final".to_string());
+        buffer.edit(Ulid(1), actor(), "first".to_string());
+        buffer.edit(Ulid(1), actor(), "final".to_string());
         wince::assert_eq!(
             buffer.into_records(),
-            vec![RecordBody::CommentEdit(crate::record::CommentEdit {
-                id: Ulid(1),
-                body: "final".to_string(),
-            })]
+            vec![edit_event(Ulid(1), actor(), "final".to_string())]
         );
     }
 
@@ -557,25 +581,22 @@ new file mode 100644
 ";
 
     /// A drafted comment on line `line` of `f.txt`'s after side, authored
-    /// against version 0 with the given identity.
-    fn drafted_line(id: u128, line: u32) -> CommentRecord {
-        let mut record = draft_record(
-            Author {
-                name: "wez".to_string(),
-                kind: AuthorKind::Human,
-            },
+    /// against `version` with the given identity.
+    fn drafted_line(id: u128, line: u32, version: VersionNumber) -> CommentEvent {
+        let mut event = draft_create(
+            actor(),
             CommentTarget::Lines {
                 file: "f.txt".to_string(),
                 side: Side::After,
                 start_line: LineNo::new(line).unwrap(),
                 end_line: LineNo::new(line).unwrap(),
             },
-            0,
+            version,
             None,
             "why gamma?".to_string(),
         );
-        record.id = Ulid(id);
-        record
+        event.id = Ulid(id);
+        event
     }
 
     #[test]
@@ -583,7 +604,7 @@ new file mode 100644
         // A line inserted at the top slides gamma from line 3 to line 4, and the
         // draft advances to the new version.
         let mut buffer = DraftBuffer::new();
-        buffer.add(drafted_line(2, 3));
+        buffer.add(drafted_line(2, 3, VersionNumber(0)));
         let old: Diff = parse(V0).unwrap();
         let new = parse(
             "\
@@ -601,15 +622,20 @@ new file mode 100644
         )
         .unwrap();
         buffer
-            .rebase(1, &new, |version| {
-                wince::assert_eq!(version, 0);
+            .rebase(VersionNumber(1), &new, |version| {
+                wince::assert_eq!(version, VersionNumber(0));
                 Ok(old.clone())
             })
             .unwrap();
 
-        let mut rebased = drafted_line(2, 4);
-        rebased.version = 1;
-        wince::assert_eq!(buffer.into_records(), vec![RecordBody::Comment(rebased)]);
+        wince::assert_eq!(
+            buffer.into_records(),
+            vec![RecordBody::CommentEvent(drafted_line(
+                2,
+                4,
+                VersionNumber(1)
+            ))]
+        );
     }
 
     #[test]
@@ -620,11 +646,13 @@ new file mode 100644
         buffer.add(drafted(2, "one more thing"));
         let new = parse(V0).unwrap();
         buffer
-            .rebase(1, &new, |_| panic!("a review draft needs no old diff"))
+            .rebase(VersionNumber(1), &new, |_| {
+                panic!("a review draft needs no old diff")
+            })
             .unwrap();
         wince::assert_eq!(
             buffer.into_records(),
-            vec![RecordBody::Comment(drafted(2, "one more thing"))]
+            vec![RecordBody::CommentEvent(drafted(2, "one more thing"))]
         );
     }
 
@@ -636,12 +664,8 @@ new file mode 100644
         wince::assert_eq!(
             buffer.into_records(),
             vec![
-                RecordBody::Comment(drafted(2, "new comment")),
-                RecordBody::CommentResolve(crate::record::CommentResolve {
-                    id: Ulid(1),
-                    resolved: true,
-                    author: actor(),
-                }),
+                RecordBody::CommentEvent(drafted(2, "new comment")),
+                resolve_event(Ulid(1), actor(), true),
             ]
         );
     }

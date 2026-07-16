@@ -20,4 +20,5 @@ wiff-diff.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+time.workspace = true
 wince.workspace = true

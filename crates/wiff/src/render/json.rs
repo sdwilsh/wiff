@@ -6,8 +6,9 @@ use wiff_core::review::{CommentState, ReviewState};
 
 use super::{latest_files, live_comments};
 
-/// The JSON schema version emitted by `wiff render --format json`.
-const JSON_SCHEMA_VERSION: u32 = 1;
+/// The JSON schema version emitted by `wiff render --format json`. Bumped to 2
+/// when the comment event envelope added per-event actor and time fields.
+const JSON_SCHEMA_VERSION: u32 = 2;
 
 /// Render `state` as a versioned JSON document.
 pub(super) fn render(state: &ReviewState) -> anyhow::Result<String> {
@@ -58,7 +59,7 @@ mod tests {
         let out = render(&state()).unwrap();
         let value: serde_json::Value = serde_json::from_str(&out).unwrap();
         let expected = json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "session": {
                 "ulid": "00000000000000000000000000",
                 "project": "demo",
@@ -92,6 +93,9 @@ mod tests {
                         "context_after": ["let c = 4;"]
                     },
                     "body": "why 3?",
+                    "created_at": "1970-01-01T00:00:00Z",
+                    "updated_at": "1970-01-01T00:00:00Z",
+                    "updated_by": { "name": "wez", "kind": "human" },
                     "resolved": false,
                     "resolved_by": null,
                     "deleted": false,
@@ -107,8 +111,12 @@ mod tests {
                     "version": 0,
                     "anchor": null,
                     "body": "needs tests",
+                    "created_at": "1970-01-01T00:00:00Z",
+                    "updated_at": "1970-01-01T00:00:00Z",
+                    "updated_by": { "name": "wez", "kind": "human" },
                     "resolved": true,
                     "resolved_by": { "name": "wez", "kind": "human" },
+                    "resolved_at": "1970-01-01T00:00:00Z",
                     "deleted": false,
                     "deleted_by": null,
                     "confidence": null,
@@ -122,6 +130,9 @@ mod tests {
                     "version": 0,
                     "anchor": null,
                     "body": "overall solid",
+                    "created_at": "1970-01-01T00:00:00Z",
+                    "updated_at": "1970-01-01T00:00:00Z",
+                    "updated_by": { "name": "wez", "kind": "human" },
                     "resolved": false,
                     "resolved_by": null,
                     "deleted": false,
@@ -143,6 +154,9 @@ mod tests {
                     "version": 0,
                     "anchor": null,
                     "body": "moved code",
+                    "created_at": "1970-01-01T00:00:00Z",
+                    "updated_at": "1970-01-01T00:00:00Z",
+                    "updated_by": { "name": "opus", "kind": "agent" },
                     "resolved": false,
                     "resolved_by": null,
                     "deleted": false,

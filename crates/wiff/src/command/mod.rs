@@ -17,7 +17,8 @@ use anyhow::{Context, bail};
 use clap::Subcommand;
 use tokio::io::AsyncReadExt;
 use ulid::Ulid;
-use wiff_core::record::{SessionHeader, SourceKind};
+use wiff_config::Config;
+use wiff_core::record::{Author, AuthorKind, SessionHeader, SourceKind};
 use wiff_core::session::{active_session, data_dir, session_file};
 use wiff_core::{CapturedDiff, DiffSource, GitSource, ProjectIdentity, ScmType};
 
@@ -76,6 +77,22 @@ fn resolve_session(session: Option<&str>, project: Option<&str>) -> anyhow::Resu
         }
         None => Ok(active_session(&base, &identity.canonical)?),
     }
+}
+
+/// The author an action is attributed to: the default name for the kind acted
+/// as -- an agent annotates as "assistant", a human as $USER -- honoring any
+/// configured name, which an explicit `name` overrides in turn.
+pub(crate) fn resolve_author(agent: bool, name: Option<String>) -> anyhow::Result<Author> {
+    let kind = if agent {
+        AuthorKind::Agent
+    } else {
+        AuthorKind::Human
+    };
+    let mut author = Config::load()?.author.resolve(kind);
+    if let Some(name) = name {
+        author.name = name;
+    }
+    Ok(author)
 }
 
 /// Which slice of a repository to capture, independent of the source-control

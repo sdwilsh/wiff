@@ -18,8 +18,8 @@ use wiff_diff::{LineNo, Side};
 
 use crate::error::{Error, Result};
 use crate::record::{
-    Anchor, Author, CommentDelete, CommentRecord, CommentResolve, CommentTarget, DiffVersionRecord,
-    Record, RecordBody,
+    Anchor, Author, CommentCreate, CommentEvent, CommentEventKind, CommentReanchor, CommentTarget,
+    DiffVersionRecord, Record, RecordBody, Seq, VersionNumber,
 };
 use crate::review::{CommentState, fold};
 use crate::session::{LockWait, SessionLog};
@@ -45,9 +45,9 @@ pub struct AddedComment {
     /// The new comment's stable identity.
     pub id: Ulid,
     /// The sequence number of the appended record.
-    pub seq: u64,
+    pub seq: Seq,
     /// The diff version the comment was authored against.
-    pub version: u32,
+    pub version: VersionNumber,
     /// The captured anchor, for a line-range target.
     pub anchor: Option<Anchor>,
 }
@@ -69,15 +69,20 @@ impl DraftComment {
             CommentTarget::File { .. } | CommentTarget::Review => None,
         };
         let id = Ulid::new();
-        let record = CommentRecord {
+        let event = CommentEvent {
             id,
             author: self.author,
-            target: self.target,
-            version,
-            anchor: anchor.clone(),
-            body: self.body,
+            authored_at: None,
+            origin: None,
+            synced_marker: None,
+            kind: CommentEventKind::Create(CommentCreate {
+                target: self.target,
+                version,
+                anchor: anchor.clone(),
+                body: self.body,
+            }),
         };
-        let seq = log.append(&mut lock, RecordBody::Comment(record))?;
+        let seq = log.append(&mut lock, RecordBody::CommentEvent(event))?;
         Ok(AddedComment {
             id,
             seq,
@@ -98,14 +103,7 @@ pub fn set_resolved(
 ) -> Result<CommentState> {
     let (mut lock, records) = log.lock_and_sync(wait)?;
     let comment = require_comment_in_records(&records, id)?;
-    log.append(
-        &mut lock,
-        RecordBody::CommentResolve(CommentResolve {
-            id,
-            resolved,
-            author,
-        }),
-    )?;
+    log.append(&mut lock, resolve_event(id, author, resolved))?;
     Ok(comment)
 }
 
@@ -119,11 +117,42 @@ pub fn delete_comment(
 ) -> Result<CommentState> {
     let (mut lock, records) = log.lock_and_sync(wait)?;
     let comment = require_comment_in_records(&records, id)?;
-    log.append(
-        &mut lock,
-        RecordBody::CommentDelete(CommentDelete { id, author }),
-    )?;
+    log.append(&mut lock, delete_event(id, author))?;
     Ok(comment)
+}
+
+/// Build an edit event for `id` by `author`.
+pub fn edit_event(id: Ulid, author: Author, body: String) -> RecordBody {
+    comment_event(id, author, CommentEventKind::Edit { body })
+}
+
+/// Build a resolve event for `id` by `author`.
+pub fn resolve_event(id: Ulid, author: Author, resolved: bool) -> RecordBody {
+    comment_event(id, author, CommentEventKind::Resolve { resolved })
+}
+
+/// Build a delete tombstone for `id` by `author`.
+pub fn delete_event(id: Ulid, author: Author) -> RecordBody {
+    comment_event(id, author, CommentEventKind::Delete)
+}
+
+/// Build a re-anchor event for `id` by `author`, recording the new target and
+/// confidence.
+pub fn reanchor_event(id: Ulid, author: Author, reanchor: CommentReanchor) -> RecordBody {
+    comment_event(id, author, CommentEventKind::Reanchor(reanchor))
+}
+
+/// Wrap a locally-authored event kind in a [`CommentEvent`] envelope: no forge
+/// origin or sync marker, and no authored-at (its time is the record's).
+fn comment_event(id: Ulid, author: Author, kind: CommentEventKind) -> RecordBody {
+    RecordBody::CommentEvent(CommentEvent {
+        id,
+        author,
+        authored_at: None,
+        origin: None,
+        synced_marker: None,
+        kind,
+    })
 }
 
 /// Fold `records` and return the current state of comment `id`, or
@@ -161,7 +190,7 @@ fn latest_diff_version(records: &[Record]) -> Result<&DiffVersionRecord> {
 /// for the comment to point into.
 fn capture_anchor(
     log: &SessionLog,
-    number: u32,
+    number: VersionNumber,
     file: &str,
     side: Side,
     start: LineNo,

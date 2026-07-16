@@ -27,4 +27,5 @@ wiff-diff.workspace = true
 wiff-tui.workspace = true
 
 [dev-dependencies]
+time.workspace = true
 wince.workspace = true

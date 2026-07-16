@@ -2,10 +2,11 @@
 
 use std::path::Path;
 
+use time::OffsetDateTime;
 use ulid::Ulid;
 use wiff_core::record::{
-    Anchor, Author, AuthorKind, CommentTarget, DiffVersionRecord, FileSummary, SessionHeader,
-    SourceKind,
+    Anchor, Author, AuthorKind, CommentTarget, DiffVersionRecord, FORMAT_VERSION, FileSummary, Seq,
+    SessionHeader, SourceKind, VersionNumber,
 };
 use wiff_core::review::{CommentState, fold};
 use wiff_core::session::read_records;
@@ -67,6 +68,23 @@ fn lines_target(file: &str, start: u32, end: u32) -> CommentTarget {
     }
 }
 
+/// Normalize each comment's wall-clock timestamps to the epoch so a folded
+/// state asserts deterministically; a present resolve/delete time is kept
+/// present, only flattened.
+fn normalize(mut comments: Vec<CommentState>) -> Vec<CommentState> {
+    for comment in &mut comments {
+        comment.created_at = OffsetDateTime::UNIX_EPOCH;
+        comment.updated_at = OffsetDateTime::UNIX_EPOCH;
+        if comment.resolved_at.is_some() {
+            comment.resolved_at = Some(OffsetDateTime::UNIX_EPOCH);
+        }
+        if comment.deleted_at.is_some() {
+            comment.deleted_at = Some(OffsetDateTime::UNIX_EPOCH);
+        }
+    }
+    comments
+}
+
 #[test]
 fn adding_comments_captures_anchors_and_folds_to_current_state() {
     let (_base, mut log) = session();
@@ -109,14 +127,14 @@ fn adding_comments_captures_anchors_and_folds_to_current_state() {
     );
     wince::assert_eq!(whole.anchor, None);
     wince::assert_eq!(overall.anchor, None);
-    wince::assert_eq!((line.seq, line.version), (2, 0));
-    wince::assert_eq!((whole.seq, whole.version), (3, 0));
-    wince::assert_eq!((overall.seq, overall.version), (4, 0));
+    wince::assert_eq!((line.seq, line.version), (Seq(2), VersionNumber(0)));
+    wince::assert_eq!((whole.seq, whole.version), (Seq(3), VersionNumber(0)));
+    wince::assert_eq!((overall.seq, overall.version), (Seq(4), VersionNumber(0)));
 
     let state = fold(&read_records(log.path()).unwrap()).unwrap();
     let expected_header = SessionHeader {
         ulid: log.ulid(),
-        version: 1,
+        version: FORMAT_VERSION,
         project: "demo".to_string(),
         repo_root: None,
         cwd: "/work".to_string(),
@@ -126,7 +144,7 @@ fn adding_comments_captures_anchors_and_folds_to_current_state() {
     wince::assert_eq!(
         state.versions,
         vec![DiffVersionRecord {
-            number: 0,
+            number: VersionNumber(0),
             diff_hash: SidebandHash::of(DIFF.as_bytes()),
             files: vec![
                 FileSummary {
@@ -145,26 +163,33 @@ fn adding_comments_captures_anchors_and_folds_to_current_state() {
         }]
     );
     wince::assert_eq!(
-        state.comments,
+        normalize(state.comments),
         vec![
             CommentState {
                 id: line.id,
                 author: human("wez"),
                 target: lines_target("src/main.rs", 2, 2),
-                version: 0,
+                version: VersionNumber(0),
                 anchor: Some(Anchor {
                     snippet: vec!["let b = 3;".to_string()],
                     context_before: vec!["let a = 1;".to_string()],
                     context_after: vec!["let c = 4;".to_string()],
                 }),
                 body: "why 3?".to_string(),
+                created_at: OffsetDateTime::UNIX_EPOCH,
+                updated_at: OffsetDateTime::UNIX_EPOCH,
+                updated_by: human("wez"),
                 resolved: false,
                 resolved_by: None,
+                resolved_at: None,
                 deleted: false,
                 deleted_by: None,
+                deleted_at: None,
                 confidence: None,
-                created_seq: 2,
-                updated_seq: 2,
+                origin: None,
+                synced_marker: None,
+                created_seq: Seq(2),
+                updated_seq: Seq(2),
             },
             CommentState {
                 id: whole.id,
@@ -175,31 +200,48 @@ fn adding_comments_captures_anchors_and_folds_to_current_state() {
                 target: CommentTarget::File {
                     file: "added.txt".to_string(),
                 },
-                version: 0,
+                version: VersionNumber(0),
                 anchor: None,
                 body: "needs a newline".to_string(),
+                created_at: OffsetDateTime::UNIX_EPOCH,
+                updated_at: OffsetDateTime::UNIX_EPOCH,
+                updated_by: Author {
+                    name: "assistant".to_string(),
+                    kind: AuthorKind::Agent,
+                },
                 resolved: false,
                 resolved_by: None,
+                resolved_at: None,
                 deleted: false,
                 deleted_by: None,
+                deleted_at: None,
                 confidence: None,
-                created_seq: 3,
-                updated_seq: 3,
+                origin: None,
+                synced_marker: None,
+                created_seq: Seq(3),
+                updated_seq: Seq(3),
             },
             CommentState {
                 id: overall.id,
                 author: human("wez"),
                 target: CommentTarget::Review,
-                version: 0,
+                version: VersionNumber(0),
                 anchor: None,
                 body: "looks good".to_string(),
+                created_at: OffsetDateTime::UNIX_EPOCH,
+                updated_at: OffsetDateTime::UNIX_EPOCH,
+                updated_by: human("wez"),
                 resolved: false,
                 resolved_by: None,
+                resolved_at: None,
                 deleted: false,
                 deleted_by: None,
+                deleted_at: None,
                 confidence: None,
-                created_seq: 4,
-                updated_seq: 4,
+                origin: None,
+                synced_marker: None,
+                created_seq: Seq(4),
+                updated_seq: Seq(4),
             },
         ]
     );
@@ -239,21 +281,28 @@ fn a_line_beyond_the_captured_window_is_recorded_without_an_anchor() {
 
     let state = fold(&read_records(log.path()).unwrap()).unwrap();
     wince::assert_eq!(
-        state.comments,
+        normalize(state.comments),
         vec![CommentState {
             id: added.id,
             author: human("wez"),
             target: lines_target("src/main.rs", 100, 100),
-            version: 0,
+            version: VersionNumber(0),
             anchor: None,
             body: "look here for context".to_string(),
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+            updated_by: human("wez"),
             resolved: false,
             resolved_by: None,
+            resolved_at: None,
             deleted: false,
             deleted_by: None,
+            deleted_at: None,
             confidence: None,
-            created_seq: 2,
-            updated_seq: 2,
+            origin: None,
+            synced_marker: None,
+            created_seq: Seq(2),
+            updated_seq: Seq(2),
         }]
     );
 }
@@ -285,7 +334,7 @@ fn resolving_and_withdrawing_comments_folds_to_current_state() {
 
     let state = fold(&read_records(log.path()).unwrap()).unwrap();
     wince::assert_eq!(
-        state.comments,
+        normalize(state.comments),
         vec![
             CommentState {
                 id: keep.id,
@@ -293,31 +342,45 @@ fn resolving_and_withdrawing_comments_folds_to_current_state() {
                 target: CommentTarget::File {
                     file: "added.txt".to_string(),
                 },
-                version: 0,
+                version: VersionNumber(0),
                 anchor: None,
                 body: "needs a newline".to_string(),
+                created_at: OffsetDateTime::UNIX_EPOCH,
+                updated_at: OffsetDateTime::UNIX_EPOCH,
+                updated_by: human("wez"),
                 resolved: false,
                 resolved_by: Some(human("wez")),
+                resolved_at: Some(OffsetDateTime::UNIX_EPOCH),
                 deleted: false,
                 deleted_by: None,
+                deleted_at: None,
                 confidence: None,
-                created_seq: 2,
-                updated_seq: 5,
+                origin: None,
+                synced_marker: None,
+                created_seq: Seq(2),
+                updated_seq: Seq(5),
             },
             CommentState {
                 id: gone.id,
                 author: human("wez"),
                 target: CommentTarget::Review,
-                version: 0,
+                version: VersionNumber(0),
                 anchor: None,
                 body: "never mind".to_string(),
+                created_at: OffsetDateTime::UNIX_EPOCH,
+                updated_at: OffsetDateTime::UNIX_EPOCH,
+                updated_by: human("wez"),
                 resolved: false,
                 resolved_by: None,
+                resolved_at: None,
                 deleted: true,
                 deleted_by: Some(human("wez")),
+                deleted_at: Some(OffsetDateTime::UNIX_EPOCH),
                 confidence: None,
-                created_seq: 3,
-                updated_seq: 6,
+                origin: None,
+                synced_marker: None,
+                created_seq: Seq(3),
+                updated_seq: Seq(6),
             },
         ]
     );

@@ -8,7 +8,9 @@ use std::path::Path;
 
 use anyhow::Context;
 use wiff_config::{Config, OnExit};
-use wiff_core::record::{Author, AuthorKind, RecordBody, SessionHeader};
+use wiff_core::record::{
+    Author, AuthorKind, CommentEventKind, RecordBody, SessionHeader, VersionNumber,
+};
 use wiff_core::session::{SessionWatcher, read_records, remove_session};
 use wiff_core::{
     LockWait, RefreshOutcome, ReviewState, SessionLog, SidebandHash, compare_versions,
@@ -62,7 +64,7 @@ pub fn open(session_path: &Path, config: &Config, offer_refresh: bool) -> anyhow
     // Comments authored in the TUI are attributed to the human reviewer and
     // anchored against the diff version being reviewed.
     let author = config.author.resolve(AuthorKind::Human);
-    let review = Review::deferred(view, diff, author.clone(), version.number, comments);
+    let review = Review::deferred(view, diff, author.clone(), version.number.get(), comments);
     let mut app = App::reviewing(review, 0, &theme)
         .with_exit_default(exit_default(config.on_exit))
         .with_keymap(keymap.clone())
@@ -143,8 +145,8 @@ fn compare_in_place(
             app.set_message(format!("showing the latest diff (v{latest})"));
         }
         CompareRequest::Version(from) => {
-            let from_diff = parse_diff(&log.read_diff(from)?, tab_width)?;
-            let comparison = compare_versions(&latest_diff, latest, &from_diff, from);
+            let from_diff = parse_diff(&log.read_diff(VersionNumber(from))?, tab_width)?;
+            let comparison = compare_versions(&latest_diff, latest.get(), &from_diff, from);
             app.show_comparison(comparison.diff, Some((from, comparison.before_origin)));
             app.set_message(format!("comparing v{from} against v{latest}"));
         }
@@ -168,10 +170,10 @@ fn refresh_in_place(
     // the view, but the picker below marks this as where they were.
     let viewing = app.comparing_from();
     let state = ReviewState::load(session_path)?;
-    let prior_latest = state.latest_version().map(|v| v.number);
+    let prior_latest = state.latest_version().map(|v| v.number.get());
     let diff_text = recapture(&state.session)?;
     let mut log = SessionLog::open(session_path)?;
-    let outcome = match refresh_session(&mut log, &diff_text, LockWait::NonBlock)? {
+    let outcome = match refresh_session(&mut log, &diff_text, author.clone(), LockWait::NonBlock)? {
         Some(outcome) => outcome,
         None => {
             let current = prior_latest.unwrap_or(0);
@@ -199,8 +201,8 @@ fn refresh_in_place(
         .filter(|comment| !comment.deleted)
         .cloned()
         .collect();
-    app.refresh(latest_diff, comments, latest, |authored_version| {
-        parse_diff(&log.read_diff(authored_version)?, tab_width).map_err(Into::into)
+    app.refresh(latest_diff, comments, latest.get(), |authored_version| {
+        parse_diff(&log.read_diff(VersionNumber(authored_version))?, tab_width).map_err(Into::into)
     })?;
     app.set_message(refresh_report(&outcome));
     // Offer the version list from the reviewer's pre-refresh perspective: their
@@ -223,7 +225,10 @@ fn last_commented_version(
     Ok(read_records(session_path)?
         .into_iter()
         .filter_map(|record| match record.body {
-            RecordBody::Comment(comment) if comment.author == *author => Some(comment.version),
+            RecordBody::CommentEvent(event) if event.author == *author => match event.kind {
+                CommentEventKind::Create(create) => Some(create.version.get()),
+                _ => None,
+            },
             _ => None,
         })
         .filter(|version| *version <= viewed)
@@ -381,9 +386,10 @@ mod tests {
     use std::process::Command;
 
     use ulid::Ulid;
+    use wiff_core::comment::{delete_event, resolve_event};
     use wiff_core::record::{
-        Author, AuthorKind, CommentDelete, CommentRecord, CommentResolve, CommentTarget,
-        RecordBody, SessionHeader, SourceKind,
+        Author, AuthorKind, CommentCreate, CommentEvent, CommentEventKind, CommentTarget,
+        RecordBody, SessionHeader, SourceKind, VersionNumber,
     };
     use wiff_core::session::{SessionLog, SessionWatcher, read_records};
     use wiff_core::{
@@ -400,6 +406,14 @@ mod tests {
         reload_committed, save_in_place, source_changed, sync_report,
     };
     use crate::command::{DiffSelection, capture_scm_diff};
+
+    /// The human reviewer these tests attribute drafts to.
+    fn wez() -> Author {
+        Author {
+            name: "wez".to_string(),
+            kind: AuthorKind::Human,
+        }
+    }
 
     /// A bare session header from `source`, for exercising recapture routing.
     fn source_header(source: SourceKind) -> SessionHeader {
@@ -435,21 +449,8 @@ mod tests {
         drop(log);
 
         let drafts = vec![
-            RecordBody::CommentResolve(CommentResolve {
-                id: Ulid(1),
-                resolved: true,
-                author: Author {
-                    name: "wez".to_string(),
-                    kind: AuthorKind::Human,
-                },
-            }),
-            RecordBody::CommentDelete(CommentDelete {
-                id: Ulid(2),
-                author: Author {
-                    name: "wez".to_string(),
-                    kind: AuthorKind::Human,
-                },
-            }),
+            resolve_event(Ulid(1), wez(), true),
+            delete_event(Ulid(2), wez()),
         ];
         commit_drafts(&path, drafts).expect("commit");
 
@@ -458,33 +459,14 @@ mod tests {
         let records = read_records(&path).expect("read");
         let got: Vec<(u64, RecordBody)> = records
             .into_iter()
-            .map(|record| (record.seq, record.body))
+            .map(|record| (record.seq.get(), record.body))
             .collect();
         wince::assert_eq!(
             got,
             vec![
                 (0, header(ulid)),
-                (
-                    1,
-                    RecordBody::CommentResolve(CommentResolve {
-                        id: Ulid(1),
-                        resolved: true,
-                        author: Author {
-                            name: "wez".to_string(),
-                            kind: AuthorKind::Human,
-                        },
-                    })
-                ),
-                (
-                    2,
-                    RecordBody::CommentDelete(CommentDelete {
-                        id: Ulid(2),
-                        author: Author {
-                            name: "wez".to_string(),
-                            kind: AuthorKind::Human,
-                        },
-                    })
-                ),
+                (1, resolve_event(Ulid(1), wez(), true)),
+                (2, delete_event(Ulid(2), wez())),
             ]
         );
     }
@@ -503,7 +485,7 @@ mod tests {
         let records = read_records(&path).expect("read");
         let got: Vec<(u64, RecordBody)> = records
             .into_iter()
-            .map(|record| (record.seq, record.body))
+            .map(|record| (record.seq.get(), record.body))
             .collect();
         wince::assert_eq!(got, vec![(0, header(ulid))]);
     }
@@ -525,7 +507,7 @@ mod tests {
     #[test]
     fn the_refresh_report_tallies_the_captured_version_and_comments() {
         let report = refresh_report(&RefreshOutcome {
-            version: 3,
+            version: VersionNumber(3),
             exact: 2,
             approximate: 1,
             outdated: 0,
@@ -649,7 +631,7 @@ mod tests {
                 name: "wez".to_string(),
                 kind: AuthorKind::Human,
             },
-            version,
+            version.get(),
             state.comments.clone(),
         );
         let mut app = App::reviewing(review, 40, &theme);
@@ -740,7 +722,7 @@ captured v1; rebased 1 comment: 1 exact, 0 shifted, 0 outdated
                 name: "wez".to_string(),
                 kind: AuthorKind::Human,
             },
-            version,
+            version.get(),
             state.comments.clone(),
         );
         let mut app = App::reviewing(review, 40, &theme);
@@ -930,7 +912,7 @@ new file mode 100644
                 name: "wez".to_string(),
                 kind: AuthorKind::Human,
             },
-            version,
+            version.get(),
             state.comments.clone(),
         );
         let mut app = App::reviewing(review, 40, &theme);
@@ -953,7 +935,10 @@ new file mode 100644
             .expect("read")
             .into_iter()
             .filter_map(|record| match record.body {
-                RecordBody::Comment(comment) => Some(comment.target),
+                RecordBody::CommentEvent(CommentEvent {
+                    kind: CommentEventKind::Create(create),
+                    ..
+                }) => Some(create.target),
                 _ => None,
             })
             .collect();
@@ -1035,7 +1020,7 @@ new file mode 100644
                 name: "wez".to_string(),
                 kind: AuthorKind::Human,
             },
-            version,
+            version.get(),
             state.comments.clone(),
         );
         let mut app = App::reviewing(review, 40, &theme);
@@ -1047,21 +1032,26 @@ new file mode 100644
 
         // An agent commits a comment on the alpha line straight to the log.
         let mut log = SessionLog::open(&session_path).expect("open");
-        log.append_locked(RecordBody::Comment(CommentRecord {
+        log.append_locked(RecordBody::CommentEvent(CommentEvent {
             id: Ulid(7),
             author: Author {
                 name: "assistant".to_string(),
                 kind: AuthorKind::Agent,
             },
-            target: CommentTarget::Lines {
-                file: "f.txt".to_string(),
-                side: Side::After,
-                start_line: LineNo::new(1).unwrap(),
-                end_line: LineNo::new(1).unwrap(),
-            },
-            version,
-            anchor: None,
-            body: "alpha looks off".to_string(),
+            authored_at: None,
+            origin: None,
+            synced_marker: None,
+            kind: CommentEventKind::Create(CommentCreate {
+                target: CommentTarget::Lines {
+                    file: "f.txt".to_string(),
+                    side: Side::After,
+                    start_line: LineNo::new(1).unwrap(),
+                    end_line: LineNo::new(1).unwrap(),
+                },
+                version,
+                anchor: None,
+                body: "alpha looks off".to_string(),
+            }),
         }))
         .expect("append comment");
 

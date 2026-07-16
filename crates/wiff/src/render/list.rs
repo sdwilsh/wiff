@@ -18,13 +18,21 @@ pub(super) fn render(state: &ReviewState) -> String {
     let mut out = String::new();
     for comment in comments {
         out.push_str(&format!(
-            "{}  {}  {}  {} ({})\n",
+            "{}  {}  {}  {} ({})",
             comment.id,
             status(comment),
             location(&comment.target),
             comment.author.name,
             comment.author.kind.as_str(),
         ));
+        if let Some(author) = comment.last_changed_by() {
+            out.push_str(&format!(
+                "  changed by {} ({})",
+                author.name,
+                author.kind.as_str()
+            ));
+        }
+        out.push('\n');
         for line in comment.body.trim_end().lines() {
             out.push_str(&format!("  {line}\n"));
         }
@@ -80,7 +88,7 @@ mod tests {
   needs tests
 00000000000000000000000003  open  review  wez (human)
   overall solid
-00000000000000000000000004  open,shifted  other.rs lines 5-6 (after)  dev (human)
+00000000000000000000000004  open,shifted  other.rs lines 5-6 (after)  dev (human)  changed by opus (agent)
   moved code
 ";
         wince::assert_eq!(out, expected.to_string());

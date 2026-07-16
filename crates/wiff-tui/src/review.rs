@@ -12,8 +12,8 @@ use std::sync::Arc;
 
 use ulid::Ulid;
 use wiff_core::LineOrigin;
-use wiff_core::draft::{DraftBuffer, EffectiveComment, draft_record};
-use wiff_core::record::{Author, CommentTarget, RecordBody};
+use wiff_core::draft::{DraftBuffer, EffectiveComment, draft_create};
+use wiff_core::record::{Author, CommentTarget, RecordBody, Seq, VersionNumber};
 use wiff_core::review::CommentState;
 use wiff_diff::{Diff, LiveHighlighter, Side};
 
@@ -51,7 +51,7 @@ impl CommentSync {
     /// Compare the previously shown comments to the freshly loaded set, matching
     /// by identity and counting a comment as changed when its latest event moved.
     fn between(before: &[CommentState], after: &[CommentState]) -> Self {
-        let seen: HashMap<Ulid, u64> = before.iter().map(|c| (c.id, c.updated_seq)).collect();
+        let seen: HashMap<Ulid, Seq> = before.iter().map(|c| (c.id, c.updated_seq)).collect();
         let kept: HashSet<Ulid> = after.iter().map(|c| c.id).collect();
         let mut sync = CommentSync::default();
         for comment in after {
@@ -317,8 +317,14 @@ impl Review {
     /// later refresh.
     pub fn add_comment(&mut self, target: CommentTarget, body: String) -> Ulid {
         let (version, target) = self.anchor_target(target);
-        let record = draft_record(self.author.clone(), target, version, None, body);
-        self.drafts.add(record)
+        let event = draft_create(
+            self.author.clone(),
+            target,
+            VersionNumber(version),
+            None,
+            body,
+        );
+        self.drafts.add(event)
     }
 
     /// The version and target a comment authored on `target` at the cursor is
@@ -380,9 +386,9 @@ impl Review {
         self.version
     }
 
-    /// Buffer a new `body` for comment `id`.
+    /// Buffer a new `body` for comment `id`, attributed to the reviewer.
     pub fn edit_comment(&mut self, id: Ulid, body: String) {
-        self.drafts.edit(id, body);
+        self.drafts.edit(id, self.author.clone(), body);
     }
 
     /// The current body of comment `id` with pending drafts applied, for seeding
@@ -428,9 +434,10 @@ impl Review {
         diff: Diff,
         comments: Vec<CommentState>,
         version: u32,
-        old_diff: impl FnMut(u32) -> wiff_core::Result<Diff>,
+        mut old_diff: impl FnMut(u32) -> wiff_core::Result<Diff>,
     ) -> wiff_core::Result<()> {
-        self.drafts.rebase(version, &diff, old_diff)?;
+        self.drafts
+            .rebase(VersionNumber(version), &diff, |v| old_diff(v.get()))?;
         self.diff = diff;
         // A refresh moves to the new latest diff, ending any active comparison.
         self.comparing = None;
@@ -469,30 +476,39 @@ impl Review {
 
 #[cfg(test)]
 mod tests {
-    use wiff_core::record::{Author, AuthorKind, CommentTarget};
+    use time::OffsetDateTime;
+    use wiff_core::record::{Author, AuthorKind, CommentTarget, Seq, VersionNumber};
 
     use super::{CommentState, CommentSync};
 
     /// A committed comment with identity `id` whose most recent event is `seq`,
     /// the only fields the sync tally compares.
     fn committed(id: u128, updated_seq: u64) -> CommentState {
+        let author = Author {
+            name: "agent".to_string(),
+            kind: AuthorKind::Agent,
+        };
         CommentState {
             id: ulid::Ulid(id),
-            author: Author {
-                name: "agent".to_string(),
-                kind: AuthorKind::Agent,
-            },
+            author: author.clone(),
             target: CommentTarget::Review,
-            version: 0,
+            version: VersionNumber(0),
             anchor: None,
             body: "note".to_string(),
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+            updated_by: author,
             resolved: false,
             resolved_by: None,
+            resolved_at: None,
             deleted: false,
             deleted_by: None,
+            deleted_at: None,
             confidence: None,
-            created_seq: updated_seq,
-            updated_seq,
+            origin: None,
+            synced_marker: None,
+            created_seq: Seq(updated_seq),
+            updated_seq: Seq(updated_seq),
         }
     }
 

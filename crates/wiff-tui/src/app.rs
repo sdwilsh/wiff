@@ -3469,8 +3469,12 @@ fn wash(mut line: Line<'static>, bg: Rgb, width: usize, reference: Rgb) -> Line<
 
 #[cfg(test)]
 mod tests {
+    use time::OffsetDateTime;
     use ulid::Ulid;
-    use wiff_core::record::{Author, AuthorKind, CommentTarget, Confidence, RecordBody};
+    use wiff_core::record::{
+        Author, AuthorKind, CommentEvent, CommentEventKind, CommentTarget, Confidence, RecordBody,
+        Seq, VersionNumber,
+    };
     use wiff_core::review::CommentState;
     use wiff_diff::{Diff, FileStatus, LineKind, Side};
 
@@ -3615,16 +3619,26 @@ mod tests {
                 start_line: ln(line),
                 end_line: ln(line),
             },
-            version: 0,
+            version: VersionNumber(0),
             anchor: None,
             body: body.to_string(),
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+            updated_by: Author {
+                name: author.0.to_string(),
+                kind: author.1,
+            },
             resolved,
             resolved_by: None,
+            resolved_at: None,
             deleted: false,
             deleted_by: None,
+            deleted_at: None,
             confidence: None,
-            created_seq: 0,
-            updated_seq: 0,
+            origin: None,
+            synced_marker: None,
+            created_seq: Seq(0),
+            updated_seq: Seq(0),
         }
     }
 
@@ -6333,16 +6347,26 @@ mod tests {
                 start_line: ln(4),
                 end_line: ln(4),
             },
-            version: 2,
+            version: VersionNumber(2),
             anchor: None,
             body: "why delta?".to_string(),
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+            updated_by: Author {
+                name: "opus".to_string(),
+                kind: AuthorKind::Agent,
+            },
             resolved: false,
             resolved_by: None,
+            resolved_at: None,
             deleted: false,
             deleted_by: None,
+            deleted_at: None,
             confidence: None,
-            created_seq: 0,
-            updated_seq: 0,
+            origin: None,
+            synced_marker: None,
+            created_seq: Seq(0),
+            updated_seq: Seq(0),
         };
         let review = Review::new(
             DiffView::new(theme()).unwrap(),
@@ -6403,13 +6427,16 @@ mod tests {
         );
 
         let anchored = match review.take_drafts().into_iter().next() {
-            Some(RecordBody::Comment(comment)) => (comment.version, comment.target, comment.body),
+            Some(RecordBody::CommentEvent(CommentEvent {
+                kind: CommentEventKind::Create(create),
+                ..
+            })) => (create.version, create.target, create.body),
             other => panic!("expected one drafted comment, got {other:?}"),
         };
         wince::assert_eq!(
             anchored,
             (
-                1,
+                VersionNumber(1),
                 CommentTarget::Lines {
                     file: "f.txt".to_string(),
                     side: Side::After,

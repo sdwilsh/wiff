@@ -3,20 +3,22 @@
 //! A session's log is an append-only event stream; the state a reader cares
 //! about is the fold of that stream. [`fold`] walks the records once and
 //! produces a [`ReviewState`]: the session header, its captured diff versions,
-//! and each comment reduced from its event chain (create, edit, resolve,
-//! delete, re-anchor). This is the shared read path behind `wiff render` and
-//! comment listing.
+//! and each comment reduced from its [`CommentEvent`] chain (create, edit,
+//! resolve, delete, re-anchor). This is the shared read path behind
+//! `wiff render` and comment listing.
 
 use std::collections::HashMap;
 use std::path::Path;
 
 use serde::Serialize;
+use time::OffsetDateTime;
 use ulid::Ulid;
 
 use crate::error::{Error, Result};
 use crate::record::{
-    Anchor, Author, CommentRecord, CommentTarget, Confidence, DiffVersionRecord, FORMAT_VERSION,
-    Record, RecordBody, SessionHeader,
+    Anchor, Author, CommentCreate, CommentEvent, CommentEventKind, CommentTarget, Confidence,
+    DiffVersionRecord, ExternalRef, FORMAT_VERSION, Record, RecordBody, Seq, SessionHeader,
+    VersionNumber,
 };
 use crate::session::read_records;
 
@@ -53,57 +55,142 @@ pub struct CommentState {
     /// What it is currently attached to.
     pub target: CommentTarget,
     /// The diff version it currently anchors to.
-    pub version: u32,
+    pub version: VersionNumber,
     /// The captured content for rebasing, for line-range targets.
     pub anchor: Option<Anchor>,
     /// The current body text.
     pub body: String,
+    /// When it was created.
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    /// When the latest event by log order changed it. This follows log order,
+    /// not wall-clock time: an imported event stamps its authored time here,
+    /// which can predate an earlier event's, so this is not guaranteed to only
+    /// advance.
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: OffsetDateTime,
+    /// Who made the most recent substantive change: an edit, resolve, or
+    /// delete. An automatic reanchor moves the comment onto a new diff version
+    /// but is not attributed here, so this stays the original author until
+    /// someone edits, resolves, or withdraws the comment. It can therefore name
+    /// an earlier record than [`Self::updated_seq`], which advances on a
+    /// reanchor too.
+    pub updated_by: Author,
     /// Whether it is resolved.
     pub resolved: bool,
     /// Who last changed its resolved state, once anyone has.
     pub resolved_by: Option<Author>,
+    /// When its resolved state was last changed, once anyone has.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "time::serde::rfc3339::option"
+    )]
+    pub resolved_at: Option<OffsetDateTime>,
     /// Whether it has been withdrawn (a tombstone; retained, not removed).
     pub deleted: bool,
     /// Who withdrew it, once withdrawn.
     pub deleted_by: Option<Author>,
+    /// When it was withdrawn, once withdrawn.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "time::serde::rfc3339::option"
+    )]
+    pub deleted_at: Option<OffsetDateTime>,
     /// How confidently it was last re-anchored, once it has been.
     pub confidence: Option<Confidence>,
+    /// The forge object it mirrors, once linked. Unpopulated until a later phase
+    /// mirrors forge state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<ExternalRef>,
+    /// The upstream version last reconciled with, once synced. Unpopulated until
+    /// a later phase mirrors forge state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synced_marker: Option<String>,
     /// The sequence number of the creating record.
-    pub created_seq: u64,
-    /// The sequence number of the most recent record that changed it.
-    pub updated_seq: u64,
+    pub created_seq: Seq,
+    /// The sequence number of the most recent record that touched it, a
+    /// reanchor included. This always advances and orders changes; it drives
+    /// change detection after a refresh.
+    pub updated_seq: Seq,
 }
 
 impl CommentState {
     /// The state of a comment at creation, before any later event in its chain
-    /// is folded in. `seq` is the sequence number of the creating record.
-    pub(crate) fn created(record: &CommentRecord, seq: u64) -> Self {
+    /// is folded in. `at` and `seq` are the creating record's time and sequence
+    /// number.
+    pub(crate) fn from_create(
+        event: &CommentEvent,
+        create: &CommentCreate,
+        at: OffsetDateTime,
+        seq: Seq,
+    ) -> Self {
         Self {
-            id: record.id,
-            author: record.author.clone(),
-            target: record.target.clone(),
-            version: record.version,
-            anchor: record.anchor.clone(),
-            body: record.body.clone(),
+            id: event.id,
+            author: event.author.clone(),
+            target: create.target.clone(),
+            version: create.version,
+            anchor: create.anchor.clone(),
+            body: create.body.clone(),
+            created_at: at,
+            updated_at: at,
+            updated_by: event.author.clone(),
             resolved: false,
             resolved_by: None,
+            resolved_at: None,
             deleted: false,
             deleted_by: None,
+            deleted_at: None,
             confidence: None,
+            origin: event.origin.clone(),
+            synced_marker: event.synced_marker.clone(),
             created_seq: seq,
             updated_seq: seq,
+        }
+    }
+
+    /// Who most recently changed this comment, when that is worth showing apart
+    /// from its author. A reanchor is automatic bookkeeping and does not count.
+    /// `None` when nothing substantive changed after creation, when the author
+    /// made the latest change themselves, or when that latest change is the
+    /// resolve or withdrawal already named by
+    /// [`resolved_by`](Self::resolved_by)/[`deleted_by`](Self::deleted_by).
+    pub fn last_changed_by(&self) -> Option<&Author> {
+        if self.updated_seq == self.created_seq || self.updated_by == self.author {
+            return None;
+        }
+        let already_named = (self.deleted && self.deleted_by.as_ref() == Some(&self.updated_by))
+            || (self.resolved && self.resolved_by.as_ref() == Some(&self.updated_by));
+        (!already_named).then_some(&self.updated_by)
+    }
+
+    /// Stamp the time and sequence of the latest record to touch this comment,
+    /// and fold an imported event's `origin`/`synced_marker` forward when
+    /// present, leaving a local event's `None` untouched. Attribution of a
+    /// substantive change is set by the caller; a reanchor deliberately leaves
+    /// `updated_by` alone.
+    fn touch(&mut self, event: &CommentEvent, at: OffsetDateTime, seq: Seq) {
+        self.updated_at = at;
+        self.updated_seq = seq;
+        if event.origin.is_some() {
+            self.origin = event.origin.clone();
+        }
+        if event.synced_marker.is_some() {
+            self.synced_marker = event.synced_marker.clone();
         }
     }
 }
 
 /// Fold a session's records into its current [`ReviewState`].
 ///
-/// A log written by a newer, incompatible format is refused up front via the
-/// header's version rather than partially interpreted, since we cannot know how
-/// to fold records we do not understand. Within a compatible log we treat any
-/// inconsistency as fatal: an unrecognized record type, or a mutation that
-/// references a comment we have never seen, means the log is corrupt, and
-/// silently dropping such records would misrepresent the review.
+/// A log whose header version does not match this build's, older or newer, is
+/// refused up front rather than partially interpreted, since a mismatched
+/// format may fold differently than we expect. Within a matching log we treat
+/// any inconsistency as fatal: an unrecognized record type, a mutation against a
+/// comment we have never seen, or a second create for an id already introduced
+/// means the log is corrupt, and silently dropping or overwriting such records
+/// would misrepresent the review.
 pub fn fold(records: &[Record]) -> Result<ReviewState> {
     let mut session = None;
     let mut versions = Vec::new();
@@ -112,13 +199,14 @@ pub fn fold(records: &[Record]) -> Result<ReviewState> {
 
     for record in records {
         let seq = record.seq;
+        let at = record.at;
         match &record.body {
             // The header is the first record; later ones (which a valid session
             // never writes) do not displace it. Its version gates whether we can
             // safely interpret the rest of the log at all.
             RecordBody::Session(header) => {
                 if session.is_none() {
-                    if header.version > FORMAT_VERSION {
+                    if header.version != FORMAT_VERSION {
                         return Err(Error::UnsupportedVersion {
                             found: header.version,
                             supported: FORMAT_VERSION,
@@ -128,35 +216,8 @@ pub fn fold(records: &[Record]) -> Result<ReviewState> {
                 }
             }
             RecordBody::DiffVersion(version) => versions.push(version.clone()),
-            RecordBody::Comment(comment) => {
-                if !comments.contains_key(&comment.id) {
-                    order.push(comment.id);
-                }
-                comments.insert(comment.id, CommentState::created(comment, seq));
-            }
-            RecordBody::CommentEdit(edit) => {
-                let comment = require_comment(&mut comments, edit.id, seq)?;
-                comment.body = edit.body.clone();
-                comment.updated_seq = seq;
-            }
-            RecordBody::CommentResolve(resolve) => {
-                let comment = require_comment(&mut comments, resolve.id, seq)?;
-                comment.resolved = resolve.resolved;
-                comment.resolved_by = Some(resolve.author.clone());
-                comment.updated_seq = seq;
-            }
-            RecordBody::CommentDelete(delete) => {
-                let comment = require_comment(&mut comments, delete.id, seq)?;
-                comment.deleted = true;
-                comment.deleted_by = Some(delete.author.clone());
-                comment.updated_seq = seq;
-            }
-            RecordBody::CommentReanchor(reanchor) => {
-                let comment = require_comment(&mut comments, reanchor.id, seq)?;
-                comment.version = reanchor.version;
-                comment.target = reanchor.target.clone();
-                comment.confidence = Some(reanchor.confidence);
-                comment.updated_seq = seq;
+            RecordBody::CommentEvent(event) => {
+                fold_comment_event(&mut comments, &mut order, event, at, seq)?;
             }
             RecordBody::Unknown => {
                 return Err(Error::InconsistentLog(format!(
@@ -182,12 +243,72 @@ pub fn fold(records: &[Record]) -> Result<ReviewState> {
     })
 }
 
+/// Fold one [`CommentEvent`] into the running comment map. A create introduces a
+/// comment (and is fatal if its id was already introduced); every other event
+/// mutates an existing one and is fatal if that comment is unknown.
+fn fold_comment_event(
+    comments: &mut HashMap<Ulid, CommentState>,
+    order: &mut Vec<Ulid>,
+    event: &CommentEvent,
+    at: OffsetDateTime,
+    seq: Seq,
+) -> Result<()> {
+    match &event.kind {
+        CommentEventKind::Create(create) => {
+            if comments.contains_key(&event.id) {
+                return Err(Error::InconsistentLog(format!(
+                    "record at seq {seq} re-creates existing comment {}",
+                    event.id
+                )));
+            }
+            let authored = event.authored_at.unwrap_or(at);
+            order.push(event.id);
+            comments.insert(
+                event.id,
+                CommentState::from_create(event, create, authored, seq),
+            );
+        }
+        CommentEventKind::Edit { body } => {
+            let comment = require_comment(comments, event.id, seq)?;
+            comment.body = body.clone();
+            comment.updated_by = event.author.clone();
+            comment.touch(event, event.authored_at.unwrap_or(at), seq);
+        }
+        CommentEventKind::Resolve { resolved } => {
+            let comment = require_comment(comments, event.id, seq)?;
+            let when = event.authored_at.unwrap_or(at);
+            comment.resolved = *resolved;
+            comment.resolved_by = Some(event.author.clone());
+            comment.resolved_at = Some(when);
+            comment.updated_by = event.author.clone();
+            comment.touch(event, when, seq);
+        }
+        CommentEventKind::Delete => {
+            let comment = require_comment(comments, event.id, seq)?;
+            let when = event.authored_at.unwrap_or(at);
+            comment.deleted = true;
+            comment.deleted_by = Some(event.author.clone());
+            comment.deleted_at = Some(when);
+            comment.updated_by = event.author.clone();
+            comment.touch(event, when, seq);
+        }
+        CommentEventKind::Reanchor(reanchor) => {
+            let comment = require_comment(comments, event.id, seq)?;
+            comment.version = reanchor.version;
+            comment.target = reanchor.target.clone();
+            comment.confidence = Some(reanchor.confidence);
+            comment.touch(event, event.authored_at.unwrap_or(at), seq);
+        }
+    }
+    Ok(())
+}
+
 /// Look up the comment a mutation targets, treating a missing one as a corrupt
 /// log rather than a no-op.
 fn require_comment(
     comments: &mut HashMap<Ulid, CommentState>,
     id: Ulid,
-    seq: u64,
+    seq: Seq,
 ) -> Result<&mut CommentState> {
     comments.get_mut(&id).ok_or_else(|| {
         Error::InconsistentLog(format!(

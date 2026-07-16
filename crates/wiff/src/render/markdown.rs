@@ -154,8 +154,9 @@ fn location(target: &CommentTarget) -> String {
     }
 }
 
-/// The trailing state flags for a comment: resolved with who resolved it, and
-/// re-anchor confidence when it is not exact.
+/// The trailing state flags for a comment: resolved with who resolved it,
+/// re-anchor confidence when it is not exact, and who last changed it when that
+/// was someone other than its author.
 fn flags(comment: &CommentState) -> String {
     let mut flags = Vec::new();
     if comment.resolved {
@@ -168,6 +169,13 @@ fn flags(comment: &CommentState) -> String {
         Some(Confidence::Approximate) => flags.push("shifted".to_string()),
         Some(Confidence::Outdated) => flags.push("outdated".to_string()),
         Some(Confidence::Exact) | None => {}
+    }
+    if let Some(author) = comment.last_changed_by() {
+        flags.push(format!(
+            "changed by {} ({})",
+            author.name,
+            author.kind.as_str()
+        ));
     }
     if flags.is_empty() {
         String::new()
@@ -217,7 +225,7 @@ mod tests {
 
 ### other.rs
 
-- 00000000000000000000000004 lines 5-6 (after) by dev (human) [shifted]
+- 00000000000000000000000004 lines 5-6 (after) by dev (human) [shifted, changed by opus (agent)]
   moved code
 ";
         wince::assert_eq!(out, expected.to_string());

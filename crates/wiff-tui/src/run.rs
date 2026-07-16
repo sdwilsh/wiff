@@ -566,7 +566,8 @@ mod tests {
     use ratatui::backend::TestBackend;
     use wiff_diff::{Diff, FileStatus, LineKind};
 
-    use wiff_core::record::{Author, AuthorKind};
+    use time::OffsetDateTime;
+    use wiff_core::record::{Author, AuthorKind, Seq, VersionNumber};
 
     use super::draw;
     use crate::action::Action;
@@ -758,16 +759,26 @@ mod tests {
                 start_line: crate::render::testutil::ln(2),
                 end_line: crate::render::testutil::ln(2),
             },
-            version: 0,
+            version: VersionNumber(0),
             anchor: None,
             body: "why 2?".to_string(),
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+            updated_by: Author {
+                name: "wez".to_string(),
+                kind: AuthorKind::Human,
+            },
             resolved: false,
             resolved_by: None,
+            resolved_at: None,
             deleted: false,
             deleted_by: None,
+            deleted_at: None,
             confidence: None,
-            created_seq: 0,
-            updated_seq: 0,
+            origin: None,
+            synced_marker: None,
+            created_seq: Seq(0),
+            updated_seq: Seq(0),
         };
         let view = DiffView::new(theme()).expect("view");
         let author = Author {

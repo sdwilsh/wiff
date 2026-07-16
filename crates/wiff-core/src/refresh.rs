@@ -13,10 +13,11 @@ use wiff_diff::Diff;
 use wiff_diff::parse::parse;
 
 use crate::capture::write_diff_version;
+use crate::comment::reanchor_event;
 use crate::error::{Error, Result};
 use crate::hash::SidebandHash;
 use crate::rebase::rebase_line_comment;
-use crate::record::{CommentReanchor, Confidence, RecordBody};
+use crate::record::{Author, CommentReanchor, Confidence, VersionNumber};
 use crate::review::fold;
 use crate::session::{LockWait, SessionLog};
 
@@ -24,7 +25,7 @@ use crate::session::{LockWait, SessionLog};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RefreshOutcome {
     /// The number of the newly captured version.
-    pub version: u32,
+    pub version: VersionNumber,
     /// Comments that moved to unchanged code.
     pub exact: usize,
     /// Comments relocated to their captured snippet elsewhere.
@@ -39,6 +40,7 @@ pub struct RefreshOutcome {
 pub fn refresh_session(
     log: &mut SessionLog,
     new_diff_text: &str,
+    author: Author,
     wait: LockWait,
 ) -> Result<Option<RefreshOutcome>> {
     let (mut lock, records) = log.lock_and_sync(wait)?;
@@ -47,13 +49,13 @@ pub fn refresh_session(
     if latest.diff_hash == SidebandHash::of(new_diff_text.as_bytes()) {
         return Ok(None);
     }
-    let number = latest.number + 1;
+    let number = latest.number.next();
     let new_diff = parse(new_diff_text)?;
 
     write_diff_version(log, &mut lock, number, new_diff_text)?;
 
     // Comments authored against the same version share a parsed old diff.
-    let mut old_diffs: HashMap<u32, Diff> = HashMap::new();
+    let mut old_diffs: HashMap<VersionNumber, Diff> = HashMap::new();
     let mut outcome = RefreshOutcome {
         version: number,
         ..Default::default()
@@ -84,12 +86,15 @@ pub fn refresh_session(
         }
         log.append(
             &mut lock,
-            RecordBody::CommentReanchor(CommentReanchor {
-                id: comment.id,
-                version: number,
-                target: rebased.target,
-                confidence: rebased.confidence,
-            }),
+            reanchor_event(
+                comment.id,
+                author.clone(),
+                CommentReanchor {
+                    version: number,
+                    target: rebased.target,
+                    confidence: rebased.confidence,
+                },
+            ),
         )?;
     }
     Ok(Some(outcome))
