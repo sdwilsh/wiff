@@ -3,6 +3,7 @@
 //! [`Command`] enum and holds the few helpers shared across commands.
 
 mod comment;
+mod description;
 mod new;
 mod refresh;
 mod render;
@@ -23,6 +24,7 @@ use wiff_core::session::{active_session, data_dir, session_file};
 use wiff_core::{CapturedDiff, DiffSource, GitSource, ProjectIdentity, ScmType};
 
 use self::comment::CommentArgs;
+use self::description::DescriptionArgs;
 use self::new::NewArgs;
 use self::refresh::RefreshArgs;
 use self::render::RenderArgs;
@@ -42,6 +44,8 @@ pub enum Command {
     Refresh(RefreshArgs),
     /// Add or manage comments.
     Comment(CommentArgs),
+    /// Set or show the review's description.
+    Description(DescriptionArgs),
     /// Render the review state for consumption.
     Render(RenderArgs),
     /// Write the agent skill file and print its path.
@@ -54,6 +58,7 @@ impl Command {
         match self {
             Command::New(args) => args.run().await,
             Command::Comment(args) => args.run().await,
+            Command::Description(args) => args.run().await,
             Command::Render(args) => args.run(),
             Command::Session(args) => args.run(),
             Command::Refresh(args) => args.run().await,

@@ -17,8 +17,8 @@ use ulid::Ulid;
 use crate::error::{Error, Result};
 use crate::record::{
     Anchor, Author, CommentCreate, CommentEvent, CommentEventKind, CommentTarget, Confidence,
-    DiffVersionRecord, ExternalRef, FORMAT_VERSION, Record, RecordBody, Seq, SessionHeader,
-    VersionNumber,
+    Description, DescriptionRecord, DiffVersionRecord, ExternalRef, FORMAT_VERSION, Record,
+    RecordBody, Seq, SessionHeader, VersionNumber,
 };
 use crate::session::read_records;
 
@@ -29,8 +29,32 @@ pub struct ReviewState {
     pub session: SessionHeader,
     /// The captured diff versions, in capture order (`v0` first).
     pub versions: Vec<DiffVersionRecord>,
+    /// The current description, once one has been set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<DescriptionState>,
     /// The comments, in the order they were first created.
     pub comments: Vec<CommentState>,
+}
+
+/// The current description of a review, reduced from its revisions.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct DescriptionState {
+    /// The current title and body.
+    #[serde(flatten)]
+    pub content: Description,
+    /// Who set the current revision.
+    pub author: Author,
+    /// When the current revision was authored.
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: OffsetDateTime,
+    /// The forge object the description mirrors, persisted from an earlier
+    /// revision when the current one omits it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<ExternalRef>,
+    /// The upstream version this description last reconciled with, persisted from
+    /// an earlier revision when the current one omits it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub synced_marker: Option<String>,
 }
 
 impl ReviewState {
@@ -263,6 +287,7 @@ impl CommentState {
 pub fn fold(records: &[Record]) -> Result<ReviewState> {
     let mut session = None;
     let mut versions = Vec::new();
+    let mut description: Option<DescriptionState> = None;
     let mut order: Vec<Ulid> = Vec::new();
     let mut comments: HashMap<Ulid, CommentState> = HashMap::new();
 
@@ -285,6 +310,9 @@ pub fn fold(records: &[Record]) -> Result<ReviewState> {
                 }
             }
             RecordBody::DiffVersion(version) => versions.push(version.clone()),
+            RecordBody::Description(record) => {
+                fold_description(&mut description, record, at);
+            }
             RecordBody::CommentEvent(event) => {
                 fold_comment_event(&mut comments, &mut order, event, at, seq)?;
             }
@@ -308,8 +336,37 @@ pub fn fold(records: &[Record]) -> Result<ReviewState> {
     Ok(ReviewState {
         session,
         versions,
+        description,
         comments,
     })
+}
+
+/// Fold one [`DescriptionRecord`] into the running description. Content and
+/// author always come from this revision; `origin` and `synced_marker` are kept
+/// from an earlier revision when this one leaves them absent. That is deliberate
+/// and one-way: a revision can bind a forge object or leave the binding
+/// untouched, but cannot clear one an earlier revision set.
+fn fold_description(
+    description: &mut Option<DescriptionState>,
+    record: &DescriptionRecord,
+    at: OffsetDateTime,
+) {
+    let previous = description.take();
+    let origin = record
+        .origin
+        .clone()
+        .or_else(|| previous.as_ref().and_then(|state| state.origin.clone()));
+    let synced_marker = record
+        .synced_marker
+        .clone()
+        .or_else(|| previous.and_then(|state| state.synced_marker));
+    *description = Some(DescriptionState {
+        content: record.description.clone(),
+        author: record.author.clone(),
+        updated_at: record.authored_at.unwrap_or(at),
+        origin,
+        synced_marker,
+    });
 }
 
 /// Fold one [`CommentEvent`] into the running comment map. A create introduces a

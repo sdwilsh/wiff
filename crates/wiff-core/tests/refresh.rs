@@ -45,7 +45,14 @@ fn session_with_gamma_comment() -> (tempfile::TempDir, SessionLog, Ulid) {
         text: V0.to_string(),
         source: SourceKind::Stdin,
     };
-    let mut log = create_session(base.path(), &identity(), Path::new("/work"), &captured).unwrap();
+    let mut log = create_session(
+        base.path(),
+        &identity(),
+        Path::new("/work"),
+        &captured,
+        None,
+    )
+    .unwrap();
     let added = DraftComment {
         author: Author {
             name: "wez".to_string(),

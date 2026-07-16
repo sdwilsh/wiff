@@ -48,7 +48,14 @@ fn session() -> (tempfile::TempDir, SessionLog) {
         text: DIFF.to_string(),
         source: SourceKind::Stdin,
     };
-    let log = create_session(base.path(), &identity(), Path::new("/work"), &captured).unwrap();
+    let log = create_session(
+        base.path(),
+        &identity(),
+        Path::new("/work"),
+        &captured,
+        None,
+    )
+    .unwrap();
     (base, log)
 }
 

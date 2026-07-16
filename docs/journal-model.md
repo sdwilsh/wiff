@@ -338,13 +338,21 @@ This reuses the same author, time, provenance, and sync-marker machinery as
 comment events rather than inventing a parallel one, so re-sync detects an
 upstream description edit the same way it detects an edited comment.
 
-A local `wiff describe` after an imported description works like editing a linked
+A local `wiff description set` after an imported description works like editing a linked
 comment: the new record's `origin` is None and its `synced_marker` does not
 advance, but the folded `origin` sticks from the earlier imported record, so the
 description stays bound to the pull request body while its folded content now
 differs from the last-synced marker. That difference is exactly what push reads
 to publish the changed body, and what a later pull reads to leave the pending
 local edit in place rather than overwrite it with an unchanged upstream value.
+
+The fold is one-way: a revision can bind a forge object or leave the binding
+untouched, but no later local revision can clear one an earlier revision set,
+because an absent `origin` on a record means "keep" rather than "unbind". A
+mis-import is therefore permanent for the life of the session; correcting it
+means discarding and re-capturing. An explicit unbind, if one is ever needed,
+would require a sentinel on the record distinct from absence rather than a new
+fold rule; it is deliberately left out until the forge layer needs it.
 
 ## Disposition
 
@@ -1269,7 +1277,7 @@ New commands drive the source transitions and the forge sync:
   with the description preserves the identity trailer: an existing `Change-Id:`
   or `Differential Revision:` is merged back into the new message rather than
   dropped, so provenance survives the rewrite.
-- `wiff describe` revises the review description after creation, appending a new
+- `wiff description set` revises the review description after creation, appending a new
   `DescriptionRecord` (latest wins). It is the local authoring path for the
   mutable description, the way `wiff comment` edits a comment, so a draft's
   eventual commit message evolves without re-creating the session; the TUI offers
@@ -1426,7 +1434,7 @@ These rules dissolve the couplings that would otherwise want atomic writes:
 
 - **Session creation** appends the header, first diff version, and optional
   description in order. A crash before the description leaves a valid session
-  without one, recovered by `wiff describe` or by re-running creation; nothing is
+  without one, recovered by `wiff description set` or by re-running creation; nothing is
   lost.
 - **A no-repo forge import** writes the header and `Forge` source, then the
   imported review records and the `ForgeLink` naming the pull request. A `Forge`

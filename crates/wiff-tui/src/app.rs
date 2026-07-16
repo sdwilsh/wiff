@@ -36,7 +36,7 @@ use crate::key::{Key, KeyPress};
 use crate::keymap::{Keymap, Resolution};
 use crate::picker::{Picker, PickerColors, PickerRow, RowSpan};
 use crate::render::{
-    COLUMN_DIVIDER, COLUMN_GUTTER_WIDTH, DEFAULT_SIDE_BY_SIDE_MIN_WIDTH, DiffMode, Document,
+    BoxId, COLUMN_DIVIDER, COLUMN_GUTTER_WIDTH, DEFAULT_SIDE_BY_SIDE_MIN_WIDTH, DiffMode, Document,
     LayoutMode, RAIL_COLUMN, RAIL_TEE, RailCell, RowKind, ViewLayout, color, column_bounds,
     divider_column, rail_column,
 };
@@ -186,7 +186,7 @@ enum SpotPlace {
     Line(Side, LineNo),
     /// A comment box, returned to by identity wherever its header now renders,
     /// or the file's header when the comment is gone.
-    Comment(Ulid),
+    Comment(BoxId),
     /// A structural row -- a file or hunk header, or the review summary -- with
     /// no finer anchor than the file header.
     Header,
@@ -289,7 +289,7 @@ impl PickerRow<App> for CommentRow {
 
     fn activate(self: Box<Self>, app: &mut App) {
         if let Some(index) = app
-            .comment_header_row(self.id)
+            .comment_header_row(BoxId::Comment(self.id))
             .and_then(|row| app.locate_document_row(row))
         {
             app.move_to(index);
@@ -459,7 +459,7 @@ pub struct App {
     collapsed: Vec<bool>,
     /// Whether each comment's body is currently collapsed, keyed by its stable
     /// identity so the state survives a document rebuild after a refresh.
-    comment_collapsed: HashMap<Ulid, bool>,
+    comment_collapsed: HashMap<BoxId, bool>,
     /// Whether every comment is dropped from the view, leaving only the code, so
     /// rounds of review annotation do not crowd out the diff.
     comments_hidden: bool,
@@ -998,12 +998,12 @@ impl App {
         if self.review.is_none() {
             return Update::Passed(Action::ResolveComment);
         }
-        if let Some(id) = self.comment_at_cursor() {
+        if let Some(BoxId::Comment(comment)) = self.comment_at_cursor() {
             if let Some(review) = self.review.as_mut() {
-                review.toggle_resolved(id);
+                review.toggle_resolved(comment);
             }
             self.rerender();
-            self.focus_comment(id);
+            self.focus_comment(BoxId::Comment(comment));
         }
         Update::Handled
     }
@@ -1017,9 +1017,10 @@ impl App {
         if self.review.is_none() {
             return Update::Passed(Action::DeleteComment);
         }
-        if let Some(id) = self.comment_at_cursor() {
+        if let Some(BoxId::Comment(comment)) = self.comment_at_cursor() {
+            let id = BoxId::Comment(comment);
             if let Some(review) = self.review.as_mut() {
-                let deleted = review.toggle_deleted(id);
+                let deleted = review.toggle_deleted(comment);
                 self.comment_collapsed.insert(id, deleted);
             }
             self.rerender();
@@ -1059,22 +1060,52 @@ impl App {
         if self.review.is_none() {
             return Update::Passed(Action::EditComment);
         }
+        // Editing the review summary writes the description while the review has
+        // none: it draws no box of its own, so the first one is authored from
+        // here. Once written it renders as its own row the cursor edits directly.
+        if matches!(self.kind_at(self.cursor), Some(RowKind::ReviewSummary))
+            && self.review.as_ref().is_some_and(Review::description_absent)
+        {
+            let anchor = self.skip_comment_rows(self.cursor + 1);
+            let highlighter = self.editor_highlighter();
+            self.compose = Some(Compose::new(
+                ComposeKind::Edit(BoxId::Description),
+                anchor,
+                "",
+                "edit description".to_string(),
+                self.compose_border,
+                highlighter,
+                self.tab_width,
+            ));
+            return Update::Handled;
+        }
         if let Some(id) = self.comment_at_cursor()
             && let Some(anchor) = self
                 .comment_header_row(id)
                 .and_then(|row| self.view_index_of_row(row))
         {
-            let body = self
-                .review
-                .as_ref()
-                .and_then(|review| review.comment_body(id))
-                .unwrap_or_default();
+            let (body, label) = match id {
+                BoxId::Comment(comment) => (
+                    self.review
+                        .as_ref()
+                        .and_then(|review| review.comment_body(comment))
+                        .unwrap_or_default(),
+                    "edit comment",
+                ),
+                BoxId::Description => (
+                    self.review
+                        .as_ref()
+                        .map(Review::description_body)
+                        .unwrap_or_default(),
+                    "edit description",
+                ),
+            };
             let highlighter = self.editor_highlighter();
             self.compose = Some(Compose::new(
                 ComposeKind::Edit(id),
                 anchor,
                 &body,
-                "edit comment".to_string(),
+                label.to_string(),
                 self.compose_border,
                 highlighter,
                 self.tab_width,
@@ -1350,7 +1381,9 @@ impl App {
     }
 
     /// Commit the open editor's body to the review: a new comment or a revision.
-    /// An empty body is discarded like a cancel. Focuses the resulting comment.
+    /// An empty body is discarded like a cancel, for both a comment and the
+    /// description; a local edit never sets a blank description. Focuses the
+    /// resulting comment.
     fn submit_compose(&mut self) {
         let Some(compose) = self.compose.take() else {
             return;
@@ -1364,9 +1397,13 @@ impl App {
             return;
         };
         let id = match compose.into_kind() {
-            ComposeKind::Add(target) => review.add_comment(target, body),
-            ComposeKind::Edit(id) => {
-                review.edit_comment(id, body);
+            ComposeKind::Add(target) => BoxId::Comment(review.add_comment(target, body)),
+            ComposeKind::Edit(id @ BoxId::Comment(comment)) => {
+                review.edit_comment(comment, body);
+                id
+            }
+            ComposeKind::Edit(id @ BoxId::Description) => {
+                review.edit_description(body);
                 id
             }
         };
@@ -1608,10 +1645,10 @@ impl App {
             .iter()
             .enumerate()
             .filter_map(|(position, region)| {
-                states
-                    .get(&region.id)
-                    .cloned()
-                    .map(|entry| (position, entry))
+                let BoxId::Comment(id) = region.id else {
+                    return None;
+                };
+                states.get(&id).cloned().map(|entry| (position, entry))
             })
             .collect();
         if listed.is_empty() {
@@ -2169,6 +2206,7 @@ impl App {
     pub fn reload_comments(
         &mut self,
         comments: Vec<wiff_core::review::CommentState>,
+        description: Option<wiff_core::review::DescriptionState>,
     ) -> CommentSync {
         if self.review.is_none() {
             return CommentSync::default();
@@ -2177,7 +2215,7 @@ impl App {
         let layout = self.layout();
         let (sync, document) = {
             let review = self.review.as_mut().expect("review present");
-            let sync = review.set_committed(comments);
+            let sync = review.set_committed(comments, description);
             (sync, review.document(layout))
         };
         self.adopt_document(document);
@@ -2500,7 +2538,7 @@ impl App {
     }
 
     /// Move the cursor to comment `id`'s header row, if it is in view.
-    fn focus_comment(&mut self, id: Ulid) {
+    fn focus_comment(&mut self, id: BoxId) {
         if let Some(index) = self
             .comment_header_row(id)
             .and_then(|row| self.view_index_of_row(row))
@@ -2725,7 +2763,7 @@ impl App {
 
     /// Whether the comment `id` anchors a line range, so its box bottom drops the
     /// anchor rail into the gutter.
-    fn box_anchors_rail(&self, id: Ulid) -> bool {
+    fn box_anchors_rail(&self, id: BoxId) -> bool {
         self.document
             .comments
             .iter()
@@ -2840,7 +2878,7 @@ impl App {
 
     /// Whether the comment `id` is currently collapsed. A comment absent from the
     /// map has never been toggled, so it keeps its rendered default.
-    fn is_comment_collapsed(&self, id: Ulid) -> bool {
+    fn is_comment_collapsed(&self, id: BoxId) -> bool {
         self.comment_collapsed.get(&id).copied().unwrap_or(false)
     }
 
@@ -2933,7 +2971,7 @@ impl App {
 
     /// The comment the cursor is on, whether on the box's top edge, a body line,
     /// or the bottom edge.
-    fn comment_at_cursor(&self) -> Option<Ulid> {
+    fn comment_at_cursor(&self) -> Option<BoxId> {
         match self.kind_at(self.cursor)? {
             RowKind::CommentHeader { id }
             | RowKind::CommentBody { id }
@@ -2944,7 +2982,7 @@ impl App {
 
     /// The count of consecutive view rows starting at `anchor` that render
     /// comment `id`: its header, its body when expanded, and its bottom edge.
-    fn comment_rows(&self, anchor: usize, id: Ulid) -> usize {
+    fn comment_rows(&self, anchor: usize, id: BoxId) -> usize {
         let mut count = 0;
         while anchor + count < self.view.len() {
             match self.kind_at(anchor + count) {
@@ -2980,7 +3018,7 @@ impl App {
     }
 
     /// The document row of comment `id`'s header line.
-    fn comment_header_row(&self, id: Ulid) -> Option<usize> {
+    fn comment_header_row(&self, id: BoxId) -> Option<usize> {
         self.document
             .comments
             .iter()
@@ -3473,10 +3511,10 @@ mod tests {
     use time::OffsetDateTime;
     use ulid::Ulid;
     use wiff_core::record::{
-        Author, AuthorKind, CommentEvent, CommentEventKind, CommentTarget, Confidence, RecordBody,
-        Seq, VersionNumber,
+        Author, AuthorKind, CommentEvent, CommentEventKind, CommentTarget, Confidence, Description,
+        DescriptionRecord, RecordBody, Seq, VersionNumber,
     };
-    use wiff_core::review::CommentState;
+    use wiff_core::review::{CommentState, DescriptionState};
     use wiff_diff::{Diff, FileStatus, LineKind, Side};
 
     use super::{App, CompareRequest, ComposeView, FloatView, Update};
@@ -3485,7 +3523,7 @@ mod tests {
     use crate::key::{Chord, Key, KeyPress};
     use crate::keymap::{Keymap, KeymapOverrides};
     use crate::render::testutil::{dump, file, ln, theme};
-    use crate::render::{DiffMode, DiffView, RowKind, ViewLayout};
+    use crate::render::{BoxId, DiffMode, DiffView, RowKind, ViewLayout};
     use crate::review::Review;
     use crate::theme::Theme;
 
@@ -3528,6 +3566,7 @@ mod tests {
             },
             0,
             Vec::new(),
+            None,
         )
     }
 
@@ -3691,6 +3730,7 @@ mod tests {
             },
             0,
             comments,
+            None,
         )
     }
 
@@ -3930,6 +3970,7 @@ mod tests {
                 "this comment runs well past the width of the box and must wrap",
                 false,
             )],
+            None,
         );
         let mut app = App::reviewing(review, 12, &theme());
         app.set_width(TEST_WIDTH);
@@ -3937,7 +3978,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             visible,
-            "<#fcf7ee|#65737e|b>Review<#f7f7f8|#65737e|-> [press c here to draft the review comment]\n",
+            "<#fcf7ee|#65737e|b>Review<#f7f7f8|#65737e|-> [press c here to draft the review comment]<#f7f7f8|#65737e|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
@@ -3974,13 +4015,14 @@ mod tests {
             },
             0,
             Vec::new(),
+            None,
         );
         let mut app = App::reviewing(review, 12, &theme());
         app.set_width(TEST_WIDTH);
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump(&app.visible(TEST_WIDTH)),
-            "<#fcf7ee|#65737e|b>Review<#f7f7f8|#65737e|-> [press c here to draft the review comment]\n",
+            "<#fcf7ee|#65737e|b>Review<#f7f7f8|#65737e|-> [press c here to draft the review comment]<#f7f7f8|#65737e|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
             "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> total <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> alpha plus beta plus gamma<#c0c5ce|#414a4a|->;\n",
@@ -3990,7 +4032,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump(&app.visible(TEST_WIDTH)),
-            "<#fcf7ee|#65737e|b>Review<#f7f7f8|#65737e|-> [press c here to draft the review comment]\n",
+            "<#fcf7ee|#65737e|b>Review<#f7f7f8|#65737e|-> [press c here to draft the review comment]<#f7f7f8|#65737e|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
             "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> total = alpha plus beta<-|#414a4a|-> \n",
@@ -4001,7 +4043,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump(&app.visible(TEST_WIDTH)),
-            "<#fcf7ee|#65737e|b>Review<#f7f7f8|#65737e|-> [press c here to draft the review comment]\n",
+            "<#fcf7ee|#65737e|b>Review<#f7f7f8|#65737e|-> [press c here to draft the review comment]<#f7f7f8|#65737e|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
             "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> total <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> alpha plus beta plus gamma<#c0c5ce|#414a4a|->;\n",
@@ -4034,6 +4076,7 @@ mod tests {
             },
             0,
             Vec::new(),
+            None,
         );
         let mut app = App::reviewing(review, 8, &theme());
         app.set_width(TEST_WIDTH);
@@ -4049,7 +4092,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump_compose(&view),
-            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
             "--editor cursor 4,0--\n",
@@ -4205,6 +4248,7 @@ mod tests {
             },
             0,
             vec![open, resolved, shifted, withdrawn],
+            None,
         );
         review.toggle_deleted(Ulid(4));
         let mut app = App::reviewing(review, 8, &theme());
@@ -4234,7 +4278,9 @@ mod tests {
         wince::assert_eq!(app.picking(), false);
         wince::assert_eq!(
             app.kind_at(app.cursor()),
-            Some(&RowKind::CommentHeader { id: Ulid(1) })
+            Some(&RowKind::CommentHeader {
+                id: BoxId::Comment(Ulid(1))
+            })
         );
     }
 
@@ -4294,6 +4340,7 @@ mod tests {
             },
             version,
             Vec::new(),
+            None,
         )
     }
 
@@ -4838,7 +4885,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             visible,
-            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
@@ -4870,7 +4917,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             visible,
-            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
@@ -4902,7 +4949,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             visible,
-            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
@@ -4954,7 +5001,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump(&app.visible(TEST_WIDTH)),
-            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
@@ -4988,7 +5035,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             visible,
-            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,6 +1,6 @@\n",
             "<#f5f6f6|#65737e|->        1 + <#faf7f9|#65737e|->let<#f6f6f8|#65737e|-> v1 <#f6f6f8|#65737e|->=<#f6f6f8|#65737e|-> <#fcf7f5|#65737e|->1<#f6f6f8|#65737e|->;<-|#65737e|->                 \n",
@@ -5050,7 +5097,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump(&app.visible(TEST_WIDTH)),
-            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,6 +1,6 @@\n",
             "<#f6f9f4|#65737e|->┌ <#f9fafb|#65737e|->wez (human)<#f6f9f4|#65737e|-> [draft]<#cfd1d4|#65737e|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#f6f9f4|#65737e|-> <#f6f9f4|#65737e|->┐\n",
@@ -5086,7 +5133,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump_compose(&view),
-            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,6 +1,6 @@\n",
             "--editor cursor 16,0--\n",
@@ -5127,6 +5174,7 @@ mod tests {
             },
             0,
             Vec::new(),
+            None,
         );
         let mut app = App::reviewing(review, 16, &theme());
         app.set_width(TEST_WIDTH);
@@ -5145,7 +5193,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump_compose(&view),
-            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,4 +1,4 @@\n",
             "--editor cursor 16,0--\n",
@@ -5172,7 +5220,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump_compose(&view),
-            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
@@ -5303,6 +5351,7 @@ mod tests {
             },
             0,
             Vec::new(),
+            None,
         )
     }
 
@@ -5337,7 +5386,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump_detached(&app, TEST_WIDTH, 8),
-            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
@@ -5539,7 +5588,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump(&app.visible(TEST_WIDTH)),
-            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
@@ -5628,7 +5677,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump(&app.visible(TEST_WIDTH)),
-            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
@@ -5688,7 +5737,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump(&app.visible(TEST_WIDTH)),
-            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
@@ -5714,7 +5763,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump_compose(&view),
-            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
@@ -5744,7 +5793,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump_compose(&view),
-            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#a3be8c|-|->┌ <#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse<#a3be8c|-|-> <#a3be8c|-|->┐\n",
             "<#a3be8c|-|->│<#c0c5ce|-|->first<-|-|->                                 <#a3be8c|-|->│\n",
             "<#a3be8c|-|->└──────────────────────────────────────┘\n",
@@ -5756,6 +5805,130 @@ mod tests {
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#767b84|-|->└──────────┬───────────────────────────┘\n",
             "<#7d828c|-|->   1    1  <#767b84|-|->└<#7d828c|-|-><#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+        );
+    }
+
+    /// A review whose description is already committed, for exercising the box
+    /// an existing description renders as.
+    fn described_review() -> Review {
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[
+                    (LineKind::Context, "let x = 1;", 1),
+                    (LineKind::Added, "let y = 2;", 2),
+                ],
+            )],
+        };
+        Review::new(
+            DiffView::new(theme()).unwrap(),
+            diff,
+            Author {
+                name: "wez".to_string(),
+                kind: AuthorKind::Human,
+            },
+            0,
+            Vec::new(),
+            Some(DescriptionState {
+                content: Description {
+                    title: "Tidy the parser".to_string(),
+                    body: "Split the lexer out.".to_string(),
+                },
+                author: Author {
+                    name: "opus".to_string(),
+                    kind: AuthorKind::Agent,
+                },
+                updated_at: OffsetDateTime::UNIX_EPOCH,
+                origin: None,
+                synced_marker: None,
+            }),
+        )
+    }
+
+    #[test]
+    fn writing_the_description_from_the_summary_row_shows_it_as_a_box() {
+        // A review opens with no description, so the summary row offers the write
+        // hint and edit on that row opens the description editor. Submitting a
+        // commit-message-shaped body renders it as the Description box leading
+        // the review and buffers a single description record to commit.
+        let mut app = App::reviewing(plain_review(), 12, &theme());
+        app.set_width(TEST_WIDTH);
+        app.update(Action::Top);
+        app.update(Action::EditComment);
+        typed(&mut app, "Tidy the parser");
+        app.compose_key(KeyPress::new(Key::Enter));
+        app.compose_key(KeyPress::new(Key::Enter));
+        typed(&mut app, "Split the lexer out.");
+        app.compose_key(submit());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#f6f9f4|#65737e|->┌ <#fcf7ee|#65737e|b>Description<#f9fafb|#65737e|->  wez (human)<#f6f9f4|#65737e|-> [draft]<#cfd1d4|#65737e|->  press e to edit  tab to expand/collapse<#f6f9f4|#65737e|-> <#f6f9f4|#65737e|->┐\n",
+            "<#a3be8c|-|->│<#c0c5ce|-|->Tidy the parser<-|-|->                       <#a3be8c|-|->│\n",
+            "<#a3be8c|-|->│<-|-|->                                      <#a3be8c|-|->│\n",
+            "<#a3be8c|-|->│<#c0c5ce|-|->Split the lexer out.<-|-|->                  <#a3be8c|-|->│\n",
+            "<#a3be8c|-|->└──────────────────────────────────────┘\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+        );
+        wince::assert_eq!(
+            app.take_drafts(),
+            vec![RecordBody::Description(DescriptionRecord {
+                author: Author {
+                    name: "wez".to_string(),
+                    kind: AuthorKind::Human,
+                },
+                authored_at: None,
+                origin: None,
+                synced_marker: None,
+                description: Description {
+                    title: "Tidy the parser".to_string(),
+                    body: "Split the lexer out.".to_string(),
+                },
+            })]
+        );
+    }
+
+    #[test]
+    fn a_committed_description_renders_as_a_box_and_edit_reseeds_it() {
+        // A review that already has a description leads with the Description box
+        // rather than the summary write hint, and editing it seeds the editor
+        // with the committed title and body in commit-message form.
+        let mut app = App::reviewing(described_review(), 12, &theme());
+        app.set_width(TEST_WIDTH);
+        // The box leads the review, titled Description and offering only the
+        // edit and collapse keys since a description cannot be resolved or
+        // deleted; the summary keeps its review-comment hint but drops the write
+        // hint now that a description exists.
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#fcf7ee|#65737e|b>Review<#f7f7f8|#65737e|-> [press c here to draft the review comment]\n",
+            "<#767b84|-|->┌ <#ebcb8b|-|b>Description<#8fa1b3|-|->  opus (agent)<#767b84|-|->  press e to edit  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->│<#c0c5ce|-|->Tidy the parser<-|-|->                       <#767b84|-|->│\n",
+            "<#767b84|-|->│<-|-|->                                      <#767b84|-|->│\n",
+            "<#767b84|-|->│<#c0c5ce|-|->Split the lexer out.<-|-|->                  <#767b84|-|->│\n",
+            "<#767b84|-|->└──────────────────────────────────────┘\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+        );
+        // Editing the description seeds the editor with the committed title and
+        // body rejoined into their commit-message form.
+        app.update(Action::Top);
+        app.update(Action::LineDown);
+        app.update(Action::EditComment);
+        wince::assert_eq!(
+            app.compose
+                .as_ref()
+                .map(|compose| compose.body())
+                .unwrap_or_default(),
+            "Tidy the parser\n\nSplit the lexer out.".to_string()
         );
     }
 
@@ -5805,7 +5978,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump(&app.visible(TEST_WIDTH)),
-            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,3 +1,3 @@\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
@@ -5868,7 +6041,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump(&app.visible(TEST_WIDTH)),
-            "<#fcf7ee|#65737e|b>Review<#f7f7f8|#65737e|-> [press c here to draft the review comment]\n",
+            "<#fcf7ee|#65737e|b>Review<#f7f7f8|#65737e|-> [press c here to draft the review comment]<#f7f7f8|#65737e|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,3 +1,3 @@\n",
             "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> a <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->0<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
@@ -5905,7 +6078,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump(&app.visible(TEST_WIDTH)),
-            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
             "<#d8dadd|#65737e|->   1    1   <#fbf9fb|#65737e|->let<#f6f6f8|#65737e|-> x <#f6f6f8|#65737e|->=<#f6f6f8|#65737e|-> <#fdf9f8|#65737e|->1<#f6f6f8|#65737e|->;<-|#65737e|->                  \n",
@@ -5925,7 +6098,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump(&app.visible(52)),
-            "<#fcf7ee|#65737e|b>Review<#f7f7f8|#65737e|-> [press c here to draft the review comment]<-|#65737e|->   \n",
+            "<#fcf7ee|#65737e|b>Review<#f7f7f8|#65737e|-> [press c here to draft the review comment]<#f7f7f8|#65737e|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<-|-|->                         <#7d828c|-|->│<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved<#767b84|-|-> <#767b84|-|->┐\n",
@@ -5957,7 +6130,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump(&app.visible(44)),
-            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#7d828c|-|->   1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;<-|-|->    <#7d828c|-|->│<#7d828c|-|->   1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;<-|-|->     \n",
@@ -5969,7 +6142,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump(&app.visible(44)),
-            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
@@ -5991,7 +6164,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump(&app.visible(44)),
-            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#d8dadd|#65737e|->   1   <#fbf9fb|#686255|->let<#f6f6f8|#65737e|-> x <#f6f6f8|#65737e|->=<#f6f6f8|#65737e|-> <#fdf9f8|#65737e|->1<#f6f6f8|#65737e|->;<-|#65737e|->    <#d8dadd|#65737e|->│<#d8dadd|#65737e|->   1   <#fbf9fb|#686255|->let<#f6f6f8|#65737e|-> x <#f6f6f8|#65737e|->=<#f6f6f8|#65737e|-> <#fdf9f8|#65737e|->1<#f6f6f8|#65737e|->;<-|#65737e|->     \n",
@@ -6161,7 +6334,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump(&app.visible(TEST_WIDTH)),
-            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
@@ -6378,6 +6551,7 @@ mod tests {
             },
             2,
             vec![committed],
+            None,
         );
         let mut app = App::reviewing(review, 16, &theme());
         app.set_width(80);
@@ -6387,7 +6561,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             plain(&app, 80),
-            "Review [press c here to draft the review comment]\n",
+            "Review [press c here to draft the review comment] [press e to write the description]\n",
             "modified  f.txt\n",
             "@@ -1,3 +1,4 @@\n",
             "   1    1   alpha\n",
@@ -6415,6 +6589,7 @@ mod tests {
             },
             2,
             Vec::new(),
+            None,
         );
         review.show_diff(comparison_diff(), Some((1, from_v1_before_origin())));
         review.add_comment(
@@ -6463,7 +6638,7 @@ mod tests {
         let before_cursor = app.cursor();
         let before = dump(&app.visible(TEST_WIDTH));
 
-        app.reload_comments(comments);
+        app.reload_comments(comments, None);
 
         wince::assert_eq!(app.cursor(), before_cursor);
         wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), before);
@@ -6493,6 +6668,7 @@ mod tests {
             },
             0,
             Vec::new(),
+            None,
         );
         // Opening with no comments, the one change buried at the end leaves a
         // single leading fold over the whole unchanged run.
@@ -6501,7 +6677,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             plain(&app, TEST_WIDTH),
-            "Review [press c here to draft the review comment]\n",
+            "Review [press c here to draft the review comment] [press e to write the description]\n",
             "modified  notes.txt\n",
             "@@ -1,21 +1,21 @@\n",
             "          ▸ [17 unchanged lines]  ctx17\n",
@@ -6521,12 +6697,12 @@ mod tests {
             "why?",
             false,
         )];
-        app.reload_comments(comments);
+        app.reload_comments(comments, None);
 
         #[rustfmt::skip]
         wince::snapshot_display!(
             plain(&app, TEST_WIDTH),
-            "Review [press c here to draft the review comment]\n",
+            "Review [press c here to draft the review comment] [press e to write the description]\n",
             "modified  notes.txt\n",
             "@@ -1,21 +1,21 @@\n",
             "          ▸ [4 unchanged lines]  ctx04\n",

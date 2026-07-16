@@ -45,6 +45,10 @@ wiff comment list
   outdated state, body, and a fenced snippet of the surrounding code. This is
   the one command you need to read the review and to pick up the ids you act on
   below.
+- When the review has a description (a title and optional body, the same shape
+  as a commit message), `wiff render` prints it under a `## Description` heading
+  and the JSON includes it in a top-level `description` field. See below to set
+  one.
 - `wiff render --format json` prints the same folded state as JSON for
   programmatic use. Each comment reports `updated_seq` and `updated_at`. To order
   changes or find the most recent one, use `updated_seq`, which always advances;
@@ -105,6 +109,24 @@ wiff comment rm --agent 01J8ZC0FRESQ5S6M00P8NJBBJD
 
 - `wiff comment resolve <id>` marks a comment resolved; `--reopen` undoes that.
 - `wiff comment rm <id>` withdraws a comment.
+
+## Describing the review
+
+A review can carry a description: a one-line title and an optional body, the
+same shape as a commit message. It is the review's own summary, distinct from
+any comment.
+
+```bash
+wiff description show
+wiff description set --agent "Tidy the parser"
+printf '%s\n\n%s\n' 'Tidy the parser' 'Split the lexer out.' | wiff description set --agent
+```
+
+- `wiff description show` prints the current description.
+- `wiff description set` sets it from the argument, or from piped stdin when no
+  argument is given. The first line is the title; the rest, past a blank line,
+  is the body. Setting it again replaces the previous description.
+- Pass `--agent` so the description is attributed to you rather than the human.
 
 ## Guidelines
 

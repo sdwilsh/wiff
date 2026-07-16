@@ -2,13 +2,13 @@
 
 use serde::Serialize;
 use wiff_core::record::FileSummary;
-use wiff_core::review::{CommentState, ReviewState};
+use wiff_core::review::{CommentState, DescriptionState, ReviewState};
 
 use super::{latest_files, live_comments};
 
 /// The version of the JSON shape emitted by `wiff render --format json`,
 /// incremented whenever that shape changes in a way a consumer must notice.
-const JSON_SCHEMA_VERSION: u32 = 3;
+const JSON_SCHEMA_VERSION: u32 = 4;
 
 /// Render `state` as a versioned JSON document.
 pub(super) fn render(state: &ReviewState) -> anyhow::Result<String> {
@@ -22,6 +22,7 @@ pub(super) fn render(state: &ReviewState) -> anyhow::Result<String> {
             source: state.session.source.as_str(),
         },
         files: latest_files(state),
+        description: state.description.as_ref(),
         comments: live_comments(state),
     };
     Ok(serde_json::to_string_pretty(&envelope)?)
@@ -33,6 +34,8 @@ struct JsonEnvelope<'a> {
     schema_version: u32,
     session: JsonSession<'a>,
     files: &'a [FileSummary],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<&'a DescriptionState>,
     comments: Vec<&'a CommentState>,
 }
 
@@ -59,7 +62,7 @@ mod tests {
         let out = render(&state()).unwrap();
         let value: serde_json::Value = serde_json::from_str(&out).unwrap();
         let expected = json!({
-            "schema_version": 3,
+            "schema_version": 4,
             "session": {
                 "ulid": "00000000000000000000000000",
                 "project": "demo",
@@ -75,6 +78,12 @@ mod tests {
                     "hunk_count": 1
                 }
             ],
+            "description": {
+                "title": "Tidy the parser",
+                "body": "Split the lexer out and cover it with tests.",
+                "author": { "name": "wez", "kind": "human" },
+                "updated_at": "1970-01-01T00:00:00Z"
+            },
             "comments": [
                 {
                     "id": "00000000000000000000000001",

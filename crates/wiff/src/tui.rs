@@ -64,7 +64,14 @@ pub fn open(session_path: &Path, config: &Config, offer_refresh: bool) -> anyhow
     // Comments authored in the TUI are attributed to the human reviewer and
     // anchored against the diff version being reviewed.
     let author = config.author.resolve(AuthorKind::Human);
-    let review = Review::deferred(view, diff, author.clone(), version.number.get(), comments);
+    let review = Review::deferred(
+        view,
+        diff,
+        author.clone(),
+        version.number.get(),
+        comments,
+        state.description.clone(),
+    );
     let mut app = App::reviewing(review, 0, &theme)
         .with_exit_default(exit_default(config.on_exit))
         .with_keymap(keymap.clone())
@@ -271,7 +278,7 @@ fn reload_committed(session_path: &Path, app: &mut App) -> anyhow::Result<Commen
         .filter(|comment| !comment.deleted)
         .cloned()
         .collect();
-    Ok(app.reload_comments(comments))
+    Ok(app.reload_comments(comments, state.description.clone()))
 }
 
 /// A terse status note naming what another actor changed, joining only the parts
@@ -286,6 +293,9 @@ fn sync_report(summary: &CommentSync) -> String {
     }
     if summary.removed > 0 {
         parts.push(format!("{} removed", summary.removed));
+    }
+    if summary.description_changed {
+        parts.push("description updated".to_string());
     }
     format!("synced: {}", parts.join(", "))
 }
@@ -590,8 +600,8 @@ mod tests {
         )
         .await
         .expect("capture v0");
-        let mut log =
-            create_session(data.path(), &identity, repo.path(), &captured).expect("create session");
+        let mut log = create_session(data.path(), &identity, repo.path(), &captured, None)
+            .expect("create session");
         let session_path = log.path().to_path_buf();
         DraftComment {
             author: Author {
@@ -633,6 +643,7 @@ mod tests {
             },
             version.get(),
             state.comments.clone(),
+            None,
         );
         let mut app = App::reviewing(review, 40, &theme);
 
@@ -654,7 +665,7 @@ mod tests {
         // diff, opening on the latest where the reviewer was reading.
         wince::assert_eq!(app.picking(), true);
         let expected = "\
-Review [press c here to draft the review comment]
+Review [press c here to draft the review comment] [press e to write the description]
 modified  f.txt
 @@ -1,3 +1,5 @@
         1 + zero
@@ -700,8 +711,8 @@ captured v1; rebased 1 comment: 1 exact, 0 shifted, 0 outdated
         )
         .await
         .expect("capture v0");
-        let log =
-            create_session(data.path(), &identity, repo.path(), &captured).expect("create session");
+        let log = create_session(data.path(), &identity, repo.path(), &captured, None)
+            .expect("create session");
         let session_path = log.path().to_path_buf();
         drop(log);
 
@@ -724,6 +735,7 @@ captured v1; rebased 1 comment: 1 exact, 0 shifted, 0 outdated
             },
             version.get(),
             state.comments.clone(),
+            None,
         );
         let mut app = App::reviewing(review, 40, &theme);
 
@@ -753,7 +765,7 @@ captured v1; rebased 1 comment: 1 exact, 0 shifted, 0 outdated
         // left, BETA on the right, with the unchanged lines as context, and the
         // status line names the comparison.
         let expected = "\
-Review [press c here to draft the review comment]
+Review [press c here to draft the review comment] [press e to write the description]
 modified  f.txt
 @@ -1,4 +1,4 @@
    1    1   alpha
@@ -776,7 +788,7 @@ comparing v0 against v1
         )
         .expect("back to latest");
         let latest = "\
-Review [press c here to draft the review comment]
+Review [press c here to draft the review comment] [press e to write the description]
 modified  f.txt
 @@ -1,3 +1,4 @@
    1    1   alpha
@@ -818,8 +830,8 @@ showing the latest diff (v1)
         )
         .await
         .expect("capture v0");
-        let log =
-            create_session(data.path(), &identity, repo.path(), &captured).expect("create session");
+        let log = create_session(data.path(), &identity, repo.path(), &captured, None)
+            .expect("create session");
         let session_path = log.path().to_path_buf();
         drop(log);
 
@@ -855,8 +867,8 @@ new file mode 100644
             .to_string(),
             source: SourceKind::Stdin,
         };
-        let log =
-            create_session(data.path(), &identity, data.path(), &captured).expect("create session");
+        let log = create_session(data.path(), &identity, data.path(), &captured, None)
+            .expect("create session");
         let session_path = log.path().to_path_buf();
         drop(log);
 
@@ -890,8 +902,8 @@ new file mode 100644
             .to_string(),
             source: SourceKind::GitWorktree,
         };
-        let log =
-            create_session(data.path(), &identity, data.path(), &captured).expect("create session");
+        let log = create_session(data.path(), &identity, data.path(), &captured, None)
+            .expect("create session");
         let session_path = log.path().to_path_buf();
         drop(log);
 
@@ -914,6 +926,7 @@ new file mode 100644
             },
             version.get(),
             state.comments.clone(),
+            None,
         );
         let mut app = App::reviewing(review, 40, &theme);
 
@@ -955,7 +968,7 @@ new file mode 100644
         // The reloaded review shows the comment as committed (no draft badge)
         // above the alpha line, and the status line reports the commit.
         let expected = "\
-Review [press c here to draft the review comment]
+Review [press c here to draft the review comment] [press e to write the description]
 added  f.txt
 @@ -0,0 +1,4 @@
 ┌ wez (human)  press e to edit  r to resolve  d to delete  tab to expand/collapse ┐
@@ -998,8 +1011,8 @@ new file mode 100644
             .to_string(),
             source: SourceKind::GitWorktree,
         };
-        let log =
-            create_session(data.path(), &identity, data.path(), &captured).expect("create session");
+        let log = create_session(data.path(), &identity, data.path(), &captured, None)
+            .expect("create session");
         let session_path = log.path().to_path_buf();
         drop(log);
 
@@ -1022,6 +1035,7 @@ new file mode 100644
             },
             version.get(),
             state.comments.clone(),
+            None,
         );
         let mut app = App::reviewing(review, 40, &theme);
 
@@ -1065,6 +1079,7 @@ new file mode 100644
             CommentSync {
                 added: 1,
                 changed: 0,
+                description_changed: false,
                 removed: 0,
             }
         );
@@ -1074,7 +1089,7 @@ new file mode 100644
         // The agent's comment now shows as committed above the alpha line, and
         // the status line reports what was synced.
         let expected = "\
-Review [press c here to draft the review comment]
+Review [press c here to draft the review comment] [press e to write the description]
 added  f.txt
 @@ -0,0 +1,4 @@
 ┌ assistant (agent)  press e to edit  r to resolve  d to delete  tab to expand/collapse ┐

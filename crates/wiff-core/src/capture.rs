@@ -13,19 +13,23 @@ use crate::error::{Error, Result};
 use crate::hash::SidebandHash;
 use crate::identity::ProjectIdentity;
 use crate::record::{
-    DiffVersionRecord, FORMAT_VERSION, FileSummary, RecordBody, Seq, SessionHeader, VersionNumber,
+    Author, Description, DiffVersionRecord, FORMAT_VERSION, FileSummary, RecordBody, Seq,
+    SessionHeader, VersionNumber,
 };
 use crate::session::{SessionLock, SessionLog};
 use crate::source::CapturedDiff;
 
 /// Create a session for `identity` under `base`, capturing `captured` as its
-/// first diff version (`v0`). Returns the open log positioned after the version
-/// record.
+/// first diff version (`v0`) and, when given, an initial description with its
+/// author. The header, diff, and description are written under one held lock, in
+/// that order, so a concurrent reader never sees a partial session. Returns the
+/// open log positioned after the records written.
 pub fn create_session(
     base: &Path,
     identity: &ProjectIdentity,
     cwd: &Path,
     captured: &CapturedDiff,
+    description: Option<(Author, Description)>,
 ) -> Result<SessionLog> {
     let repo_root = identity
         .repo_root
@@ -44,6 +48,12 @@ pub fn create_session(
         })
     })?;
     write_diff_version(&mut log, &mut lock, VersionNumber(0), &captured.text)?;
+    if let Some((author, description)) = description {
+        log.append(
+            &mut lock,
+            crate::description::local_description(author, description),
+        )?;
+    }
     Ok(log)
 }
 

@@ -178,8 +178,8 @@ pub struct ColumnSplit {
 /// collapse behind it, closed off by a bottom-edge row that stays visible even
 /// when the body is collapsed away.
 pub struct CommentRegion {
-    /// The annotation's stable identity.
-    pub id: Ulid,
+    /// The box this region renders.
+    pub id: BoxId,
     /// The row index of the comment's header line.
     pub header: usize,
     /// The body rows hidden when the comment is collapsed: `[start, end)`.
@@ -370,19 +370,31 @@ pub enum RowKind {
     /// A comment box's top edge, whose title names the author, status, and how
     /// to edit.
     CommentHeader {
-        /// The annotation the header belongs to.
-        id: Ulid,
+        /// The box the header belongs to.
+        id: BoxId,
     },
     /// One line of a comment's body, inside the box.
     CommentBody {
-        /// The annotation the body belongs to.
-        id: Ulid,
+        /// The box the body belongs to.
+        id: BoxId,
     },
     /// A comment box's bottom edge, closing the box below its body.
     CommentBottom {
-        /// The annotation the box belongs to.
-        id: Ulid,
+        /// The box the bottom edge belongs to.
+        id: BoxId,
     },
+}
+
+/// Which review-level box a comment row belongs to: an actual comment addressed
+/// by its ulid, or the review's own description. Modeling the description as a
+/// distinct variant rather than a reserved ulid forces every dispatch that acts
+/// on a box to decide what the description does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BoxId {
+    /// A comment, addressed by its stable ulid.
+    Comment(Ulid),
+    /// The review description.
+    Description,
 }
 
 /// One column's line on a content row.
@@ -623,6 +635,8 @@ impl DiffView {
                 comments: &[],
                 pending: &[],
                 origins: &CommentOrigins::Literal,
+                description: None,
+                describe_hint: false,
             },
             false,
             None,
@@ -692,6 +706,8 @@ impl DiffView {
                 comments,
                 pending,
                 origins: &CommentOrigins::Literal,
+                description: None,
+                describe_hint: false,
             },
             true,
             None,
@@ -716,6 +732,8 @@ impl DiffView {
                 comments,
                 pending,
                 origins: &CommentOrigins::Literal,
+                description: None,
+                describe_hint: false,
             },
             true,
             Some(highlights),
@@ -731,23 +749,11 @@ impl DiffView {
     pub(crate) fn render_review_origins(
         &self,
         diff: &Diff,
-        comments: &[CommentState],
-        pending: &[Ulid],
+        inputs: ReviewInputs,
         highlights: &[Option<FileHighlights>],
         layout: ViewLayout,
-        origins: &CommentOrigins,
     ) -> Document {
-        self.build(
-            diff,
-            ReviewInputs {
-                comments,
-                pending,
-                origins,
-            },
-            true,
-            Some(highlights),
-            layout,
-        )
+        self.build(diff, inputs, true, Some(highlights), layout)
     }
 
     /// The shared render path: build the document, optionally leading with the
@@ -764,6 +770,8 @@ impl DiffView {
             comments,
             pending,
             origins,
+            description,
+            describe_hint,
         } = inputs;
         let mut doc = Document {
             lines: Vec::new(),
@@ -789,8 +797,22 @@ impl DiffView {
                 RowKind::ReviewSummary,
                 Some(self.theme.status_bg),
                 String::new(),
-                self.review_summary(),
+                self.review_summary(describe_hint),
             );
+            if let Some(DescriptionBox { comment, pending }) = description {
+                self.push_comment(
+                    &mut doc,
+                    NO_FILE,
+                    comment,
+                    BoxId::Description,
+                    pending,
+                    BoxPlacement {
+                        width: layout.width,
+                        column: None,
+                        rail: false,
+                    },
+                );
+            }
             for placed in &placement.review {
                 self.push_thread(
                     &mut doc,
@@ -1244,10 +1266,17 @@ impl DiffView {
 
     /// The review summary row heading, the top-of-document target for review
     /// comments and the jump-to-top landing spot, backed by the status bar color
-    /// with a dimmed hint at how to draft a review-level comment.
-    fn review_summary(&self) -> Line<'static> {
+    /// with a dimmed hint at how to draft a review-level comment. When
+    /// `describe_hint` is set the review has no description yet, so the row also
+    /// offers the key that writes the first one.
+    fn review_summary(&self, describe_hint: bool) -> Line<'static> {
         let bg = color(self.theme.status_bg);
-        Line::from(vec![
+        let hint_fg = color(legible_over(
+            self.theme.fold_fg,
+            self.theme.status_bg,
+            self.theme.background,
+        ));
+        let mut spans = vec![
             Span::styled(
                 "Review",
                 Style::default()
@@ -1260,15 +1289,19 @@ impl DiffView {
                     " [press {} here to draft the review comment]",
                     self.hints.add_comment
                 ),
-                Style::default()
-                    .fg(color(legible_over(
-                        self.theme.fold_fg,
-                        self.theme.status_bg,
-                        self.theme.background,
-                    )))
-                    .bg(bg),
+                Style::default().fg(hint_fg).bg(bg),
             ),
-        ])
+        ];
+        if describe_hint {
+            spans.push(Span::styled(
+                format!(
+                    " [press {} to write the description]",
+                    self.hints.edit_comment
+                ),
+                Style::default().fg(hint_fg).bg(bg),
+            ));
+        }
+        Line::from(spans)
     }
 
     /// Push a root comment box and the reply boxes threaded beneath it, in
@@ -1286,6 +1319,7 @@ impl DiffView {
             doc,
             file,
             placed.comment,
+            BoxId::Comment(placed.comment.id),
             pending.contains(&placed.comment.id),
             placement,
         );
@@ -1294,6 +1328,7 @@ impl DiffView {
                 doc,
                 file,
                 reply,
+                BoxId::Comment(reply.id),
                 pending.contains(&reply.id),
                 BoxPlacement {
                     rail: false,
@@ -1317,6 +1352,7 @@ impl DiffView {
         doc: &mut Document,
         file: usize,
         comment: &CommentState,
+        id: BoxId,
         pending: bool,
         placement: BoxPlacement,
     ) {
@@ -1329,10 +1365,10 @@ impl DiffView {
         let header = doc.rows.len();
         doc.push(
             file,
-            RowKind::CommentHeader { id: comment.id },
+            RowKind::CommentHeader { id },
             Some(border),
             comment.author.name.clone(),
-            self.comment_title(comment, pending),
+            self.comment_title(comment, id, pending),
         );
         let body_start = doc.rows.len();
         // Compensate for the border drawn around the comment box: its two
@@ -1346,24 +1382,18 @@ impl DiffView {
             &self.highlighter,
         ) {
             let plain: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-            doc.push(
-                file,
-                RowKind::CommentBody { id: comment.id },
-                Some(border),
-                plain,
-                line,
-            );
+            doc.push(file, RowKind::CommentBody { id }, Some(border), plain, line);
         }
         let body_end = doc.rows.len();
         doc.push(
             file,
-            RowKind::CommentBottom { id: comment.id },
+            RowKind::CommentBottom { id },
             Some(border),
             String::new(),
             Line::default(),
         );
         doc.comments.push(CommentRegion {
-            id: comment.id,
+            id,
             header,
             body: body_start..body_end,
             collapsed_default: comment.resolved || comment.deleted,
@@ -1392,7 +1422,10 @@ impl DiffView {
     /// The title shown along a comment box's top edge: the author and kind, the
     /// status badges, and a dimmed hint at the keys that edit, resolve, delete,
     /// and expand or collapse the comment.
-    fn comment_title(&self, comment: &CommentState, pending: bool) -> Line<'static> {
+    fn comment_title(&self, comment: &CommentState, id: BoxId, pending: bool) -> Line<'static> {
+        if id == BoxId::Description {
+            return self.description_title(comment, pending);
+        }
         let mut spans = vec![Span::styled(
             format!("{} ({})", comment.author.name, comment.author.kind.as_str()),
             Style::default().fg(color(self.theme.comment_author_fg)),
@@ -1425,6 +1458,41 @@ impl DiffView {
                 self.hints.resolve_comment,
                 self.hints.delete_comment,
                 self.hints.toggle_comment
+            ),
+            Style::default().fg(color(self.theme.fold_fg)),
+        ));
+        Line::from(spans)
+    }
+
+    /// The title shown along the description box's top edge. Unlike a comment it
+    /// cannot be resolved or deleted, so its hint offers only edit and collapse.
+    fn description_title(&self, comment: &CommentState, pending: bool) -> Line<'static> {
+        let mut spans = vec![
+            Span::styled(
+                "Description".to_string(),
+                Style::default()
+                    .fg(color(self.theme.review_fg))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(
+                    "  {} ({})",
+                    comment.author.name,
+                    comment.author.kind.as_str()
+                ),
+                Style::default().fg(color(self.theme.comment_author_fg)),
+            ),
+        ];
+        if pending {
+            spans.push(Span::styled(
+                " [draft]".to_string(),
+                Style::default().fg(color(self.theme.comment_draft_fg)),
+            ));
+        }
+        spans.push(Span::styled(
+            format!(
+                "  press {} to edit  {} to expand/collapse",
+                self.hints.edit_comment, self.hints.toggle_comment
             ),
             Style::default().fg(color(self.theme.fold_fg)),
         ));
@@ -1967,10 +2035,23 @@ struct LineComment<'a> {
 
 /// The comment inputs to one render: the comments to weave in, which of them
 /// are uncommitted drafts, and how each maps onto the presented sides.
-struct ReviewInputs<'a> {
-    comments: &'a [CommentState],
-    pending: &'a [Ulid],
-    origins: &'a CommentOrigins,
+pub(crate) struct ReviewInputs<'a> {
+    pub(crate) comments: &'a [CommentState],
+    pub(crate) pending: &'a [Ulid],
+    pub(crate) origins: &'a CommentOrigins,
+    /// The review's description to render, absent when none is set.
+    pub(crate) description: Option<DescriptionBox<'a>>,
+    /// Whether the review has no description yet.
+    pub(crate) describe_hint: bool,
+}
+
+/// The review description prepared for rendering as its leading box, reusing a
+/// synthesized [`CommentState`] for the box's author, title, and body.
+pub(crate) struct DescriptionBox<'a> {
+    /// The synthesized comment that supplies the box's author and body.
+    pub(crate) comment: &'a CommentState,
+    /// Whether an uncommitted description edit is buffered.
+    pub(crate) pending: bool,
 }
 
 /// How a comment's authored `(version, side)` maps onto the side it is presented
@@ -2277,7 +2358,7 @@ mod tests {
     use wiff_diff::{Diff, FileStatus, LineKind, Side};
 
     use super::testutil::{dump, file, ln, theme};
-    use super::{CommentRegion, DiffView, ViewLayout};
+    use super::{BoxId, CommentRegion, DiffView, ViewLayout};
 
     /// A comment with the given identity, author, target, and body; not resolved
     /// and exactly anchored unless the test overrides those fields.
@@ -2332,13 +2413,13 @@ mod tests {
     fn regions(regions: &[CommentRegion]) -> String {
         let mut out = String::new();
         for region in regions {
+            let id = match region.id {
+                BoxId::Comment(ulid) => ulid.0.to_string(),
+                BoxId::Description => "description".to_string(),
+            };
             out.push_str(&format!(
                 "{}: header {} body {}..{} collapsed={}\n",
-                region.id.0,
-                region.header,
-                region.body.start,
-                region.body.end,
-                region.collapsed_default,
+                id, region.header, region.body.start, region.body.end, region.collapsed_default,
             ));
         }
         out

@@ -122,7 +122,15 @@ Comment mutations are append-only events keyed by annotation ULID; the current
 state of a comment is the fold of its event chain, mirroring how wallah folds
 config records.
 
-Unknown/reserved record types are skipped on read so the format can grow.
+The `Session` header's format version must match the reading binary exactly; a
+log whose version differs, older or newer, is refused rather than misread, and
+within a matching version an unrecognized record type is a fatal error. Because
+wiff is pre-release with a single user who discards sessions between rounds of
+work, there is no older binary in the wild to protect from a newer log: adding a
+record variant does not require bumping the format version. A session written by
+an out-of-step wiff is discarded and re-captured, never migrated. The version is
+bumped only when it is useful to force a clean refusal of pre-change sessions,
+not as an obligation of every added variant.
 
 ## Diff sources
 
@@ -272,9 +280,11 @@ through the append + lock path.
   by file, leading each comment with its id (so it can be resolved or withdrawn
   straight from the render) and showing author and kind, the target location,
   resolved/outdated state (naming who resolved it), the body, and a fenced code
-  block of the surrounding context. JSON is
+  block of the surrounding context. When the review has a description, markdown
+  prints it under a `## Description` heading ahead of the comments. JSON is
   the folded current state (not the raw event log) under a versioned schema
-  (`{ schema_version, session, files, comments }`); the raw log
+  (`{ schema_version, session, files, description, comments }`, where
+  `description` is present only when one is set); the raw log
   remains available by reading the JSONL directly.
 - `wiff comment add` lets an agent contribute comments, setting its author name
   and `--author-kind agent`.

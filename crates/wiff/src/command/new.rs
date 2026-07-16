@@ -5,11 +5,11 @@ use std::io::IsTerminal;
 use anyhow::{Context, bail};
 use clap::{ArgGroup, Args};
 use wiff_config::Config;
-use wiff_core::record::SourceKind;
+use wiff_core::record::{Description, SourceKind};
 use wiff_core::session::data_dir;
 use wiff_core::{CapturedDiff, ProjectIdentity, SessionLog, create_session};
 
-use super::{DiffSelection, capture_scm_diff, read_piped_stdin};
+use super::{DiffSelection, capture_scm_diff, read_piped_stdin, resolve_author};
 use crate::tui;
 
 /// Arguments for `wiff new`.
@@ -29,6 +29,16 @@ pub struct NewArgs {
     /// Force the project bucket name when it cannot be derived from the cwd.
     #[arg(long)]
     project: Option<String>,
+    /// Set the review's description, a commit-message-shaped title and body
+    /// (the first line is the title, the rest the body).
+    #[arg(long, value_name = "TEXT")]
+    description: Option<String>,
+    /// The description author's display name.
+    #[arg(long, requires = "description")]
+    author: Option<String>,
+    /// Attribute the initial description to an agent rather than a human.
+    #[arg(long, requires = "description")]
+    agent: bool,
     /// Create the session without launching the review TUI.
     #[arg(long)]
     no_tui: bool,
@@ -41,8 +51,15 @@ impl NewArgs {
         let cwd = std::env::current_dir().context("could not determine the current directory")?;
         let identity = ProjectIdentity::for_dir_or_forced(&cwd, self.project.as_deref())?;
         let captured = self.capture_source(&identity).await?;
+        let description = match &self.description {
+            Some(text) => {
+                let author = resolve_author(self.agent, self.author.clone())?;
+                Some((author, Description::from_message(text)))
+            }
+            None => None,
+        };
         let base = data_dir()?;
-        let log = create_session(&base, &identity, &cwd, &captured)?;
+        let log = create_session(&base, &identity, &cwd, &captured, description)?;
         report_created(&log);
         if self.no_tui {
             return Ok(());

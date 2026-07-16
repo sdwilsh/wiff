@@ -5,10 +5,11 @@ use ulid::Ulid;
 use wiff_core::comment::{delete_event, edit_event, reanchor_event, resolve_event};
 use wiff_core::record::{
     Anchor, Author, AuthorKind, CommentCreate, CommentEvent, CommentEventKind, CommentReanchor,
-    CommentTarget, Confidence, DiffVersionRecord, FORMAT_VERSION, FileSummary, Record, RecordBody,
-    Seq, SessionHeader, SourceKind, VersionNumber,
+    CommentTarget, Confidence, Description, DescriptionRecord, DiffVersionRecord, ExternalKind,
+    ExternalRef, FORMAT_VERSION, FileSummary, ForgeId, Record, RecordBody, Seq, SessionHeader,
+    SourceKind, VersionNumber,
 };
-use wiff_core::review::{CommentState, ReviewState, fold, threads};
+use wiff_core::review::{CommentState, DescriptionState, ReviewState, fold, threads};
 use wiff_core::{Error, SidebandHash};
 use wiff_diff::{FileStatus, LineNo, Side};
 
@@ -169,6 +170,7 @@ fn folds_versions_and_comment_chains() {
     let expected = ReviewState {
         session: header(),
         versions: vec![version(0, "src/main.rs"), version(1, "src/lib.rs")],
+        description: None,
         comments: vec![
             CommentState {
                 id: comment_a(),
@@ -759,5 +761,151 @@ fn a_reply_that_arrives_before_its_parent_is_a_corrupt_log() {
     wince::snapshot_display!(
         error,
         "inconsistent session log: record at seq 2 replies to unknown comment 00000000000000000000000000"
+    );
+}
+
+fn description_record(
+    author: Author,
+    title: &str,
+    body: &str,
+    origin: Option<ExternalRef>,
+    synced_marker: Option<String>,
+) -> RecordBody {
+    RecordBody::Description(DescriptionRecord {
+        author,
+        authored_at: None,
+        origin,
+        synced_marker,
+        description: Description {
+            title: title.to_string(),
+            body: body.to_string(),
+        },
+    })
+}
+
+fn pull_body_ref() -> ExternalRef {
+    ExternalRef {
+        forge: ForgeId {
+            provider: "github".to_string(),
+            host: "github.com".to_string(),
+        },
+        kind: ExternalKind::Description,
+        id: "42".to_string(),
+        url: None,
+    }
+}
+
+#[test]
+fn the_most_recent_description_revision_wins() {
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            description_record(human("wez"), "First cut", "an early draft", None, None),
+        ),
+        rec(
+            3,
+            description_record(
+                human("dev"),
+                "Tidy the parser",
+                "split the lexer out",
+                None,
+                None,
+            ),
+        ),
+    ];
+
+    let state = fold(&records).unwrap();
+    wince::assert_eq!(
+        state.description,
+        Some(DescriptionState {
+            content: Description {
+                title: "Tidy the parser".to_string(),
+                body: "split the lexer out".to_string(),
+            },
+            author: human("dev"),
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+            origin: None,
+            synced_marker: None,
+        })
+    );
+}
+
+#[test]
+fn a_local_description_edit_keeps_the_forge_binding_of_the_revision_it_replaces() {
+    // An imported revision binds the description to a pull request body and sets
+    // a sync marker; a later local edit sets neither, so the folded origin and
+    // marker stay while the content becomes the local edit's.
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            description_record(
+                human("wez"),
+                "Imported title",
+                "imported body",
+                Some(pull_body_ref()),
+                Some("etag-1".to_string()),
+            ),
+        ),
+        rec(
+            3,
+            description_record(human("wez"), "Edited title", "edited body", None, None),
+        ),
+    ];
+
+    let state = fold(&records).unwrap();
+    wince::assert_eq!(
+        state.description,
+        Some(DescriptionState {
+            content: Description {
+                title: "Edited title".to_string(),
+                body: "edited body".to_string(),
+            },
+            author: human("wez"),
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+            origin: Some(pull_body_ref()),
+            synced_marker: Some("etag-1".to_string()),
+        })
+    );
+}
+
+#[test]
+fn an_imported_descriptions_folded_time_comes_from_its_authored_time() {
+    // A revision mirrored from a forge records the time it was authored upstream
+    // in `authored_at`, distinct from when wiff recorded it in `Record::at`. The
+    // folded `updated_at` reflects the upstream time, not wiff's.
+    let authored = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+    let imported = RecordBody::Description(DescriptionRecord {
+        author: human("wez"),
+        authored_at: Some(authored),
+        origin: Some(pull_body_ref()),
+        synced_marker: Some("etag-1".to_string()),
+        description: Description {
+            title: "Imported title".to_string(),
+            body: "imported body".to_string(),
+        },
+    });
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(2, imported),
+    ];
+
+    let state = fold(&records).unwrap();
+    wince::assert_eq!(
+        state.description,
+        Some(DescriptionState {
+            content: Description {
+                title: "Imported title".to_string(),
+                body: "imported body".to_string(),
+            },
+            author: human("wez"),
+            updated_at: authored,
+            origin: Some(pull_body_ref()),
+            synced_marker: Some("etag-1".to_string()),
+        })
     );
 }

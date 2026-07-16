@@ -598,6 +598,7 @@ mod tests {
             author,
             0,
             Vec::new(),
+            None,
         )
     }
 
@@ -703,8 +704,12 @@ mod tests {
             name: "wez".to_string(),
             kind: AuthorKind::Human,
         };
-        let mut app = App::reviewing(Review::new(view, diff, author, 0, Vec::new()), 0, &theme())
-            .with_diff_mode(DiffMode::SideBySide, 0);
+        let mut app = App::reviewing(
+            Review::new(view, diff, author, 0, Vec::new(), None),
+            0,
+            &theme(),
+        )
+        .with_diff_mode(DiffMode::SideBySide, 0);
         for _ in 0..4 {
             app.update(Action::LineDown);
         }
@@ -715,7 +720,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_str!(
             screen(60, 9, app),
-            "Review [press c here to draft the review comment]           \n",
+            "Review [press c here to draft the review comment] [press e t\n",
             "modified  src/lib.rs                                        \n",
             "@@ -1,2 +1,2 @@                                             \n",
             "   1   let x = 1;            │   1   let x = 1;             \n",
@@ -786,7 +791,7 @@ mod tests {
             kind: AuthorKind::Human,
         };
         let mut app = App::reviewing(
-            Review::new(view, diff, author, 0, vec![comment]),
+            Review::new(view, diff, author, 0, vec![comment], None),
             0,
             &theme(),
         )
@@ -796,7 +801,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_str!(
             screen(60, 9, app),
-            "Review [press c here to draft the review comment]           \n",
+            "Review [press c here to draft the review comment] [press e t\n",
             "modified  src/lib.rs                                        \n",
             "@@ -1,2 +1,2 @@                                             \n",
             "   1   let x = 1;            │   1   let x = 1;             \n",
@@ -825,7 +830,11 @@ mod tests {
             name: "wez".to_string(),
             kind: AuthorKind::Human,
         };
-        let mut app = App::reviewing(Review::new(view, diff, author, 0, Vec::new()), 0, &theme());
+        let mut app = App::reviewing(
+            Review::new(view, diff, author, 0, Vec::new(), None),
+            0,
+            &theme(),
+        );
         // Move onto the added line and open the editor there, then type a body.
         for _ in 0..4 {
             app.update(Action::LineDown);
@@ -906,6 +915,7 @@ mod tests {
             author,
             0,
             Vec::new(),
+            None,
         )
     }
 
@@ -1003,7 +1013,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_str!(
             screen(80, 10, app),
-            "Review [press c here to draft the review comment]                               \n",
+            "Review [press c here to draft the review comment] [press e to write the descript\n",
             "modified  src/lib.rs                                                            \n",
             "@@ -1,6 +1,6 @@                                                                 \n",
             "        1 + let v1 = 1;                                                         \n",
@@ -1039,6 +1049,7 @@ mod tests {
                 author,
                 0,
                 Vec::new(),
+                None,
             ),
             0,
             &theme(),
@@ -1114,6 +1125,7 @@ mod tests {
                 author,
                 0,
                 Vec::new(),
+                None,
             ),
             0,
             &theme(),

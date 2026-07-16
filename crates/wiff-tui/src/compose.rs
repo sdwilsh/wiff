@@ -18,13 +18,12 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders};
 use tui_textarea::{CursorMove, Input, Key as EditorKey, TextArea};
-use ulid::Ulid;
 use wiff_core::record::CommentTarget;
 use wiff_diff::{LiveHighlighter, Rgb, expand_tabs};
 
 use crate::editor_wrap::{CursorBias, VisualRow, WrapMap};
 use crate::key::{Key, KeyPress};
-use crate::render::color;
+use crate::render::{BoxId, color};
 
 /// What the caller needs to draw one frame of the editor box: the rows to paint
 /// inside it, where to put the terminal cursor, and the scroll state.
@@ -50,8 +49,8 @@ pub struct Scroll {
 pub enum ComposeKind {
     /// A new comment on the given target.
     Add(CommentTarget),
-    /// A revision to an existing comment's body.
-    Edit(Ulid),
+    /// A revision to an existing box's body: a comment or the description.
+    Edit(BoxId),
 }
 
 /// The inline comment editor: a text buffer plus what it will produce, where it
@@ -314,10 +313,10 @@ impl Compose {
         self.kind
     }
 
-    /// The id of the comment this editor revises, or `None` when it authors a
-    /// new one. The review hides the rendered form of this comment while it is
-    /// being edited, so the editor stands in its place.
-    pub fn editing(&self) -> Option<Ulid> {
+    /// The box this editor revises, or `None` when it authors a new comment. The
+    /// review hides the rendered form of this box while it is being edited, so
+    /// the editor stands in its place.
+    pub fn editing(&self) -> Option<BoxId> {
         match self.kind {
             ComposeKind::Edit(id) => Some(id),
             ComposeKind::Add(_) => None,

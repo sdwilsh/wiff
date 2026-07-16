@@ -10,17 +10,29 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use time::OffsetDateTime;
 use ulid::Ulid;
 use wiff_core::LineOrigin;
 use wiff_core::draft::{DraftBuffer, EffectiveComment, draft_create};
-use wiff_core::record::{Author, CommentTarget, RecordBody, Seq, VersionNumber};
-use wiff_core::review::CommentState;
+use wiff_core::record::{Author, CommentTarget, Description, RecordBody, Seq, VersionNumber};
+use wiff_core::review::{CommentState, DescriptionState};
 use wiff_diff::{Diff, LiveHighlighter, Side};
 
 use crate::highlight::BackgroundHighlighter;
 use crate::render::{
-    BeforeOrigins, CommentOrigins, DiffView, Document, FileHighlights, ParsedFile, ViewLayout,
+    BeforeOrigins, CommentOrigins, DescriptionBox, DiffView, Document, FileHighlights, ParsedFile,
+    ReviewInputs, ViewLayout,
 };
+
+/// The id placed on the synthesized [`CommentState`] that renders the review's
+/// description. The description is addressed as
+/// [`BoxId::Description`](crate::render::BoxId), never by a comment id, so this
+/// is a render-only placeholder that is never read for identity. Its base32
+/// encoding contains the token `DESCR1PT10N` so that, should any code ever read
+/// it, the value is visibly synthetic rather than shadowing a real comment.
+fn description_render_id() -> Ulid {
+    Ulid::from_string("0000000000DESCR1PT10N00000").expect("a valid synthetic ULID literal")
+}
 
 /// A comparison against an earlier version: the reference version whose after
 /// content the presented before side shows, and, per file, the version and side
@@ -40,12 +52,14 @@ pub struct CommentSync {
     pub changed: usize,
     /// Comments shown before that are gone, withdrawn by another actor.
     pub removed: usize,
+    /// Whether the committed description differs from the one shown before.
+    pub description_changed: bool,
 }
 
 impl CommentSync {
     /// Whether nothing changed, so there is nothing to report.
     pub fn is_empty(&self) -> bool {
-        self.added == 0 && self.changed == 0 && self.removed == 0
+        self.added == 0 && self.changed == 0 && self.removed == 0 && !self.description_changed
     }
 
     /// Compare the previously shown comments to the freshly loaded set, matching
@@ -87,6 +101,9 @@ pub struct Review {
     version: u32,
     /// The live comments already persisted to the session log.
     committed: Vec<CommentState>,
+    /// The description already persisted to the session log, or `None` when the
+    /// review has none yet.
+    committed_description: Option<DescriptionState>,
     /// The buffered, uncommitted edits over the committed comments.
     drafts: DraftBuffer,
     /// The active comparison against an earlier version, or `None` when the
@@ -95,16 +112,17 @@ pub struct Review {
 }
 
 impl Review {
-    /// A review over `diff` with its already-committed `comments`, and no
-    /// pending drafts. Comments authored in the TUI are attributed to `author`
-    /// and anchored against diff `version`. The caller filters out withdrawn
-    /// committed comments.
+    /// A review over `diff` with its already-committed `comments` and
+    /// `description`, and no pending drafts. Comments authored in the TUI are
+    /// attributed to `author` and anchored against diff `version`. The caller
+    /// filters out withdrawn committed comments.
     pub fn new(
         view: DiffView,
         diff: Diff,
         author: Author,
         version: u32,
         comments: Vec<CommentState>,
+        description: Option<DescriptionState>,
     ) -> Self {
         let mut review = Self {
             view,
@@ -115,6 +133,7 @@ impl Review {
             author,
             version,
             committed: comments,
+            committed_description: description,
             drafts: DraftBuffer::new(),
             comparing: None,
         };
@@ -132,6 +151,7 @@ impl Review {
         author: Author,
         version: u32,
         comments: Vec<CommentState>,
+        description: Option<DescriptionState>,
     ) -> Self {
         let highlighter = BackgroundHighlighter::new(view.parser());
         let mut review = Self {
@@ -143,6 +163,7 @@ impl Review {
             author,
             version,
             committed: comments,
+            committed_description: description,
             drafts: DraftBuffer::new(),
             comparing: None,
         };
@@ -229,6 +250,7 @@ impl Review {
     /// everything unwrapped, for use before a real width is known.
     pub fn document(&self, layout: ViewLayout) -> Document {
         let effective = self.drafts.apply(&self.committed);
+        let description = self.description_box();
         let comments: Vec<CommentState> = effective
             .iter()
             .map(|entry| entry.comment.clone())
@@ -239,14 +261,63 @@ impl Review {
             .map(|entry| entry.comment.id)
             .collect();
         let origins = self.comment_origins();
-        self.view.render_review_origins(
-            &self.diff,
-            &comments,
-            &pending,
-            &self.highlights,
-            layout,
-            &origins,
-        )
+        let inputs = ReviewInputs {
+            comments: &comments,
+            pending: &pending,
+            origins: &origins,
+            describe_hint: description.is_none(),
+            description: description
+                .as_ref()
+                .map(|(comment, pending)| DescriptionBox {
+                    comment,
+                    pending: *pending,
+                }),
+        };
+        self.view
+            .render_review_origins(&self.diff, inputs, &self.highlights, layout)
+    }
+
+    /// The description as a synthesized [`CommentState`] for rendering, paired
+    /// with whether an uncommitted edit is buffered. `None` when no description
+    /// is set. The synthesized comment's id is a [`description_render_id`]
+    /// placeholder, never read: the description is addressed as
+    /// [`BoxId::Description`](crate::render::BoxId), not by a comment id.
+    fn description_box(&self) -> Option<(CommentState, bool)> {
+        let effective = self
+            .drafts
+            .effective_description(self.committed_description.as_ref())?;
+        let body = effective.content.to_message();
+        let author = effective.author;
+        let comment = CommentState {
+            id: description_render_id(),
+            author: author.clone(),
+            target: CommentTarget::Review,
+            version: VersionNumber(self.version),
+            anchor: None,
+            body,
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+            updated_by: author,
+            resolved: false,
+            resolved_by: None,
+            resolved_at: None,
+            deleted: false,
+            deleted_by: None,
+            deleted_at: None,
+            confidence: None,
+            origin: None,
+            synced_marker: None,
+            created_seq: Seq(0),
+            updated_seq: Seq(0),
+        };
+        Some((comment, effective.pending))
+    }
+
+    /// Whether no description, committed or buffered, is set.
+    pub fn description_absent(&self) -> bool {
+        self.drafts
+            .effective_description(self.committed_description.as_ref())
+            .is_none()
     }
 
     /// How comments map onto the presented sides: the after side is always the
@@ -391,6 +462,13 @@ impl Review {
         self.drafts.edit(id, self.author.clone(), body);
     }
 
+    /// Buffer a new description parsed from the commit-message-shaped `body`,
+    /// attributed to the reviewer.
+    pub fn edit_description(&mut self, body: String) {
+        self.drafts
+            .edit_description(self.author.clone(), Description::from_message(&body));
+    }
+
     /// The current body of comment `id` with pending drafts applied, for seeding
     /// an edit. Absent when no such comment is in the effective set.
     pub fn comment_body(&self, id: Ulid) -> Option<String> {
@@ -399,6 +477,15 @@ impl Review {
             .into_iter()
             .find(|entry| entry.comment.id == id)
             .map(|entry| entry.comment.body)
+    }
+
+    /// The commit-message form of the current description with pending drafts
+    /// applied, for seeding an edit. Empty when no description is set.
+    pub fn description_body(&self) -> String {
+        self.drafts
+            .effective_description(self.committed_description.as_ref())
+            .map(|description| description.content.to_message())
+            .unwrap_or_default()
     }
 
     /// Whether any uncommitted draft edits are buffered, so the reviewer is
@@ -464,12 +551,18 @@ impl Review {
         self.drafts = DraftBuffer::new();
     }
 
-    /// Replace the committed comments with `comments`, the freshly folded live
-    /// set after the pending drafts were persisted. The caller has already
-    /// cleared the drafts, so the review now reflects them as committed.
-    pub fn set_committed(&mut self, comments: Vec<CommentState>) -> CommentSync {
-        let sync = CommentSync::between(&self.committed, &comments);
+    /// Replace the committed comments and `description` with the freshly folded
+    /// live state after the pending drafts were persisted. The caller has
+    /// already cleared the drafts, so the review now reflects them as committed.
+    pub fn set_committed(
+        &mut self,
+        comments: Vec<CommentState>,
+        description: Option<DescriptionState>,
+    ) -> CommentSync {
+        let mut sync = CommentSync::between(&self.committed, &comments);
+        sync.description_changed = self.committed_description != description;
         self.committed = comments;
+        self.committed_description = description;
         sync
     }
 }
@@ -525,6 +618,7 @@ mod tests {
                 added: 1,
                 changed: 1,
                 removed: 0,
+                description_changed: false,
             }
         );
 
@@ -536,6 +630,7 @@ mod tests {
                 added: 0,
                 changed: 0,
                 removed: 1,
+                description_changed: false,
             }
         );
         wince::assert_eq!(CommentSync::between(&before, &before).is_empty(), true);
@@ -579,12 +674,12 @@ mod tests {
 
         // A deferred review opens with every file plain, before any parse arrives.
         let mut deferred =
-            super::Review::deferred(view(), diff.clone(), author.clone(), 0, Vec::new());
+            super::Review::deferred(view(), diff.clone(), author.clone(), 0, Vec::new(), None);
         let plain = dump(&deferred.document(layout).lines);
         #[rustfmt::skip]
         wince::snapshot_str!(
             plain,
-            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#7d828c|-|->   1    1   <#c0c5ce|-|->let x = 1;\n",
@@ -594,7 +689,7 @@ mod tests {
         // Once every file's parse arrives, the deferred review colors in to the
         // exact same document an eager review produces up front.
         finish_highlighting(&mut deferred);
-        let eager = super::Review::new(view(), diff, author, 0, Vec::new());
+        let eager = super::Review::new(view(), diff, author, 0, Vec::new(), None);
         wince::assert_eq!(
             dump(&deferred.document(layout).lines),
             dump(&eager.document(layout).lines)

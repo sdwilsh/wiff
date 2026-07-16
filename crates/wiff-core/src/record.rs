@@ -101,6 +101,8 @@ pub enum RecordBody {
     /// One event in a comment's history (create, edit, resolve, delete,
     /// re-anchor).
     CommentEvent(CommentEvent),
+    /// A revision of the review's description.
+    Description(DescriptionRecord),
     /// An unrecognized record type. A compatible-version log should never
     /// contain one, so folding rejects it as corrupt.
     #[serde(other)]
@@ -185,6 +187,67 @@ pub struct FileSummary {
     pub status: FileStatus,
     /// The number of hunks in the file.
     pub hunk_count: u32,
+}
+
+/// A revision of the review's description, appended whenever it is set or
+/// edited.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DescriptionRecord {
+    /// Who set this revision.
+    pub author: Author,
+    /// When the revision was authored, when that differs from when wiff recorded
+    /// it: absent for a local edit, present for one mirrored from a forge.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "time::serde::rfc3339::option"
+    )]
+    pub authored_at: Option<OffsetDateTime>,
+    /// The forge object this description mirrors, when it came from one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<ExternalRef>,
+    /// The upstream version this revision reconciled with, opaque and
+    /// adapter-interpreted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synced_marker: Option<String>,
+    /// The description text this revision sets.
+    #[serde(flatten)]
+    pub description: Description,
+}
+
+/// A review's description: a one-line title and an optional body, the same shape
+/// as a commit message.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Description {
+    /// The one-line title.
+    pub title: String,
+    /// The body below the title, empty for a title alone.
+    #[serde(default)]
+    pub body: String,
+}
+
+impl Description {
+    /// Format the description as a commit message: the title, then the body
+    /// below a blank line, or the title alone when the body is empty.
+    pub fn to_message(&self) -> String {
+        if self.body.is_empty() {
+            self.title.clone()
+        } else {
+            format!("{}\n\n{}", self.title, self.body)
+        }
+    }
+
+    /// Parse a commit message into a description: the first line is the title,
+    /// the rest the body. Surrounding whitespace is normalized away, so a
+    /// message padded with blank lines does not survive a round-trip through
+    /// `to_message` unchanged.
+    pub fn from_message(message: &str) -> Self {
+        let message = message.trim();
+        let mut parts = message.splitn(2, '\n');
+        let title = parts.next().unwrap_or_default().trim().to_string();
+        let body = parts.next().unwrap_or_default().trim().to_string();
+        Self { title, body }
+    }
 }
 
 /// Who authored an annotation.
@@ -420,6 +483,71 @@ mod tests {
         wince::assert_eq!(back, source);
         wince::assert_eq!(source.regenerable(), true);
         wince::assert_eq!(source.as_str(), "git_rev");
+    }
+
+    #[test]
+    fn a_description_round_trips_through_its_commit_message_form() {
+        let cases = [
+            (
+                Description {
+                    title: "Tidy the parser".to_string(),
+                    body: "Split the lexer out.\n\nCover it with tests.".to_string(),
+                },
+                "Tidy the parser\n\nSplit the lexer out.\n\nCover it with tests.",
+            ),
+            (
+                Description {
+                    title: "Just a title".to_string(),
+                    body: String::new(),
+                },
+                "Just a title",
+            ),
+        ];
+        for (description, message) in cases {
+            wince::assert_eq!(description.to_message(), message.to_string());
+            wince::assert_eq!(Description::from_message(message), description);
+        }
+    }
+
+    #[test]
+    fn parsing_a_message_takes_the_first_line_as_the_title() {
+        wince::assert_eq!(
+            Description::from_message("  Only a subject line  "),
+            Description {
+                title: "Only a subject line".to_string(),
+                body: String::new(),
+            }
+        );
+        wince::assert_eq!(
+            Description::from_message("Subject\nbody with no blank line"),
+            Description {
+                title: "Subject".to_string(),
+                body: "body with no blank line".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn parsing_normalizes_carriage_returns_and_surrounding_blank_lines() {
+        // A CRLF-terminated message (as piped stdin can be on Windows) leaves no
+        // trailing carriage return on either part.
+        wince::assert_eq!(
+            Description::from_message("Subject\r\n\r\nbody\r\n"),
+            Description {
+                title: "Subject".to_string(),
+                body: "body".to_string(),
+            }
+        );
+        // Blank lines padding the body are stripped, so a body with its own
+        // leading or trailing blank lines does not survive a round-trip: parsing
+        // this message yields the same description as the un-padded body would.
+        wince::assert_eq!(
+            Description::from_message("Subject\n\n\n\nbody\n\n\n"),
+            Description {
+                title: "Subject".to_string(),
+                body: "body".to_string(),
+            }
+        );
     }
 
     #[test]

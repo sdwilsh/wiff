@@ -13,6 +13,7 @@ pulldown-cmark.workspace = true
 ratatui = { workspace = true, features = ["crossterm"] }
 serde = { workspace = true }
 thiserror.workspace = true
+time.workspace = true
 tui-textarea.workspace = true
 ulid.workspace = true
 wiff-core.workspace = true

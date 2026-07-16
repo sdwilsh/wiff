@@ -27,6 +27,26 @@ pub(super) fn render(state: &ReviewState) -> String {
         None => out.push_str("- version: none\n"),
     }
 
+    if let Some(description) = &state.description {
+        // The `## Description` heading is wiff's own; the title renders as its
+        // bold lead beneath it. The body is emitted as the markdown it is, the
+        // same as a comment body.
+        out.push_str("\n## Description\n\n");
+        let title = description.content.title.trim();
+        if !title.is_empty() {
+            out.push_str(&format!("**{title}**\n"));
+        }
+        let body = description.content.body.trim_end();
+        if !body.trim().is_empty() {
+            if !title.is_empty() {
+                out.push('\n');
+            }
+            for line in body.lines() {
+                out.push_str(&format!("{line}\n"));
+            }
+        }
+    }
+
     let mut roots: Vec<&CommentState> = Vec::new();
     let mut replies: HashMap<Ulid, Vec<&CommentState>> = HashMap::new();
     for thread in visible_threads(state) {
@@ -251,6 +271,12 @@ mod tests {
 - project: demo
 - source: git_worktree
 - version: v0 (1 file)
+
+## Description
+
+**Tidy the parser**
+
+Split the lexer out and cover it with tests.
 
 ## Comments
 

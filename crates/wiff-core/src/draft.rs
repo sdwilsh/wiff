@@ -24,13 +24,14 @@ use ulid::Ulid;
 use wiff_diff::Diff;
 
 use crate::comment::{delete_event, edit_event, resolve_event};
+use crate::description::local_description;
 use crate::error::Result;
 use crate::rebase::rebase_line_comment;
 use crate::record::{
-    Anchor, Author, CommentCreate, CommentEvent, CommentEventKind, CommentTarget, RecordBody, Seq,
-    VersionNumber,
+    Anchor, Author, CommentCreate, CommentEvent, CommentEventKind, CommentTarget, Description,
+    RecordBody, Seq, VersionNumber,
 };
-use crate::review::CommentState;
+use crate::review::{CommentState, DescriptionState};
 
 /// One buffered change to the review.
 // `Add` (a full create event) is the large variant and the common one; the
@@ -78,10 +79,31 @@ pub struct EffectiveComment {
     pub pending: bool,
 }
 
+/// A newly authored revision of the description, held until commit.
+#[derive(Debug, Clone, PartialEq)]
+struct DescriptionDraft {
+    author: Author,
+    content: Description,
+}
+
+/// The description as it currently stands: the committed revision with any
+/// buffered edit layered over it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EffectiveDescription {
+    /// The current title and body.
+    pub content: Description,
+    /// Who set the current revision.
+    pub author: Author,
+    /// Whether an uncommitted edit is buffered for it.
+    pub pending: bool,
+}
+
 /// The pending drafts against a review, applied over its committed comments.
 #[derive(Debug, Clone, Default)]
 pub struct DraftBuffer {
     ops: Vec<DraftOp>,
+    /// The buffered description edit, absent when none has been made.
+    description: Option<DescriptionDraft>,
 }
 
 impl DraftBuffer {
@@ -92,7 +114,34 @@ impl DraftBuffer {
 
     /// Whether there are no pending drafts.
     pub fn is_empty(&self) -> bool {
-        self.ops.is_empty()
+        self.ops.is_empty() && self.description.is_none()
+    }
+
+    /// Buffer a new description `content` by `author`, replacing any earlier
+    /// buffered edit so only the latest is committed.
+    pub fn edit_description(&mut self, author: Author, content: Description) {
+        self.description = Some(DescriptionDraft { author, content });
+    }
+
+    /// The description as it currently stands with the buffered edit applied over
+    /// `committed`: the buffered edit when present, else the committed revision,
+    /// else `None` when the review has no description at all.
+    pub fn effective_description(
+        &self,
+        committed: Option<&DescriptionState>,
+    ) -> Option<EffectiveDescription> {
+        if let Some(draft) = &self.description {
+            return Some(EffectiveDescription {
+                content: draft.content.clone(),
+                author: draft.author.clone(),
+                pending: true,
+            });
+        }
+        committed.map(|state| EffectiveDescription {
+            content: state.content.clone(),
+            author: state.author.clone(),
+            pending: false,
+        })
     }
 
     /// Buffer a newly authored comment, returning its identity so later edits
@@ -262,6 +311,9 @@ impl DraftBuffer {
     /// ends deleted, are pruned so only a tombstone for a committed comment and
     /// live authoring reach the log.
     pub fn into_records(self) -> Vec<RecordBody> {
+        let description = self
+            .description
+            .map(|draft| local_description(draft.author, draft.content));
         let deleted: Vec<Ulid> = self
             .ops
             .iter()
@@ -299,6 +351,7 @@ impl DraftBuffer {
                 } => resolve_event(id, author, resolved),
                 DraftOp::Delete { id, author } => delete_event(id, author),
             })
+            .chain(description)
             .collect()
     }
 }
@@ -343,12 +396,14 @@ mod tests {
     use wiff_diff::parse::parse;
     use wiff_diff::{Diff, LineNo, Side};
 
-    use super::{DraftBuffer, EffectiveComment, draft_create};
+    use super::{DraftBuffer, EffectiveComment, EffectiveDescription, draft_create};
     use crate::comment::{delete_event, edit_event, resolve_event};
+    use crate::description::local_description;
     use crate::record::{
-        Author, AuthorKind, CommentEvent, CommentTarget, RecordBody, Seq, VersionNumber,
+        Author, AuthorKind, CommentEvent, CommentTarget, Description, RecordBody, Seq,
+        VersionNumber,
     };
-    use crate::review::CommentState;
+    use crate::review::{CommentState, DescriptionState};
 
     /// The human reviewer whose edits, resolves, and deletes the buffer
     /// attributes.
@@ -653,6 +708,76 @@ new file mode 100644
         wince::assert_eq!(
             buffer.into_records(),
             vec![RecordBody::CommentEvent(drafted(2, "one more thing"))]
+        );
+    }
+
+    /// A description of `title` and `body`.
+    fn description(title: &str, body: &str) -> Description {
+        Description {
+            title: title.to_string(),
+            body: body.to_string(),
+        }
+    }
+
+    /// A committed description revision by `author`.
+    fn committed_description(author: Author, title: &str, body: &str) -> DescriptionState {
+        DescriptionState {
+            content: description(title, body),
+            author,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+            origin: None,
+            synced_marker: None,
+        }
+    }
+
+    #[test]
+    fn a_buffered_description_edit_layers_over_the_committed_one_marked_pending() {
+        let committed = committed_description(actor(), "Old title", "old body");
+        let mut buffer = DraftBuffer::new();
+        wince::assert_eq!(
+            buffer.effective_description(Some(&committed)),
+            Some(EffectiveDescription {
+                content: description("Old title", "old body"),
+                author: actor(),
+                pending: false,
+            })
+        );
+
+        buffer.edit_description(agent(), description("New title", "new body"));
+        wince::assert_eq!(buffer.is_empty(), false);
+        wince::assert_eq!(
+            buffer.effective_description(Some(&committed)),
+            Some(EffectiveDescription {
+                content: description("New title", "new body"),
+                author: agent(),
+                pending: true,
+            })
+        );
+    }
+
+    #[test]
+    fn a_review_with_no_description_and_no_edit_has_none() {
+        let buffer = DraftBuffer::new();
+        wince::assert_eq!(buffer.effective_description(None), None);
+    }
+
+    #[test]
+    fn committing_a_description_edit_emits_a_description_record_after_the_comments() {
+        let mut buffer = DraftBuffer::new();
+        buffer.resolve(Ulid(1), true, actor());
+        buffer.edit_description(
+            agent(),
+            description("Tidy the parser", "split the lexer out"),
+        );
+        wince::assert_eq!(
+            buffer.into_records(),
+            vec![
+                resolve_event(Ulid(1), actor(), true),
+                local_description(
+                    agent(),
+                    description("Tidy the parser", "split the lexer out")
+                ),
+            ]
         );
     }
 

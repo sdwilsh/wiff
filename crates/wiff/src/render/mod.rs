@@ -89,10 +89,10 @@ mod fixture {
     use ulid::Ulid;
     use wiff_core::SidebandHash;
     use wiff_core::record::{
-        Anchor, Author, AuthorKind, CommentTarget, Confidence, DiffVersionRecord, FORMAT_VERSION,
-        FileSummary, Seq, SessionHeader, SourceKind, VersionNumber,
+        Anchor, Author, AuthorKind, CommentTarget, Confidence, Description, DiffVersionRecord,
+        FORMAT_VERSION, FileSummary, Seq, SessionHeader, SourceKind, VersionNumber,
     };
-    use wiff_core::review::{CommentState, ReviewState};
+    use wiff_core::review::{CommentState, DescriptionState, ReviewState};
     use wiff_diff::{FileStatus, LineNo, Side};
 
     fn ulid(text: &str) -> Ulid {
@@ -146,9 +146,9 @@ mod fixture {
         }
     }
 
-    /// A review state exercising every comment target, an anchored range, a
-    /// re-anchored comment, a withdrawn comment, and a withdrawn root kept
-    /// visible by a live reply.
+    /// A review state exercising a description, every comment target, an
+    /// anchored range, a re-anchored comment, a withdrawn comment, and a
+    /// withdrawn root kept visible by a live reply.
     pub(super) fn state() -> ReviewState {
         let mut line = comment(
             "00000000000000000000000001",
@@ -247,6 +247,16 @@ mod fixture {
                     hunk_count: 1,
                 }],
             }],
+            description: Some(DescriptionState {
+                content: Description {
+                    title: "Tidy the parser".to_string(),
+                    body: "Split the lexer out and cover it with tests.".to_string(),
+                },
+                author: author("wez", AuthorKind::Human),
+                updated_at: OffsetDateTime::UNIX_EPOCH,
+                origin: None,
+                synced_marker: None,
+            }),
             comments: vec![line, whole, review, shifted, gone, reply, reply_to_gone],
         }
     }
