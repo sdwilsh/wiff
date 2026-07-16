@@ -19,7 +19,7 @@ use wiff_diff::{LineNo, Side};
 use crate::error::{Error, Result};
 use crate::record::{
     Anchor, Author, CommentCreate, CommentEvent, CommentEventKind, CommentReanchor, CommentTarget,
-    DiffVersionRecord, Record, RecordBody, Seq, VersionNumber,
+    DiffVersionRecord, Disposition, Record, RecordBody, Seq, VersionNumber,
 };
 use crate::review::{CommentState, fold};
 use crate::session::{LockWait, SessionLog};
@@ -37,6 +37,8 @@ pub struct DraftComment {
     pub target: CommentTarget,
     /// The comment body.
     pub body: String,
+    /// The verdict the comment holds from creation, when it has one.
+    pub disposition: Option<Disposition>,
 }
 
 /// The outcome of appending a [`DraftComment`].
@@ -93,6 +95,7 @@ impl DraftComment {
                 version,
                 anchor: anchor.clone(),
                 body: self.body,
+                disposition: self.disposition,
             }),
         };
         let seq = log.append(&mut lock, RecordBody::CommentEvent(event))?;
@@ -134,6 +137,26 @@ pub fn delete_comment(
     Ok(comment)
 }
 
+/// Set (or clear) `author`'s verdict on their comment `id`, appending
+/// a disposition event. Only the comment's author may set it: a mismatch is
+/// refused here rather than written, since fold rejects a foreign verdict as a
+/// corrupt log.
+pub fn set_disposition(
+    log: &mut SessionLog,
+    id: Ulid,
+    disposition: Option<Disposition>,
+    author: Author,
+    wait: LockWait,
+) -> Result<CommentState> {
+    let (mut lock, records) = log.lock_and_sync(wait)?;
+    let comment = require_comment_in_records(&records, id)?;
+    if comment.author != author {
+        return Err(Error::ForeignDisposition(id));
+    }
+    log.append(&mut lock, disposition_event(id, author, disposition))?;
+    Ok(comment)
+}
+
 /// Build an edit event for `id` by `author`.
 pub fn edit_event(id: Ulid, author: Author, body: String) -> RecordBody {
     comment_event(id, author, CommentEventKind::Edit { body })
@@ -147,6 +170,12 @@ pub fn resolve_event(id: Ulid, author: Author, resolved: bool) -> RecordBody {
 /// Build a delete tombstone for `id` by `author`.
 pub fn delete_event(id: Ulid, author: Author) -> RecordBody {
     comment_event(id, author, CommentEventKind::Delete)
+}
+
+/// Build a set-verdict event for `id` by `author`, or a clear when `disposition`
+/// is `None`.
+pub fn disposition_event(id: Ulid, author: Author, disposition: Option<Disposition>) -> RecordBody {
+    comment_event(id, author, CommentEventKind::SetDisposition { disposition })
 }
 
 /// Build a re-anchor event for `id` by `author`, recording the new target and

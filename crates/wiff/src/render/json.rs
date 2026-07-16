@@ -2,13 +2,13 @@
 
 use serde::Serialize;
 use wiff_core::record::FileSummary;
-use wiff_core::review::{CommentState, DescriptionState, ReviewState};
+use wiff_core::review::{ActorVerdict, CommentState, DescriptionState, ReviewState};
 
 use super::{latest_files, live_comments};
 
 /// The version of the JSON shape emitted by `wiff render --format json`,
 /// incremented whenever that shape changes in a way a consumer must notice.
-const JSON_SCHEMA_VERSION: u32 = 4;
+const JSON_SCHEMA_VERSION: u32 = 5;
 
 /// Render `state` as a versioned JSON document.
 pub(super) fn render(state: &ReviewState) -> anyhow::Result<String> {
@@ -24,6 +24,7 @@ pub(super) fn render(state: &ReviewState) -> anyhow::Result<String> {
         files: latest_files(state),
         description: state.description.as_ref(),
         comments: live_comments(state),
+        verdicts: &state.verdicts,
     };
     Ok(serde_json::to_string_pretty(&envelope)?)
 }
@@ -37,6 +38,8 @@ struct JsonEnvelope<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<&'a DescriptionState>,
     comments: Vec<&'a CommentState>,
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    verdicts: &'a [ActorVerdict],
 }
 
 /// The session identity fields exposed in JSON, with the ULID and source as
@@ -62,7 +65,7 @@ mod tests {
         let out = render(&state()).unwrap();
         let value: serde_json::Value = serde_json::from_str(&out).unwrap();
         let expected = json!({
-            "schema_version": 4,
+            "schema_version": 5,
             "session": {
                 "ulid": "00000000000000000000000000",
                 "project": "demo",
@@ -164,6 +167,7 @@ mod tests {
                     "resolved_by": null,
                     "deleted": false,
                     "deleted_by": null,
+                    "disposition": "approve",
                     "confidence": null,
                     "created_seq": 4,
                     "updated_seq": 4
@@ -188,6 +192,7 @@ mod tests {
                     "resolved_by": null,
                     "deleted": false,
                     "deleted_by": null,
+                    "disposition": "request_changes",
                     "confidence": "approximate",
                     "created_seq": 5,
                     "updated_seq": 6
@@ -234,6 +239,16 @@ mod tests {
                     "confidence": null,
                     "created_seq": 11,
                     "updated_seq": 11
+                }
+            ],
+            "verdicts": [
+                {
+                    "author": { "name": "wez", "kind": "human" },
+                    "disposition": "approve"
+                },
+                {
+                    "author": { "name": "dev", "kind": "human" },
+                    "disposition": "request_changes"
                 }
             ]
         });

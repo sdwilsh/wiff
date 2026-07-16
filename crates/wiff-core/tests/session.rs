@@ -42,6 +42,7 @@ fn comment() -> RecordBody {
             version: VersionNumber(0),
             anchor: None,
             body: "why 3?".to_string(),
+            disposition: None,
         }),
     })
 }

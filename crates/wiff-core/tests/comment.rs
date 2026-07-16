@@ -5,14 +5,14 @@ use std::path::Path;
 use time::OffsetDateTime;
 use ulid::Ulid;
 use wiff_core::record::{
-    Anchor, Author, AuthorKind, CommentTarget, DiffVersionRecord, FORMAT_VERSION, FileSummary, Seq,
-    SessionHeader, SourceKind, VersionNumber,
+    Anchor, Author, AuthorKind, CommentTarget, DiffVersionRecord, Disposition, FORMAT_VERSION,
+    FileSummary, Seq, SessionHeader, SourceKind, VersionNumber,
 };
 use wiff_core::review::{CommentState, fold};
 use wiff_core::session::read_records;
 use wiff_core::{
     CapturedDiff, DraftComment, Error, LockWait, ProjectIdentity, SessionLog, SidebandHash,
-    create_session, delete_comment, set_resolved,
+    create_session, delete_comment, set_disposition, set_resolved,
 };
 use wiff_diff::{FileStatus, LineNo, Side};
 
@@ -100,6 +100,7 @@ fn adding_comments_captures_anchors_and_folds_to_current_state() {
         author: human("wez"),
         target: lines_target("src/main.rs", 2, 2),
         body: "why 3?".to_string(),
+        disposition: None,
     }
     .append(&mut log, LockWait::Block)
     .unwrap();
@@ -112,6 +113,7 @@ fn adding_comments_captures_anchors_and_folds_to_current_state() {
             file: "added.txt".to_string(),
         },
         body: "needs a newline".to_string(),
+        disposition: None,
     }
     .append(&mut log, LockWait::Block)
     .unwrap();
@@ -119,6 +121,7 @@ fn adding_comments_captures_anchors_and_folds_to_current_state() {
         author: human("wez"),
         target: CommentTarget::Review,
         body: "looks good".to_string(),
+        disposition: None,
     }
     .append(&mut log, LockWait::Block)
     .unwrap();
@@ -192,6 +195,7 @@ fn adding_comments_captures_anchors_and_folds_to_current_state() {
                 deleted: false,
                 deleted_by: None,
                 deleted_at: None,
+                disposition: None,
                 confidence: None,
                 origin: None,
                 synced_marker: None,
@@ -222,6 +226,7 @@ fn adding_comments_captures_anchors_and_folds_to_current_state() {
                 deleted: false,
                 deleted_by: None,
                 deleted_at: None,
+                disposition: None,
                 confidence: None,
                 origin: None,
                 synced_marker: None,
@@ -244,6 +249,7 @@ fn adding_comments_captures_anchors_and_folds_to_current_state() {
                 deleted: false,
                 deleted_by: None,
                 deleted_at: None,
+                disposition: None,
                 confidence: None,
                 origin: None,
                 synced_marker: None,
@@ -261,6 +267,7 @@ fn a_line_range_anchors_across_multiple_lines() {
         author: human("dev"),
         target: lines_target("added.txt", 1, 2),
         body: "both lines".to_string(),
+        disposition: None,
     }
     .append(&mut log, LockWait::Block)
     .unwrap();
@@ -281,6 +288,7 @@ fn a_line_beyond_the_captured_window_is_recorded_without_an_anchor() {
         author: human("wez"),
         target: lines_target("src/main.rs", 100, 100),
         body: "look here for context".to_string(),
+        disposition: None,
     }
     .append(&mut log, LockWait::Block)
     .unwrap();
@@ -305,6 +313,7 @@ fn a_line_beyond_the_captured_window_is_recorded_without_an_anchor() {
             deleted: false,
             deleted_by: None,
             deleted_at: None,
+            disposition: None,
             confidence: None,
             origin: None,
             synced_marker: None,
@@ -323,6 +332,7 @@ fn resolving_and_withdrawing_comments_folds_to_current_state() {
             file: "added.txt".to_string(),
         },
         body: "needs a newline".to_string(),
+        disposition: None,
     }
     .append(&mut log, LockWait::Block)
     .unwrap();
@@ -330,6 +340,7 @@ fn resolving_and_withdrawing_comments_folds_to_current_state() {
         author: human("wez"),
         target: CommentTarget::Review,
         body: "never mind".to_string(),
+        disposition: None,
     }
     .append(&mut log, LockWait::Block)
     .unwrap();
@@ -361,6 +372,7 @@ fn resolving_and_withdrawing_comments_folds_to_current_state() {
                 deleted: false,
                 deleted_by: None,
                 deleted_at: None,
+                disposition: None,
                 confidence: None,
                 origin: None,
                 synced_marker: None,
@@ -383,6 +395,7 @@ fn resolving_and_withdrawing_comments_folds_to_current_state() {
                 deleted: true,
                 deleted_by: Some(human("wez")),
                 deleted_at: Some(OffsetDateTime::UNIX_EPOCH),
+                disposition: None,
                 confidence: None,
                 origin: None,
                 synced_marker: None,
@@ -390,6 +403,73 @@ fn resolving_and_withdrawing_comments_folds_to_current_state() {
                 updated_seq: Seq(6),
             },
         ]
+    );
+}
+
+#[test]
+fn setting_a_verdict_records_it_and_folds_it_onto_the_comment() {
+    let (_base, mut log) = session();
+    let added = DraftComment {
+        author: human("wez"),
+        target: CommentTarget::Review,
+        body: "needs work".to_string(),
+        disposition: None,
+    }
+    .append(&mut log, LockWait::Block)
+    .unwrap();
+    set_disposition(
+        &mut log,
+        added.id,
+        Some(Disposition::RequestChanges),
+        human("wez"),
+        LockWait::Block,
+    )
+    .unwrap();
+
+    let state = fold(&read_records(log.path()).unwrap()).unwrap();
+    let folded: Vec<(Author, Option<Disposition>)> = state
+        .comments
+        .iter()
+        .map(|comment| (comment.author.clone(), comment.disposition))
+        .collect();
+    wince::assert_eq!(
+        (folded, state.verdicts),
+        (
+            vec![(human("wez"), Some(Disposition::RequestChanges))],
+            vec![wiff_core::review::ActorVerdict {
+                author: human("wez"),
+                disposition: Disposition::RequestChanges,
+            }],
+        )
+    );
+}
+
+#[test]
+fn setting_a_verdict_on_another_authors_comment_is_refused() {
+    let (_base, mut log) = session();
+    let added = DraftComment {
+        author: human("wez"),
+        target: CommentTarget::Review,
+        body: "mine".to_string(),
+        disposition: None,
+    }
+    .append(&mut log, LockWait::Block)
+    .unwrap();
+    let error = set_disposition(
+        &mut log,
+        added.id,
+        Some(Disposition::Approve),
+        human("dev"),
+        LockWait::Block,
+    )
+    .unwrap_err();
+    wince::assert_eq!(matches!(error, Error::ForeignDisposition(_)), true);
+    wince::assert_eq!(
+        error.to_string(),
+        format!(
+            "cannot set a verdict on comment {}, which you did not author",
+            added.id
+        )
     );
 }
 
@@ -417,6 +497,7 @@ fn a_reply_names_its_parent_and_folds_beneath_it() {
         author: human("wez"),
         target: CommentTarget::Review,
         body: "why 3?".to_string(),
+        disposition: None,
     }
     .append(&mut log, LockWait::Block)
     .unwrap();
@@ -424,6 +505,7 @@ fn a_reply_names_its_parent_and_folds_beneath_it() {
         author: human("dev"),
         target: CommentTarget::Comment { id: root.id },
         body: "it is the bound".to_string(),
+        disposition: None,
     }
     .append(&mut log, LockWait::Block)
     .unwrap();
@@ -459,6 +541,7 @@ fn a_reply_to_an_unknown_comment_is_rejected_before_it_corrupts_the_session() {
         author: human("wez"),
         target: CommentTarget::Comment { id: missing },
         body: "reply to nothing".to_string(),
+        disposition: None,
     }
     .append(&mut log, LockWait::Block)
     .unwrap_err();
@@ -484,6 +567,7 @@ fn a_reply_to_a_withdrawn_comment_is_refused_at_authoring() {
         author: human("wez"),
         target: CommentTarget::Review,
         body: "why 3?".to_string(),
+        disposition: None,
     }
     .append(&mut log, LockWait::Block)
     .unwrap();
@@ -493,6 +577,7 @@ fn a_reply_to_a_withdrawn_comment_is_refused_at_authoring() {
         author: human("dev"),
         target: CommentTarget::Comment { id: root.id },
         body: "too late".to_string(),
+        disposition: None,
     }
     .append(&mut log, LockWait::Block)
     .unwrap_err();
@@ -519,6 +604,7 @@ fn a_file_outside_the_diff_cannot_be_anchored() {
         author: human("wez"),
         target: lines_target("nope.rs", 1, 1),
         body: "nowhere".to_string(),
+        disposition: None,
     }
     .append(&mut log, LockWait::Block)
     .unwrap_err();

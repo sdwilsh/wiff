@@ -47,6 +47,18 @@ pub(super) fn render(state: &ReviewState) -> String {
         }
     }
 
+    if !state.verdicts.is_empty() {
+        out.push_str("\n## Verdicts\n\n");
+        for verdict in &state.verdicts {
+            out.push_str(&format!(
+                "- {} ({}): {}\n",
+                verdict.author.name,
+                verdict.author.kind.as_str(),
+                verdict.disposition.as_str(),
+            ));
+        }
+    }
+
     let mut roots: Vec<&CommentState> = Vec::new();
     let mut replies: HashMap<Ulid, Vec<&CommentState>> = HashMap::new();
     for thread in visible_threads(state) {
@@ -239,6 +251,9 @@ fn flags(comment: &CommentState) -> String {
         Some(Confidence::Outdated) => flags.push("outdated".to_string()),
         Some(Confidence::Exact) | None => {}
     }
+    if let Some(disposition) = comment.disposition {
+        flags.push(disposition.as_str().to_string());
+    }
     if let Some(author) = comment.last_changed_by() {
         flags.push(format!(
             "changed by {} ({})",
@@ -278,11 +293,16 @@ mod tests {
 
 Split the lexer out and cover it with tests.
 
+## Verdicts
+
+- wez (human): approve
+- dev (human): request_changes
+
 ## Comments
 
 ### Review
 
-- 00000000000000000000000003 review by wez (human)
+- 00000000000000000000000003 review by wez (human) [approve]
   overall solid
 
 ### main.rs
@@ -306,7 +326,7 @@ Split the lexer out and cover it with tests.
 
 ### other.rs
 
-- 00000000000000000000000004 lines 5-6 (after) by dev (human) [shifted, changed by opus (agent)]
+- 00000000000000000000000004 lines 5-6 (after) by dev (human) [shifted, request_changes, changed by opus (agent)]
   moved code
 ";
         wince::assert_eq!(out, expected.to_string());

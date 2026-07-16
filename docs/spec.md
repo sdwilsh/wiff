@@ -117,6 +117,12 @@ bodies:
   attributed to the author who made the change so a reviewer can see who
   resolved or removed it. Deletes are tombstones, not physical removal
   (append-only).
+- `SetDisposition`: sets or clears the approve/request-changes verdict a
+  comment holds. Only the comment's author may set it. Each actor's current
+  verdict is reduced from their live comments: a request for changes dominates
+  an approval, so one unresolved blocking comment keeps the actor blocking even
+  when they have approved elsewhere. A withdrawn comment, or one its author has
+  resolved, no longer counts.
 
 Comment mutations are append-only events keyed by annotation ULID; the current
 state of a comment is the fold of its event chain, mirroring how wallah folds
@@ -252,9 +258,11 @@ an explicit subcommand, so behavior is unambiguous. Subcommands (v0):
 - `wiff comment add`: append a comment. Flags for target (`--file`, `--line`,
   line range, whole-file, review-level), `--body` (or stdin), author flags, and
   an optional `--session` that defaults to the active session.
-- `wiff comment list` / `wiff comment resolve` / `wiff comment rm`. Resolve and
-  rm take the same author flags as `add`, so who resolved or withdrew a comment
-  is recorded alongside the change.
+- `wiff comment list` / `wiff comment resolve` / `wiff comment verdict` /
+  `wiff comment rm`. Resolve, verdict, and rm take the same author flags as
+  `add`, so who resolved, judged, or withdrew a comment is recorded alongside
+  the change. `verdict` sets or clears an approve/request-changes verdict on
+  the caller's own comment.
 - `wiff render`: emit the review state for consumption. `--format markdown`
   (default) or `--format json`. The format argument is designed to admit more
   formats later, so it is a value-taking option rather than a boolean flag.
@@ -279,13 +287,15 @@ through the append + lock path.
   agent prompt (markdown) or programmatic use (json). Markdown groups comments
   by file, leading each comment with its id (so it can be resolved or withdrawn
   straight from the render) and showing author and kind, the target location,
-  resolved/outdated state (naming who resolved it), the body, and a fenced code
-  block of the surrounding context. When the review has a description, markdown
-  prints it under a `## Description` heading ahead of the comments. JSON is
-  the folded current state (not the raw event log) under a versioned schema
-  (`{ schema_version, session, files, description, comments }`, where
-  `description` is present only when one is set); the raw log
-  remains available by reading the JSONL directly.
+  resolved/outdated state (naming who resolved it), any verdict the comment
+  holds, the body, and a fenced code block of the surrounding context. When
+  the review has a description, markdown prints it under a `## Description`
+  heading ahead of the comments, and each actor's current verdict under a
+  `## Verdicts` heading. JSON is the folded current state (not the raw event
+  log) under a versioned schema
+  (`{ schema_version, session, files, description, comments, verdicts }`, where
+  `description` and `verdicts` are present only when set); the raw log remains
+  available by reading the JSONL directly.
 - `wiff comment add` lets an agent contribute comments, setting its author name
   and `--author-kind agent`.
 - `wiff skill-path` writes the bundled agent skill into the data directory and

@@ -17,8 +17,8 @@ use ulid::Ulid;
 use crate::error::{Error, Result};
 use crate::record::{
     Anchor, Author, CommentCreate, CommentEvent, CommentEventKind, CommentTarget, Confidence,
-    Description, DescriptionRecord, DiffVersionRecord, ExternalRef, FORMAT_VERSION, Record,
-    RecordBody, Seq, SessionHeader, VersionNumber,
+    Description, DescriptionRecord, DiffVersionRecord, Disposition, ExternalRef, FORMAT_VERSION,
+    Record, RecordBody, Seq, SessionHeader, VersionNumber,
 };
 use crate::session::read_records;
 
@@ -34,6 +34,19 @@ pub struct ReviewState {
     pub description: Option<DescriptionState>,
     /// The comments, in the order they were first created.
     pub comments: Vec<CommentState>,
+    /// Each actor's current verdict on the review, derived from their comments'
+    /// dispositions. An actor without an active verdict is absent.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub verdicts: Vec<ActorVerdict>,
+}
+
+/// An actor's current verdict across the review.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ActorVerdict {
+    /// Whose verdict this is.
+    pub author: Author,
+    /// Their current verdict.
+    pub disposition: Disposition,
 }
 
 /// The current description of a review, reduced from its revisions.
@@ -182,6 +195,9 @@ pub struct CommentState {
         with = "time::serde::rfc3339::option"
     )]
     pub deleted_at: Option<OffsetDateTime>,
+    /// Its current verdict, once anyone has set one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disposition: Option<Disposition>,
     /// How confidently it was last re-anchored, once it has been.
     pub confidence: Option<Confidence>,
     /// The forge object it mirrors, once linked. Unpopulated until a later phase
@@ -226,6 +242,7 @@ impl CommentState {
             deleted: false,
             deleted_by: None,
             deleted_at: None,
+            disposition: create.disposition,
             confidence: None,
             origin: event.origin.clone(),
             synced_marker: event.synced_marker.clone(),
@@ -325,7 +342,7 @@ pub fn fold(records: &[Record]) -> Result<ReviewState> {
     }
 
     let session = session.ok_or(Error::MissingHeader)?;
-    let comments = order
+    let comments: Vec<CommentState> = order
         .into_iter()
         .map(|id| {
             comments
@@ -333,12 +350,65 @@ pub fn fold(records: &[Record]) -> Result<ReviewState> {
                 .expect("id came from an inserted comment")
         })
         .collect();
+    let verdicts = derive_verdicts(&comments);
     Ok(ReviewState {
         session,
         versions,
         description,
         comments,
+        verdicts,
     })
+}
+
+/// Reduce each actor's comments to their current verdict on the review. Each
+/// comment contributes the verdict it currently holds while it is live: a
+/// withdrawn comment, or one its author has resolved (handling the objection),
+/// contributes nothing. Among an actor's contributing comments a request for
+/// changes dominates an approval, so one unresolved blocking comment keeps the
+/// actor blocking even when they have approved elsewhere. Actors appear in the
+/// order their first contributing comment does; an actor with no contributing
+/// verdict is absent.
+///
+/// This is a pure function of the folded comment states, not a replay of the
+/// event log: whether a comment blocks depends only on its final verdict and
+/// resolved state, never on the order surrounding events happened to arrive.
+fn derive_verdicts(comments: &[CommentState]) -> Vec<ActorVerdict> {
+    let mut verdicts: Vec<ActorVerdict> = Vec::new();
+    for comment in comments {
+        let Some(disposition) = contributing_verdict(comment) else {
+            continue;
+        };
+        match verdicts
+            .iter_mut()
+            .find(|verdict| verdict.author == comment.author)
+        {
+            // A request for changes dominates an approval already recorded for
+            // this actor; an approval never downgrades a standing objection.
+            Some(verdict) => {
+                if disposition == Disposition::RequestChanges {
+                    verdict.disposition = Disposition::RequestChanges;
+                }
+            }
+            None => verdicts.push(ActorVerdict {
+                author: comment.author.clone(),
+                disposition,
+            }),
+        }
+    }
+    verdicts
+}
+
+/// The verdict a comment contributes to its author's aggregate, or `None` when
+/// it does not count: it bears no verdict, has been withdrawn, or its author has
+/// resolved it, treating their own resolve as handling the point they raised.
+fn contributing_verdict(comment: &CommentState) -> Option<Disposition> {
+    if comment.deleted {
+        return None;
+    }
+    if comment.resolved && comment.resolved_by.as_ref() == Some(&comment.author) {
+        return None;
+    }
+    comment.disposition
 }
 
 /// Fold one [`DescriptionRecord`] into the running description. Content and
@@ -428,6 +498,21 @@ fn fold_comment_event(
             comment.deleted_at = Some(when);
             comment.updated_by = event.author.clone();
             comment.touch(event, when, seq);
+        }
+        CommentEventKind::SetDisposition { disposition } => {
+            let comment = require_comment(comments, event.id, seq)?;
+            // A verdict is the comment author's own; no one else may set or
+            // clear it, so a foreign one is a corrupt log rather than an
+            // overwrite of someone's judgement.
+            if event.author != comment.author {
+                return Err(Error::InconsistentLog(format!(
+                    "record at seq {seq} sets a verdict on comment {} authored by someone else",
+                    event.id
+                )));
+            }
+            comment.disposition = *disposition;
+            comment.updated_by = event.author.clone();
+            comment.touch(event, event.authored_at.unwrap_or(at), seq);
         }
         CommentEventKind::Reanchor(reanchor) => {
             // A reply has no anchor and is never reanchored. A reanchor onto a

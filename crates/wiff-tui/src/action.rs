@@ -195,6 +195,8 @@ declare_actions! {
         ResolveComment,
         /// Delete or restore the comment
         DeleteComment,
+        /// Cycle your verdict on the comment
+        SetVerdict,
     },
     "Editor" => {
         // The editor's own keys, which act only while it is open.
@@ -316,6 +318,7 @@ mod tests {
             "  edit_comment = Edit the focused comment\n",
             "  resolve_comment = Resolve or unresolve the comment\n",
             "  delete_comment = Delete or restore the comment\n",
+            "  set_verdict = Cycle your verdict on the comment\n",
             "Editor\n",
             "  submit_comment = Submit the comment\n",
             "  cancel_comment = Cancel the comment\n",

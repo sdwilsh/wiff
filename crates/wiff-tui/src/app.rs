@@ -880,6 +880,7 @@ impl App {
             Action::CompareVersions => self.open_compare_picker(),
             Action::ResolveComment => return self.resolve_comment(),
             Action::DeleteComment => return self.delete_comment(),
+            Action::SetVerdict => return self.set_verdict(),
             Action::SelectLines => self.start_selection(),
             Action::CancelComment => return self.cancel_selection(),
             Action::AddComment => return self.start_add_comment(),
@@ -1025,6 +1026,25 @@ impl App {
             }
             self.rerender();
             self.focus_comment(id);
+        }
+        Update::Handled
+    }
+
+    /// Cycle your verdict on the comment the cursor is on, buffering the change
+    /// and re-rendering. A verdict is the comment author's own, so this only
+    /// acts on a comment the review's author wrote. Passes through when no
+    /// review is being edited; does nothing when the cursor is not on such a
+    /// comment.
+    fn set_verdict(&mut self) -> Update {
+        if self.review.is_none() {
+            return Update::Passed(Action::SetVerdict);
+        }
+        if let Some(BoxId::Comment(comment)) = self.comment_at_cursor()
+            && let Some(review) = self.review.as_mut()
+            && review.cycle_disposition(comment)
+        {
+            self.rerender();
+            self.focus_comment(BoxId::Comment(comment));
         }
         Update::Handled
     }
@@ -3512,7 +3532,7 @@ mod tests {
     use ulid::Ulid;
     use wiff_core::record::{
         Author, AuthorKind, CommentEvent, CommentEventKind, CommentTarget, Confidence, Description,
-        DescriptionRecord, RecordBody, Seq, VersionNumber,
+        DescriptionRecord, Disposition, RecordBody, Seq, VersionNumber,
     };
     use wiff_core::review::{CommentState, DescriptionState};
     use wiff_diff::{Diff, FileStatus, LineKind, Side};
@@ -3674,6 +3694,7 @@ mod tests {
             deleted: false,
             deleted_by: None,
             deleted_at: None,
+            disposition: None,
             confidence: None,
             origin: None,
             synced_marker: None,
@@ -3920,6 +3941,35 @@ mod tests {
             dump(&[app.status(28)]),
             "<#cdd1d8|#4f5b66|b>src/lib.rs     * 2 open  33%\n"
         );
+    }
+
+    #[test]
+    fn a_verdict_cycles_only_on_a_comment_you_authored() {
+        // The reviewer authored comment 2 but not comment 1, so a verdict
+        // cycles through none, approve, and request changes on comment 2 while
+        // comment 1 stays untouched.
+        let mut review = commented_review();
+        let dispositions = |review: &Review| -> Vec<Option<Disposition>> {
+            review
+                .comment_states()
+                .iter()
+                .map(|entry| entry.comment.disposition)
+                .collect()
+        };
+        wince::assert_eq!(review.cycle_disposition(Ulid(1)), false);
+        wince::assert_eq!(dispositions(&review), vec![None, None]);
+        wince::assert_eq!(review.cycle_disposition(Ulid(2)), true);
+        wince::assert_eq!(
+            dispositions(&review),
+            vec![None, Some(Disposition::Approve)]
+        );
+        review.cycle_disposition(Ulid(2));
+        wince::assert_eq!(
+            dispositions(&review),
+            vec![None, Some(Disposition::RequestChanges)]
+        );
+        review.cycle_disposition(Ulid(2));
+        wince::assert_eq!(dispositions(&review), vec![None, None]);
     }
 
     #[test]
@@ -6536,6 +6586,7 @@ mod tests {
             deleted: false,
             deleted_by: None,
             deleted_at: None,
+            disposition: None,
             confidence: None,
             origin: None,
             synced_marker: None,

@@ -23,13 +23,13 @@ use time::OffsetDateTime;
 use ulid::Ulid;
 use wiff_diff::Diff;
 
-use crate::comment::{delete_event, edit_event, resolve_event};
+use crate::comment::{delete_event, disposition_event, edit_event, resolve_event};
 use crate::description::local_description;
 use crate::error::Result;
 use crate::rebase::rebase_line_comment;
 use crate::record::{
     Anchor, Author, CommentCreate, CommentEvent, CommentEventKind, CommentTarget, Description,
-    RecordBody, Seq, VersionNumber,
+    Disposition, RecordBody, Seq, VersionNumber,
 };
 use crate::review::{CommentState, DescriptionState};
 
@@ -56,6 +56,12 @@ enum DraftOp {
     },
     /// A withdrawal of a comment, and who made it.
     Delete { id: Ulid, author: Author },
+    /// A change to a comment's verdict, and who made it.
+    SetDisposition {
+        id: Ulid,
+        disposition: Option<Disposition>,
+        author: Author,
+    },
 }
 
 impl DraftOp {
@@ -63,9 +69,10 @@ impl DraftOp {
     fn id(&self) -> Ulid {
         match self {
             DraftOp::Add(event) => event.id,
-            DraftOp::Edit { id, .. } | DraftOp::Resolve { id, .. } | DraftOp::Delete { id, .. } => {
-                *id
-            }
+            DraftOp::Edit { id, .. }
+            | DraftOp::Resolve { id, .. }
+            | DraftOp::Delete { id, .. }
+            | DraftOp::SetDisposition { id, .. } => *id,
         }
     }
 }
@@ -182,6 +189,18 @@ impl DraftBuffer {
         });
     }
 
+    /// Buffer a verdict change for comment `id` by `author`, replacing any
+    /// earlier buffered verdict so only the latest is committed.
+    pub fn set_disposition(&mut self, id: Ulid, disposition: Option<Disposition>, author: Author) {
+        self.ops
+            .retain(|op| !matches!(op, DraftOp::SetDisposition { id: other, .. } if *other == id));
+        self.ops.push(DraftOp::SetDisposition {
+            id,
+            disposition,
+            author,
+        });
+    }
+
     /// Buffer a withdrawal of comment `id`, marking it deleted until commit. The
     /// comment stays in the effective set; the withdrawal is undone with
     /// [`restore`](Self::restore). Deleting is idempotent.
@@ -288,6 +307,13 @@ impl DraftBuffer {
                         state.deleted_by = Some(author.clone());
                     }
                 }
+                DraftOp::SetDisposition {
+                    id, disposition, ..
+                } => {
+                    if let Some(state) = find_mut(&mut states, *id) {
+                        state.disposition = *disposition;
+                    }
+                }
             }
         }
         let pending: Vec<Ulid> = self.ops.iter().map(DraftOp::id).collect();
@@ -350,6 +376,11 @@ impl DraftBuffer {
                     author,
                 } => resolve_event(id, author, resolved),
                 DraftOp::Delete { id, author } => delete_event(id, author),
+                DraftOp::SetDisposition {
+                    id,
+                    disposition,
+                    author,
+                } => disposition_event(id, author, disposition),
             })
             .chain(description)
             .collect()
@@ -376,6 +407,7 @@ pub fn draft_create(
             version,
             anchor,
             body,
+            disposition: None,
         }),
     }
 }
@@ -397,10 +429,10 @@ mod tests {
     use wiff_diff::{Diff, LineNo, Side};
 
     use super::{DraftBuffer, EffectiveComment, EffectiveDescription, draft_create};
-    use crate::comment::{delete_event, edit_event, resolve_event};
+    use crate::comment::{delete_event, disposition_event, edit_event, resolve_event};
     use crate::description::local_description;
     use crate::record::{
-        Author, AuthorKind, CommentEvent, CommentTarget, Description, RecordBody, Seq,
+        Author, AuthorKind, CommentEvent, CommentTarget, Description, Disposition, RecordBody, Seq,
         VersionNumber,
     };
     use crate::review::{CommentState, DescriptionState};
@@ -442,6 +474,7 @@ mod tests {
             deleted: false,
             deleted_by: None,
             deleted_at: None,
+            disposition: None,
             confidence: None,
             origin: None,
             synced_marker: None,
@@ -607,6 +640,45 @@ mod tests {
         wince::assert_eq!(
             buffer.into_records(),
             vec![RecordBody::CommentEvent(drafted(2, "keep me"))]
+        );
+    }
+
+    #[test]
+    fn setting_a_verdict_shows_it_on_the_comment_and_commits_one_event() {
+        let committed = vec![committed_comment(1, "needs work", false)];
+        let mut buffer = DraftBuffer::new();
+        buffer.set_disposition(Ulid(1), Some(Disposition::RequestChanges), actor());
+        let mut expected = committed_comment(1, "needs work", false);
+        expected.disposition = Some(Disposition::RequestChanges);
+        wince::assert_eq!(
+            buffer.apply(&committed),
+            vec![EffectiveComment {
+                comment: expected,
+                pending: true,
+            }]
+        );
+        wince::assert_eq!(
+            buffer.into_records(),
+            vec![disposition_event(
+                Ulid(1),
+                actor(),
+                Some(Disposition::RequestChanges)
+            )]
+        );
+    }
+
+    #[test]
+    fn a_replaced_verdict_commits_only_the_latest() {
+        let mut buffer = DraftBuffer::new();
+        buffer.set_disposition(Ulid(1), Some(Disposition::RequestChanges), actor());
+        buffer.set_disposition(Ulid(1), Some(Disposition::Approve), actor());
+        wince::assert_eq!(
+            buffer.into_records(),
+            vec![disposition_event(
+                Ulid(1),
+                actor(),
+                Some(Disposition::Approve)
+            )]
         );
     }
 

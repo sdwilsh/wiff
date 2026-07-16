@@ -20,7 +20,7 @@ use ratatui::text::{Line, Span};
 use serde::Deserialize;
 use ulid::Ulid;
 use wiff_core::LineOrigin;
-use wiff_core::record::{Author, CommentTarget, Confidence};
+use wiff_core::record::{Author, CommentTarget, Confidence, Disposition};
 use wiff_core::review::{CommentState, threads};
 use wiff_diff::{
     Diff, DiffLine, FileDiff, FileStatus, HighlightError, HighlightedLine, Highlighter, LineKind,
@@ -1973,6 +1973,7 @@ fn rendered_anchors(file: &FileDiff) -> Vec<(Side, u32)> {
 }
 
 /// How a comment badge is tinted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BadgeStyle {
     /// A muted badge such as `resolved`.
     Muted,
@@ -2003,6 +2004,13 @@ fn badges(comment: &CommentState, pending: bool) -> Vec<(String, BadgeStyle)> {
         Some(Confidence::Approximate) => out.push(("shifted".to_string(), BadgeStyle::Warn)),
         Some(Confidence::Outdated) => out.push(("outdated".to_string(), BadgeStyle::Warn)),
         Some(Confidence::Exact) | None => {}
+    }
+    match comment.disposition {
+        Some(Disposition::Approve) => out.push(("approve".to_string(), BadgeStyle::Muted)),
+        Some(Disposition::RequestChanges) => {
+            out.push(("request_changes".to_string(), BadgeStyle::Warn))
+        }
+        None => {}
     }
     if let Some(author) = comment.last_changed_by() {
         out.push((format!("changed by {}", author.name), BadgeStyle::Muted));
@@ -2353,12 +2361,14 @@ mod tests {
     use ratatui::text::Line;
     use time::OffsetDateTime;
     use ulid::Ulid;
-    use wiff_core::record::{Author, AuthorKind, CommentTarget, Confidence, Seq, VersionNumber};
+    use wiff_core::record::{
+        Author, AuthorKind, CommentTarget, Confidence, Disposition, Seq, VersionNumber,
+    };
     use wiff_core::review::CommentState;
     use wiff_diff::{Diff, FileStatus, LineKind, Side};
 
     use super::testutil::{dump, file, ln, theme};
-    use super::{BoxId, CommentRegion, DiffView, ViewLayout};
+    use super::{BadgeStyle, BoxId, CommentRegion, DiffView, ViewLayout, badges};
 
     /// A comment with the given identity, author, target, and body; not resolved
     /// and exactly anchored unless the test overrides those fields.
@@ -2390,12 +2400,38 @@ mod tests {
             deleted: false,
             deleted_by: None,
             deleted_at: None,
+            disposition: None,
             confidence: None,
             origin: None,
             synced_marker: None,
             created_seq: Seq(0),
             updated_seq: Seq(0),
         }
+    }
+
+    #[test]
+    fn a_request_changes_verdict_badges_as_a_warning() {
+        let mut comment = comment(1, ("wez", AuthorKind::Human), CommentTarget::Review, "no");
+        comment.disposition = Some(Disposition::RequestChanges);
+        wince::assert_eq!(
+            badges(&comment, false),
+            vec![("request_changes".to_string(), BadgeStyle::Warn)]
+        );
+    }
+
+    #[test]
+    fn an_approve_verdict_follows_the_draft_and_resolved_badges() {
+        let mut comment = comment(1, ("wez", AuthorKind::Human), CommentTarget::Review, "ok");
+        comment.resolved = true;
+        comment.disposition = Some(Disposition::Approve);
+        wince::assert_eq!(
+            badges(&comment, true),
+            vec![
+                ("draft".to_string(), BadgeStyle::Draft),
+                ("resolved".to_string(), BadgeStyle::Muted),
+                ("approve".to_string(), BadgeStyle::Muted),
+            ]
+        );
     }
 
     /// A line-range target on the after side over `start..=end` of `file`.

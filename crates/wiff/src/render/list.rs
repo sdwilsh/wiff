@@ -65,6 +65,9 @@ fn status(comment: &CommentState) -> String {
         Some(Confidence::Outdated) => parts.push("outdated"),
         Some(Confidence::Exact) | None => {}
     }
+    if let Some(disposition) = comment.disposition {
+        parts.push(disposition.as_str());
+    }
     parts.join(",")
 }
 
@@ -105,9 +108,9 @@ mod tests {
     3 is the loop bound
 00000000000000000000000002  resolved  main.rs (whole file)  assistant (agent)
   needs tests
-00000000000000000000000003  open  review  wez (human)
+00000000000000000000000003  open,approve  review  wez (human)
   overall solid
-00000000000000000000000004  open,shifted  other.rs lines 5-6 (after)  dev (human)  changed by opus (agent)
+00000000000000000000000004  open,shifted,request_changes  other.rs lines 5-6 (after)  dev (human)  changed by opus (agent)
   moved code
 00000000000000000000000005  withdrawn  main.rs line 9 (after)  wez (human)
   never mind

@@ -90,9 +90,9 @@ mod fixture {
     use wiff_core::SidebandHash;
     use wiff_core::record::{
         Anchor, Author, AuthorKind, CommentTarget, Confidence, Description, DiffVersionRecord,
-        FORMAT_VERSION, FileSummary, Seq, SessionHeader, SourceKind, VersionNumber,
+        Disposition, FORMAT_VERSION, FileSummary, Seq, SessionHeader, SourceKind, VersionNumber,
     };
-    use wiff_core::review::{CommentState, DescriptionState, ReviewState};
+    use wiff_core::review::{ActorVerdict, CommentState, DescriptionState, ReviewState};
     use wiff_diff::{FileStatus, LineNo, Side};
 
     fn ulid(text: &str) -> Ulid {
@@ -129,6 +129,7 @@ mod fixture {
             deleted: false,
             deleted_by: None,
             deleted_at: None,
+            disposition: None,
             confidence: None,
             origin: None,
             synced_marker: None,
@@ -176,13 +177,14 @@ mod fixture {
         whole.resolved_at = Some(OffsetDateTime::UNIX_EPOCH);
         whole.updated_by = author("wez", AuthorKind::Human);
         whole.updated_seq = Seq(9);
-        let review = comment(
+        let mut review = comment(
             "00000000000000000000000003",
             author("wez", AuthorKind::Human),
             CommentTarget::Review,
             "overall solid",
             4,
         );
+        review.disposition = Some(Disposition::Approve);
         let reply = comment(
             "00000000000000000000000006",
             author("opus", AuthorKind::Agent),
@@ -199,6 +201,7 @@ mod fixture {
             "moved code",
             5,
         );
+        shifted.disposition = Some(Disposition::RequestChanges);
         shifted.confidence = Some(Confidence::Approximate);
         // An agent later edited this human's comment, so it is attributed to the
         // agent while its author stays the human. A reanchor alone would leave
@@ -258,6 +261,16 @@ mod fixture {
                 synced_marker: None,
             }),
             comments: vec![line, whole, review, shifted, gone, reply, reply_to_gone],
+            verdicts: vec![
+                ActorVerdict {
+                    author: author("wez", AuthorKind::Human),
+                    disposition: Disposition::Approve,
+                },
+                ActorVerdict {
+                    author: author("dev", AuthorKind::Human),
+                    disposition: Disposition::RequestChanges,
+                },
+            ],
         }
     }
 }

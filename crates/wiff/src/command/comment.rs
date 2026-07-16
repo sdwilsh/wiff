@@ -3,9 +3,11 @@
 use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
 use ulid::Ulid;
-use wiff_core::record::CommentTarget;
+use wiff_core::record::{CommentTarget, Disposition};
 use wiff_core::review::ReviewState;
-use wiff_core::{DraftComment, LockWait, SessionLog, delete_comment, set_resolved};
+use wiff_core::{
+    DraftComment, LockWait, SessionLog, delete_comment, set_disposition, set_resolved,
+};
 use wiff_diff::{LineNo, Side};
 
 use super::{read_piped_stdin, resolve_author, resolve_session};
@@ -25,6 +27,7 @@ impl CommentArgs {
             CommentCommand::Add(args) => args.run().await,
             CommentCommand::List(args) => args.run(),
             CommentCommand::Resolve(args) => args.run(),
+            CommentCommand::Verdict(args) => args.run(),
             CommentCommand::Rm(args) => args.run(),
         }
     }
@@ -39,6 +42,8 @@ enum CommentCommand {
     List(CommentListArgs),
     /// Mark a comment resolved, or reopen it.
     Resolve(CommentResolveArgs),
+    /// Set or clear a comment's verdict.
+    Verdict(CommentVerdictArgs),
     /// Withdraw a comment.
     Rm(CommentRmArgs),
 }
@@ -65,6 +70,10 @@ struct CommentAddArgs {
     /// The comment body. When omitted, it is read from stdin.
     #[arg(long)]
     body: Option<String>,
+    /// This comment's verdict: sign off, ask for changes, or `none` to leave it
+    /// a neutral remark (the default).
+    #[arg(long, value_enum)]
+    verdict: Option<VerdictArg>,
     /// The author's display name.
     #[arg(long)]
     author: Option<String>,
@@ -91,6 +100,7 @@ impl CommentAddArgs {
             author,
             target,
             body,
+            disposition: self.verdict.and_then(VerdictArg::into_disposition),
         }
         .append(&mut log, LockWait::Block)?;
         println!("added comment {} (seq {})", added.id, added.seq);
@@ -180,6 +190,50 @@ impl CommentResolveArgs {
     }
 }
 
+/// Arguments for `wiff comment verdict`.
+#[derive(Debug, Args)]
+struct CommentVerdictArgs {
+    /// The id of the comment to set a verdict on. Only its author may.
+    id: String,
+    /// The verdict: `approve`, `request_changes`, or `none` to return to
+    /// neutral.
+    verdict: VerdictArg,
+    /// The author's display name.
+    #[arg(long)]
+    author: Option<String>,
+    /// Attribute the change to an agent rather than a human.
+    #[arg(long)]
+    agent: bool,
+    /// Act on a specific session by ULID instead of the active one.
+    #[arg(long)]
+    session: Option<String>,
+    /// Force the project bucket name when it cannot be derived from the cwd.
+    #[arg(long)]
+    project: Option<String>,
+}
+
+impl CommentVerdictArgs {
+    /// Set or clear a comment's verdict and report the outcome.
+    fn run(self) -> anyhow::Result<()> {
+        let path = resolve_session(self.session.as_deref(), self.project.as_deref())?;
+        let id = parse_id(&self.id)?;
+        let author = resolve_author(self.agent, self.author.clone())?;
+        let disposition = self.verdict.into_disposition();
+        let mut log = SessionLog::open(&path)?;
+        let comment = set_disposition(&mut log, id, disposition, author, LockWait::Block)?;
+        println!("{}", verdict_outcome(comment.id, disposition));
+        Ok(())
+    }
+}
+
+/// The line reported after setting or clearing comment `id`'s verdict.
+fn verdict_outcome(id: Ulid, disposition: Option<Disposition>) -> String {
+    match disposition {
+        Some(disposition) => format!("set comment {id} to {}", disposition.as_str()),
+        None => format!("cleared the verdict on comment {id}"),
+    }
+}
+
 /// Arguments for `wiff comment rm`.
 #[derive(Debug, Args)]
 struct CommentRmArgs {
@@ -209,6 +263,31 @@ impl CommentRmArgs {
         let comment = delete_comment(&mut log, id, author, LockWait::Block)?;
         println!("withdrew comment {}", comment.id);
         Ok(())
+    }
+}
+
+/// A verdict word accepted on the command line: sign off, ask for changes, or
+/// `none` for a neutral remark. `add` and `verdict` share it; on `add`, `none`
+/// (or omitting the flag) leaves the comment without a verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum VerdictArg {
+    /// Sign off on the change.
+    Approve,
+    /// Ask for changes before the change is accepted.
+    #[value(name = "request_changes")]
+    RequestChanges,
+    /// Leave the comment a neutral remark, or return it to one.
+    None,
+}
+
+impl VerdictArg {
+    /// The disposition this word sets, or `None` for a neutral remark.
+    fn into_disposition(self) -> Option<Disposition> {
+        match self {
+            VerdictArg::Approve => Some(Disposition::Approve),
+            VerdictArg::RequestChanges => Some(Disposition::RequestChanges),
+            VerdictArg::None => Option::None,
+        }
     }
 }
 
@@ -266,4 +345,53 @@ async fn comment_body(body: Option<String>) -> anyhow::Result<String> {
         bail!("provide the comment with --body or pipe it on stdin");
     };
     Ok(text.trim_end().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use ulid::Ulid;
+    use wiff_core::record::Disposition;
+
+    use super::{VerdictArg, verdict_outcome};
+
+    #[test]
+    fn each_verdict_word_maps_to_its_disposition_or_clears_it() {
+        let mapped: Vec<Option<Disposition>> = [
+            VerdictArg::Approve,
+            VerdictArg::RequestChanges,
+            VerdictArg::None,
+        ]
+        .into_iter()
+        .map(VerdictArg::into_disposition)
+        .collect();
+        wince::assert_eq!(
+            mapped,
+            vec![
+                Some(Disposition::Approve),
+                Some(Disposition::RequestChanges),
+                None,
+            ]
+        );
+    }
+
+    #[test]
+    fn the_outcome_line_reports_the_verdict_set_or_that_it_was_cleared() {
+        let id = Ulid::from_string("00000000000000000000000001").unwrap();
+        let lines: Vec<String> = [
+            Some(Disposition::Approve),
+            Some(Disposition::RequestChanges),
+            None,
+        ]
+        .into_iter()
+        .map(|disposition| verdict_outcome(id, disposition))
+        .collect();
+        wince::assert_eq!(
+            lines,
+            vec![
+                "set comment 00000000000000000000000001 to approve".to_string(),
+                "set comment 00000000000000000000000001 to request_changes".to_string(),
+                "cleared the verdict on comment 00000000000000000000000001".to_string(),
+            ]
+        );
+    }
 }

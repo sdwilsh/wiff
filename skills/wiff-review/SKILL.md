@@ -91,6 +91,8 @@ wiff comment add --agent --reply-to 01J8ZC0FRESQ5S6M00P8NJBBJD --body "Agreed, d
   before` refers to the pre-change content.
 - `--file F` with no `--line` comments on the whole file; `--review` comments on
   the change overall.
+- `--verdict approve` or `--verdict request_changes` records a verdict along
+  with the comment. A comment without one is a neutral remark.
 - Provide the body with `--body`, or pipe it on stdin for anything long or
   multi-line:
 
@@ -104,10 +106,15 @@ To revise your own comments:
 wiff comment list
 wiff comment resolve --agent 01J8ZC0FRESQ5S6M00P8NJBBJD
 wiff comment resolve --agent --reopen 01J8ZC0FRESQ5S6M00P8NJBBJD
+wiff comment verdict --agent 01J8ZC0FRESQ5S6M00P8NJBBJD request_changes
 wiff comment rm --agent 01J8ZC0FRESQ5S6M00P8NJBBJD
 ```
 
 - `wiff comment resolve <id>` marks a comment resolved; `--reopen` undoes that.
+- `wiff comment verdict <id> approve|request_changes|none` sets or clears the
+  verdict on your own comment. Only its author may. `wiff render` reports each
+  actor's current verdict, reduced from their comments, under a `## Verdicts`
+  heading and in a top-level `verdicts` field in the JSON.
 - `wiff comment rm <id>` withdraws a comment.
 
 ## Describing the review

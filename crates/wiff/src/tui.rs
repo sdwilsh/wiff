@@ -615,6 +615,7 @@ mod tests {
                 end_line: LineNo::new(4).unwrap(),
             },
             body: "why delta?".to_string(),
+            disposition: None,
         }
         .append(&mut log, LockWait::Block)
         .expect("attach comment");
@@ -1065,6 +1066,7 @@ new file mode 100644
                 version,
                 anchor: None,
                 body: "alpha looks off".to_string(),
+                disposition: None,
             }),
         }))
         .expect("append comment");

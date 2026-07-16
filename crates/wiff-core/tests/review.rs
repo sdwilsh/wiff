@@ -2,14 +2,16 @@
 
 use time::OffsetDateTime;
 use ulid::Ulid;
-use wiff_core::comment::{delete_event, edit_event, reanchor_event, resolve_event};
+use wiff_core::comment::{
+    delete_event, disposition_event, edit_event, reanchor_event, resolve_event,
+};
 use wiff_core::record::{
     Anchor, Author, AuthorKind, CommentCreate, CommentEvent, CommentEventKind, CommentReanchor,
-    CommentTarget, Confidence, Description, DescriptionRecord, DiffVersionRecord, ExternalKind,
-    ExternalRef, FORMAT_VERSION, FileSummary, ForgeId, Record, RecordBody, Seq, SessionHeader,
-    SourceKind, VersionNumber,
+    CommentTarget, Confidence, Description, DescriptionRecord, DiffVersionRecord, Disposition,
+    ExternalKind, ExternalRef, FORMAT_VERSION, FileSummary, ForgeId, Record, RecordBody, Seq,
+    SessionHeader, SourceKind, VersionNumber,
 };
-use wiff_core::review::{CommentState, DescriptionState, ReviewState, fold, threads};
+use wiff_core::review::{ActorVerdict, CommentState, DescriptionState, ReviewState, fold, threads};
 use wiff_core::{Error, SidebandHash};
 use wiff_diff::{FileStatus, LineNo, Side};
 
@@ -60,6 +62,7 @@ fn create_event(
             version: VersionNumber(version),
             anchor,
             body: body.to_string(),
+            disposition: None,
         }),
     })
 }
@@ -188,6 +191,7 @@ fn folds_versions_and_comment_chains() {
                 deleted: false,
                 deleted_by: None,
                 deleted_at: None,
+                disposition: None,
                 confidence: None,
                 origin: None,
                 synced_marker: None,
@@ -212,6 +216,7 @@ fn folds_versions_and_comment_chains() {
                 deleted: true,
                 deleted_by: Some(human("dev")),
                 deleted_at: Some(OffsetDateTime::UNIX_EPOCH),
+                disposition: None,
                 confidence: Some(Confidence::Approximate),
                 origin: None,
                 synced_marker: None,
@@ -234,6 +239,7 @@ fn folds_versions_and_comment_chains() {
                 deleted: false,
                 deleted_by: None,
                 deleted_at: None,
+                disposition: None,
                 confidence: None,
                 origin: None,
                 synced_marker: None,
@@ -241,6 +247,7 @@ fn folds_versions_and_comment_chains() {
                 updated_seq: Seq(9),
             },
         ],
+        verdicts: Vec::new(),
     };
     wince::assert_eq!(state, expected);
     wince::assert_eq!(state.latest_version(), Some(&version(1, "src/lib.rs")));
@@ -318,6 +325,7 @@ fn an_imported_events_folded_time_comes_from_its_authored_time() {
             version: VersionNumber(0),
             anchor: None,
             body: "imported".to_string(),
+            disposition: None,
         }),
     });
     let imported_edit = RecordBody::CommentEvent(CommentEvent {
@@ -526,6 +534,7 @@ fn a_reply_folds_with_its_parent_recorded_and_threads_under_it() {
             deleted: false,
             deleted_by: None,
             deleted_at: None,
+            disposition: None,
             confidence: None,
             origin: None,
             synced_marker: None,
@@ -548,6 +557,7 @@ fn a_reply_folds_with_its_parent_recorded_and_threads_under_it() {
             deleted: false,
             deleted_by: None,
             deleted_at: None,
+            disposition: None,
             confidence: None,
             origin: None,
             synced_marker: None,
@@ -907,5 +917,371 @@ fn an_imported_descriptions_folded_time_comes_from_its_authored_time() {
             origin: Some(pull_body_ref()),
             synced_marker: Some("etag-1".to_string()),
         })
+    );
+}
+
+/// A review-level create for `id` by `author` that sets `disposition` from
+/// the moment it exists.
+fn create_verdict_event(
+    id: Ulid,
+    author: Author,
+    disposition: Disposition,
+    body: &str,
+) -> RecordBody {
+    RecordBody::CommentEvent(CommentEvent {
+        id,
+        author,
+        authored_at: None,
+        origin: None,
+        synced_marker: None,
+        kind: CommentEventKind::Create(CommentCreate {
+            target: CommentTarget::Review,
+            version: VersionNumber(0),
+            anchor: None,
+            body: body.to_string(),
+            disposition: Some(disposition),
+        }),
+    })
+}
+
+/// The per-comment verdict of each comment, in comment order, alongside the
+/// review's derived per-actor verdicts.
+fn verdicts(state: &ReviewState) -> (Vec<Option<Disposition>>, Vec<ActorVerdict>) {
+    (
+        state.comments.iter().map(|c| c.disposition).collect(),
+        state.verdicts.clone(),
+    )
+}
+
+#[test]
+fn each_actor_gets_their_own_verdict() {
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            create_verdict_event(comment_a(), human("wez"), Disposition::Approve, "lgtm"),
+        ),
+        rec(
+            3,
+            create_verdict_event(comment_b(), human("dev"), Disposition::RequestChanges, "no"),
+        ),
+    ];
+
+    let state = fold(&records).unwrap();
+    wince::assert_eq!(
+        verdicts(&state),
+        (
+            vec![
+                Some(Disposition::Approve),
+                Some(Disposition::RequestChanges)
+            ],
+            vec![
+                ActorVerdict {
+                    author: human("wez"),
+                    disposition: Disposition::Approve,
+                },
+                ActorVerdict {
+                    author: human("dev"),
+                    disposition: Disposition::RequestChanges,
+                },
+            ],
+        )
+    );
+}
+
+#[test]
+fn a_set_disposition_on_an_older_comment_outranks_a_later_neutral_one() {
+    // wez leaves two neutral comments, then sets a verdict on the earlier one.
+    // The verdict comes from the latest verdict-bearing event, not the newest
+    // comment.
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            create_event(
+                comment_a(),
+                human("wez"),
+                CommentTarget::Review,
+                0,
+                None,
+                "one",
+            ),
+        ),
+        rec(
+            3,
+            create_event(
+                comment_b(),
+                human("wez"),
+                CommentTarget::Review,
+                0,
+                None,
+                "two",
+            ),
+        ),
+        rec(
+            4,
+            disposition_event(comment_a(), human("wez"), Some(Disposition::RequestChanges)),
+        ),
+    ];
+
+    let state = fold(&records).unwrap();
+    wince::assert_eq!(
+        verdicts(&state),
+        (
+            vec![Some(Disposition::RequestChanges), None],
+            vec![ActorVerdict {
+                author: human("wez"),
+                disposition: Disposition::RequestChanges,
+            }],
+        )
+    );
+}
+
+#[test]
+fn a_set_disposition_by_someone_other_than_the_author_is_a_corrupt_log() {
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            create_event(
+                comment_a(),
+                human("wez"),
+                CommentTarget::Review,
+                0,
+                None,
+                "mine",
+            ),
+        ),
+        rec(
+            3,
+            disposition_event(comment_a(), human("dev"), Some(Disposition::Approve)),
+        ),
+    ];
+
+    let error = fold(&records).unwrap_err();
+    wince::assert_eq!(matches!(error, Error::InconsistentLog(_)), true);
+    wince::snapshot_display!(
+        error,
+        "inconsistent session log: record at seq 3 sets a verdict on comment 00000000000000000000000000 authored by someone else"
+    );
+}
+
+#[test]
+fn resolving_your_own_blocking_comment_withdraws_your_verdict() {
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            create_verdict_event(
+                comment_a(),
+                human("wez"),
+                Disposition::RequestChanges,
+                "fix this",
+            ),
+        ),
+        rec(3, resolve_event(comment_a(), human("wez"), true)),
+    ];
+
+    let state = fold(&records).unwrap();
+    // The comment still bears its verdict, but the actor's derived verdict is
+    // cleared by resolving it.
+    wince::assert_eq!(
+        verdicts(&state),
+        (vec![Some(Disposition::RequestChanges)], Vec::new())
+    );
+}
+
+#[test]
+fn reopening_a_resolved_blocking_comment_reasserts_the_request() {
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            create_verdict_event(
+                comment_a(),
+                human("wez"),
+                Disposition::RequestChanges,
+                "fix this",
+            ),
+        ),
+        rec(3, resolve_event(comment_a(), human("wez"), true)),
+        rec(4, resolve_event(comment_a(), human("wez"), false)),
+    ];
+
+    let state = fold(&records).unwrap();
+    wince::assert_eq!(
+        verdicts(&state),
+        (
+            vec![Some(Disposition::RequestChanges)],
+            vec![ActorVerdict {
+                author: human("wez"),
+                disposition: Disposition::RequestChanges,
+            }],
+        )
+    );
+}
+
+#[test]
+fn a_verdict_collapses_from_request_changes_to_approve_then_to_neutral() {
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            create_verdict_event(
+                comment_a(),
+                human("wez"),
+                Disposition::RequestChanges,
+                "concern",
+            ),
+        ),
+        rec(
+            3,
+            disposition_event(comment_a(), human("wez"), Some(Disposition::Approve)),
+        ),
+        rec(4, disposition_event(comment_a(), human("wez"), None)),
+    ];
+
+    let state = fold(&records).unwrap();
+    // The neutral set leaves the comment with no verdict and clears the
+    // actor's derived verdict.
+    wince::assert_eq!(verdicts(&state), (vec![None], Vec::new()));
+}
+
+#[test]
+fn a_later_approval_does_not_mask_an_unresolved_blocking_comment() {
+    // wez blocks on comment A and approves on comment B. The standing objection
+    // dominates: a later approval on an unrelated comment must not clear it.
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            create_verdict_event(
+                comment_a(),
+                human("wez"),
+                Disposition::RequestChanges,
+                "fix A",
+            ),
+        ),
+        rec(
+            3,
+            create_verdict_event(comment_b(), human("wez"), Disposition::Approve, "B is fine"),
+        ),
+    ];
+
+    let state = fold(&records).unwrap();
+    wince::assert_eq!(
+        verdicts(&state),
+        (
+            vec![
+                Some(Disposition::RequestChanges),
+                Some(Disposition::Approve)
+            ],
+            vec![ActorVerdict {
+                author: human("wez"),
+                disposition: Disposition::RequestChanges,
+            }],
+        )
+    );
+}
+
+#[test]
+fn resolving_one_blocking_comment_leaves_a_separate_approval_standing() {
+    // wez blocks on A and approves on B, then resolves A. Resolving the blocker
+    // must not clobber the approval from the unrelated comment B.
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            create_verdict_event(
+                comment_a(),
+                human("wez"),
+                Disposition::RequestChanges,
+                "fix A",
+            ),
+        ),
+        rec(
+            3,
+            create_verdict_event(comment_b(), human("wez"), Disposition::Approve, "B is fine"),
+        ),
+        rec(4, resolve_event(comment_a(), human("wez"), true)),
+    ];
+
+    let state = fold(&records).unwrap();
+    wince::assert_eq!(
+        verdicts(&state),
+        (
+            vec![
+                Some(Disposition::RequestChanges),
+                Some(Disposition::Approve)
+            ],
+            vec![ActorVerdict {
+                author: human("wez"),
+                disposition: Disposition::Approve,
+            }],
+        )
+    );
+}
+
+#[test]
+fn a_resolve_after_reapproving_a_blocking_comment_clears_the_verdict() {
+    // A comment blocks, is re-set to approve, then resolved by its author. The
+    // result depends only on the final state (approved and resolved by the
+    // author), not on the order the resolve and re-set arrived, so the comment
+    // contributes nothing and the actor has no verdict.
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            create_verdict_event(
+                comment_a(),
+                human("wez"),
+                Disposition::RequestChanges,
+                "fix this",
+            ),
+        ),
+        rec(
+            3,
+            disposition_event(comment_a(), human("wez"), Some(Disposition::Approve)),
+        ),
+        rec(4, resolve_event(comment_a(), human("wez"), true)),
+    ];
+
+    let state = fold(&records).unwrap();
+    wince::assert_eq!(
+        verdicts(&state),
+        (vec![Some(Disposition::Approve)], Vec::new())
+    );
+}
+
+#[test]
+fn a_withdrawn_comment_is_excluded_from_verdict_derivation() {
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            create_verdict_event(
+                comment_a(),
+                human("wez"),
+                Disposition::RequestChanges,
+                "never mind",
+            ),
+        ),
+        rec(3, delete_event(comment_a(), human("wez"))),
+    ];
+
+    let state = fold(&records).unwrap();
+    wince::assert_eq!(
+        verdicts(&state),
+        (vec![Some(Disposition::RequestChanges)], Vec::new())
     );
 }

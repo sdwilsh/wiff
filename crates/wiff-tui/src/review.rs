@@ -14,7 +14,9 @@ use time::OffsetDateTime;
 use ulid::Ulid;
 use wiff_core::LineOrigin;
 use wiff_core::draft::{DraftBuffer, EffectiveComment, draft_create};
-use wiff_core::record::{Author, CommentTarget, Description, RecordBody, Seq, VersionNumber};
+use wiff_core::record::{
+    Author, CommentTarget, Description, Disposition, RecordBody, Seq, VersionNumber,
+};
 use wiff_core::review::{CommentState, DescriptionState};
 use wiff_diff::{Diff, LiveHighlighter, Side};
 
@@ -304,6 +306,7 @@ impl Review {
             deleted: false,
             deleted_by: None,
             deleted_at: None,
+            disposition: None,
             confidence: None,
             origin: None,
             synced_marker: None,
@@ -362,6 +365,31 @@ impl Review {
             .find(|entry| entry.comment.id == id)
             .is_some_and(|entry| entry.comment.resolved);
         self.drafts.resolve(id, !resolved, self.author.clone());
+    }
+
+    /// Cycle the verdict on comment `id` through none, approve, and request
+    /// changes, buffering the change. A verdict is the comment author's own, so
+    /// this does nothing unless the review's author authored the comment;
+    /// returns whether the cycle applied.
+    pub fn cycle_disposition(&mut self, id: Ulid) -> bool {
+        let Some(entry) = self
+            .drafts
+            .apply(&self.committed)
+            .into_iter()
+            .find(|entry| entry.comment.id == id)
+        else {
+            return false;
+        };
+        if entry.comment.author != self.author {
+            return false;
+        }
+        let next = match entry.comment.disposition {
+            None => Some(Disposition::Approve),
+            Some(Disposition::Approve) => Some(Disposition::RequestChanges),
+            Some(Disposition::RequestChanges) => None,
+        };
+        self.drafts.set_disposition(id, next, self.author.clone());
+        true
     }
 
     /// Toggle the deleted state of comment `id`, buffering the change, and
@@ -597,6 +625,7 @@ mod tests {
             deleted: false,
             deleted_by: None,
             deleted_at: None,
+            disposition: None,
             confidence: None,
             origin: None,
             synced_marker: None,

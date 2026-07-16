@@ -171,6 +171,7 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
         (Action::EditComment, vec![chord("e")]),
         (Action::ResolveComment, vec![chord("r")]),
         (Action::DeleteComment, vec![chord("d")]),
+        (Action::SetVerdict, vec![chord("a")]),
         // The inline editor's own keys, honored only while it is open, so ctrl-d
         // and esc stay free for the review view.
         (Action::SubmitComment, vec![chord("ctrl-d")]),

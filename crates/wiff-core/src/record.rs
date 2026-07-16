@@ -374,6 +374,27 @@ pub struct Anchor {
     pub context_after: Vec<String>,
 }
 
+/// A reviewer's verdict on a comment: a sign-off or a request for
+/// changes. A comment without one is a neutral remark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Disposition {
+    /// Signs off on the change.
+    Approve,
+    /// Asks for changes before the change is accepted.
+    RequestChanges,
+}
+
+impl Disposition {
+    /// The stable identifier for this verdict, matching its serialized form.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Disposition::Approve => "approve",
+            Disposition::RequestChanges => "request_changes",
+        }
+    }
+}
+
 /// How confidently a comment was re-anchored onto a newer diff version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -420,7 +441,7 @@ pub struct CommentEvent {
     pub kind: CommentEventKind,
 }
 
-/// What a [`CommentEvent`] does. Later phases add `SetDisposition` and `Link`.
+/// What a [`CommentEvent`] does. A later phase adds `Link`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum CommentEventKind {
@@ -438,6 +459,13 @@ pub enum CommentEventKind {
     },
     /// Withdraw a comment (a tombstone).
     Delete,
+    /// Set or clear the comment's verdict. Only the comment's author
+    /// may write one; fold rejects one authored by anyone else.
+    SetDisposition {
+        /// The new verdict, or `None` to return the comment to neutral.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        disposition: Option<Disposition>,
+    },
     /// Re-anchor a comment onto a newer diff version.
     Reanchor(CommentReanchor),
 }
@@ -454,6 +482,9 @@ pub struct CommentCreate {
     pub anchor: Option<Anchor>,
     /// The comment text.
     pub body: String,
+    /// The comment's verdict from the moment it is created, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disposition: Option<Disposition>,
 }
 
 /// A re-anchoring of a comment onto a newer diff version. The comment's id lives
@@ -566,6 +597,7 @@ mod tests {
                 version: VersionNumber(0),
                 anchor: None,
                 body: "looks good".to_string(),
+                disposition: None,
             }),
         };
         let json = serde_json::to_string(&event).expect("serialize");

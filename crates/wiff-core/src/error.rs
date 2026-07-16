@@ -86,6 +86,12 @@ pub enum Error {
     #[error("cannot reply to withdrawn comment {0}")]
     WithdrawnComment(Ulid),
 
+    /// A verdict was set on a comment authored by someone else. A verdict is the
+    /// comment author's own, so this is refused rather than written, which would
+    /// make fold reject the whole log.
+    #[error("cannot set a verdict on comment {0}, which you did not author")]
+    ForeignDisposition(Ulid),
+
     /// A session was written by a format version that does not match this
     /// build's, older or newer, so it cannot be safely interpreted. wiff is
     /// pre-release with no migration: discard the session and re-capture.

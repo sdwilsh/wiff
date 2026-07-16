@@ -65,6 +65,7 @@ fn session_with_gamma_comment() -> (tempfile::TempDir, SessionLog, Ulid) {
             end_line: LineNo::new(3).unwrap(),
         },
         body: "why gamma?".to_string(),
+        disposition: None,
     }
     .append(&mut log, LockWait::Block)
     .unwrap();
@@ -137,6 +138,7 @@ fn expected_comment(
         deleted: false,
         deleted_by: None,
         deleted_at: None,
+        disposition: None,
         confidence,
         origin: None,
         synced_marker: None,
@@ -315,6 +317,7 @@ fn a_refresh_reanchors_the_parent_but_leaves_its_reply_in_place() {
         author: agent(),
         target: CommentTarget::Comment { id: parent },
         body: "seconded".to_string(),
+        disposition: None,
     }
     .append(&mut log, LockWait::Block)
     .unwrap()
