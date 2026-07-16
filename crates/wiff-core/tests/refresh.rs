@@ -298,6 +298,75 @@ new file mode 100644
 }
 
 #[test]
+fn a_refresh_reanchors_the_parent_but_leaves_its_reply_in_place() {
+    // A reply has no anchor of its own, so a refresh that moves its parent's
+    // line reanchors the parent and never emits a reanchor for the reply: the
+    // reply keeps its parent target, its authored-against version, and the
+    // update sequence it was created at.
+    let (_base, mut log, parent) = session_with_gamma_comment();
+    let reply = DraftComment {
+        author: agent(),
+        target: CommentTarget::Comment { id: parent },
+        body: "seconded".to_string(),
+    }
+    .append(&mut log, LockWait::Block)
+    .unwrap()
+    .id;
+    let v1 = "\
+diff --git a/f.txt b/f.txt
+new file mode 100644
+--- /dev/null
++++ b/f.txt
+@@ -0,0 +1,5 @@
++zero
++alpha
++beta
++gamma
++delta
+";
+    let outcome = refresh_session(&mut log, v1, author(), LockWait::Block).unwrap();
+    // Only the parent line comment rebases; the reply is not counted.
+    wince::assert_eq!(
+        outcome,
+        Some(RefreshOutcome {
+            version: VersionNumber(1),
+            exact: 1,
+            approximate: 0,
+            outdated: 0,
+        })
+    );
+    let state = fold(&read_records(log.path()).unwrap()).unwrap();
+    let placed: Vec<(Ulid, CommentTarget, Option<Ulid>, u32, u64, u64)> = state
+        .comments
+        .iter()
+        .map(|comment| {
+            (
+                comment.id,
+                comment.target.clone(),
+                comment.reply_to(),
+                comment.version.get(),
+                comment.created_seq.get(),
+                comment.updated_seq.get(),
+            )
+        })
+        .collect();
+    wince::assert_eq!(
+        placed,
+        vec![
+            (parent, lines_target(4, 4), None, 1, 2, 5),
+            (
+                reply,
+                CommentTarget::Comment { id: parent },
+                Some(parent),
+                0,
+                3,
+                3
+            ),
+        ]
+    );
+}
+
+#[test]
 fn an_identical_diff_captures_nothing() {
     let (_base, mut log, id) = session_with_gamma_comment();
     let outcome = refresh_session(&mut log, V0, author(), LockWait::Block).unwrap();

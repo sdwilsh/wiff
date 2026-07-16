@@ -74,10 +74,15 @@ wiff comment add --agent --file src/lib.rs --line 10-14 --body "Extract this loo
 wiff comment add --agent --file src/lib.rs --line 42 --side before --body "..."
 wiff comment add --agent --file src/lib.rs --body "This module needs tests."
 wiff comment add --agent --review --body "Overall the change reads well."
+wiff comment add --agent --reply-to 01J8ZC0FRESQ5S6M00P8NJBBJD --body "Agreed, done."
 ```
 
 - `--file F --line N` comments on a single line; `--line N-M` on an inclusive
   range. Line numbers are 1-based.
+- `--reply-to <id>` replies to an existing comment, forming a thread. A reply
+  takes its position from the comment it answers, so it needs no file or line.
+  A thread shows as a flat sequence in the order the replies were written; a
+  reply to a withdrawn comment is refused.
 - `--side after` (the default) refers to the post-change content; `--side
   before` refers to the pre-change content.
 - `--file F` with no `--line` comments on the whole file; `--review` comments on
@@ -93,9 +98,9 @@ To revise your own comments:
 
 ```bash
 wiff comment list
-wiff comment resolve --agent 01J8ZC0FEXAMPLECOMMENT7
-wiff comment resolve --agent --reopen 01J8ZC0FEXAMPLECOMMENT7
-wiff comment rm --agent 01J8ZC0FEXAMPLECOMMENT7
+wiff comment resolve --agent 01J8ZC0FRESQ5S6M00P8NJBBJD
+wiff comment resolve --agent --reopen 01J8ZC0FRESQ5S6M00P8NJBBJD
+wiff comment rm --agent 01J8ZC0FRESQ5S6M00P8NJBBJD
 ```
 
 - `wiff comment resolve <id>` marks a comment resolved; `--reopen` undoes that.

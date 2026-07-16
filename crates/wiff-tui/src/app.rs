@@ -342,6 +342,7 @@ fn comment_location(target: &CommentTarget) -> String {
         }
         CommentTarget::File { file } => file.clone(),
         CommentTarget::Review => "review".to_string(),
+        CommentTarget::Comment { .. } => "reply".to_string(),
     }
 }
 

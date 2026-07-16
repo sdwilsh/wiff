@@ -21,7 +21,7 @@ use serde::Deserialize;
 use ulid::Ulid;
 use wiff_core::LineOrigin;
 use wiff_core::record::{Author, CommentTarget, Confidence};
-use wiff_core::review::CommentState;
+use wiff_core::review::{CommentState, threads};
 use wiff_diff::{
     Diff, DiffLine, FileDiff, FileStatus, HighlightError, HighlightedLine, Highlighter, LineKind,
     LineNo, LiveHighlighter, ParsedSide, Parser, Rgb, Section, SectionMatchers, Side, StyledSpan,
@@ -791,12 +791,12 @@ impl DiffView {
                 String::new(),
                 self.review_summary(),
             );
-            for comment in &placement.review {
-                self.push_comment(
+            for placed in &placement.review {
+                self.push_thread(
                     &mut doc,
                     NO_FILE,
-                    comment,
-                    pending.contains(&comment.id),
+                    placed,
+                    pending,
                     BoxPlacement {
                         width: layout.width,
                         column: None,
@@ -847,12 +847,12 @@ impl DiffView {
             file.display_path().to_string(),
             self.file_header(file),
         );
-        for comment in &placement.header {
-            self.push_comment(
+        for placed in &placement.header {
+            self.push_thread(
                 doc,
                 index,
-                comment,
-                pending.contains(&comment.id),
+                placed,
+                pending,
                 BoxPlacement {
                     width,
                     column: None,
@@ -980,12 +980,12 @@ impl DiffView {
                 ),
             };
             if let Some(n) = lineno {
-                for comment in e.placement.at(side, n.get()) {
-                    self.push_comment(
+                for lc in e.placement.at(side, n.get()) {
+                    self.push_thread(
                         doc,
                         e.index,
-                        comment,
-                        e.pending.contains(&comment.id),
+                        &lc.placed,
+                        e.pending,
                         BoxPlacement {
                             width,
                             column: None,
@@ -1117,12 +1117,12 @@ impl DiffView {
         };
         let Some(n) = number else { return };
         let (_, col_width) = column_bounds(e.layout.width, side);
-        for comment in e.placement.at(side, n.get()) {
-            self.push_comment(
+        for lc in e.placement.at(side, n.get()) {
+            self.push_thread(
                 doc,
                 e.index,
-                comment,
-                e.pending.contains(&comment.id),
+                &lc.placed,
+                e.pending,
                 BoxPlacement {
                     width: col_width,
                     column: Some(side),
@@ -1216,7 +1216,7 @@ impl DiffView {
             ) else {
                 continue;
             };
-            let color = self.comment_border(pending.contains(&lc.comment.id));
+            let color = self.comment_border(pending.contains(&lc.placed.comment.id));
             let column = rail_column(layout.mode, lc.side, layout.width);
             for row in start_row..=end_row {
                 if !matches!(doc.rows[row].kind, RowKind::Content { .. }) {
@@ -1269,6 +1269,38 @@ impl DiffView {
                     .bg(bg),
             ),
         ])
+    }
+
+    /// Push a root comment box and the reply boxes threaded beneath it, in
+    /// order. Each reply renders in the root's column and width without an
+    /// anchor rail of its own; the root keeps the rail its placement asks for.
+    fn push_thread(
+        &self,
+        doc: &mut Document,
+        file: usize,
+        placed: &PlacedComment,
+        pending: &[Ulid],
+        placement: BoxPlacement,
+    ) {
+        self.push_comment(
+            doc,
+            file,
+            placed.comment,
+            pending.contains(&placed.comment.id),
+            placement,
+        );
+        for reply in &placed.replies {
+            self.push_comment(
+                doc,
+                file,
+                reply,
+                pending.contains(&reply.id),
+                BoxPlacement {
+                    rail: false,
+                    ..placement
+                },
+            );
+        }
     }
 
     /// Append `comment` as a box: a top-edge header row, its body rows, and a
@@ -1919,12 +1951,18 @@ fn by(verb: &str, author: &Option<Author>) -> String {
     }
 }
 
-/// A live line comment with the range it anchors, so a fold splits around it.
+/// A root comment paired with the replies threaded beneath it.
+struct PlacedComment<'a> {
+    comment: &'a CommentState,
+    replies: Vec<&'a CommentState>,
+}
+
+/// A placed line comment with the range it anchors, so a fold splits around it.
 struct LineComment<'a> {
     side: Side,
     start: u32,
     end: u32,
-    comment: &'a CommentState,
+    placed: PlacedComment<'a>,
 }
 
 /// The comment inputs to one render: the comments to weave in, which of them
@@ -1991,7 +2029,7 @@ impl CommentOrigins {
 /// Where each live comment attaches within one render.
 struct Placement<'a> {
     /// Review-level comments, shown under the summary row.
-    review: Vec<&'a CommentState>,
+    review: Vec<PlacedComment<'a>>,
     /// Per-file placement, indexed by file index.
     files: Vec<FilePlacement<'a>>,
 }
@@ -2001,28 +2039,39 @@ struct Placement<'a> {
 struct FilePlacement<'a> {
     /// Whole-file comments, and line comments whose anchor no longer matches a
     /// rendered line, shown under the file header.
-    header: Vec<&'a CommentState>,
+    header: Vec<PlacedComment<'a>>,
     /// Line comments, each above the line it anchors.
     lines: Vec<LineComment<'a>>,
 }
 
 impl<'a> Placement<'a> {
-    /// Sort `comments` into review, whole-file, and per-line placement. A line
-    /// comment whose anchored line is no longer rendered floats to its file
-    /// header. A comment naming an unknown file is skipped.
+    /// Sort `comments` into review, whole-file, and per-line placement, threading
+    /// each comment's replies beneath it. A line comment whose anchored line is
+    /// no longer rendered floats to its file header. A comment naming an unknown
+    /// file is skipped.
     fn new(diff: &Diff, comments: &'a [CommentState], origins: &CommentOrigins) -> Self {
         let mut files: Vec<FilePlacement<'a>> = (0..diff.files.len())
             .map(|_| FilePlacement::default())
             .collect();
         let addressable: Vec<Vec<(Side, u32)>> = diff.files.iter().map(rendered_anchors).collect();
         let index_of = |path: &str| diff.files.iter().position(|f| f.display_path() == path);
+        // Each root's replies, keyed by root id, so placing a root can pick up
+        // the thread beneath it. A reply is placed through its root, not here.
+        let mut replies: HashMap<Ulid, Vec<&'a CommentState>> = threads(comments)
+            .into_iter()
+            .map(|thread| (thread.root.id, thread.replies))
+            .collect();
+        let mut placed = |comment: &'a CommentState| PlacedComment {
+            comment,
+            replies: replies.remove(&comment.id).unwrap_or_default(),
+        };
         let mut review = Vec::new();
         for comment in comments {
             match &comment.target {
-                CommentTarget::Review => review.push(comment),
+                CommentTarget::Review => review.push(placed(comment)),
                 CommentTarget::File { file } => {
                     if let Some(i) = index_of(file) {
-                        files[i].header.push(comment);
+                        files[i].header.push(placed(comment));
                     }
                 }
                 CommentTarget::Lines {
@@ -2039,12 +2088,13 @@ impl<'a> Placement<'a> {
                                 side,
                                 start,
                                 end,
-                                comment,
+                                placed: placed(comment),
                             });
                         }
-                        _ => files[i].header.push(comment),
+                        _ => files[i].header.push(placed(comment)),
                     }
                 }
+                CommentTarget::Comment { .. } => {}
             }
         }
         Self { review, files }
@@ -2052,12 +2102,12 @@ impl<'a> Placement<'a> {
 }
 
 impl<'a> FilePlacement<'a> {
-    /// The comments anchored to start at the line `(side, lineno)` addresses.
-    fn at(&self, side: Side, lineno: u32) -> impl Iterator<Item = &'a CommentState> + '_ {
+    /// The line comments anchored to start at the line `(side, lineno)`
+    /// addresses, each with the replies threaded beneath it.
+    fn at(&self, side: Side, lineno: u32) -> impl Iterator<Item = &LineComment<'a>> + '_ {
         self.lines
             .iter()
             .filter(move |lc| lc.side == side && lc.start == lineno)
-            .map(|lc| lc.comment)
     }
 
     /// Whether any line comment's range covers `(side, lineno)`, keeping the line
@@ -2514,6 +2564,61 @@ mod tests {
             "<#c0c5ce|-|->why 2?\n",
             "\n",
             "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;\n",
+        );
+    }
+
+    #[test]
+    fn a_reply_renders_as_its_own_box_right_after_the_comment_it_answers() {
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[
+                    (LineKind::Context, "let x = 1;", 1),
+                    (LineKind::Added, "let y = 2;", 2),
+                ],
+            )],
+        };
+        let reply = comment(
+            2,
+            ("opus", AuthorKind::Agent),
+            CommentTarget::Comment { id: Ulid(1) },
+            "because two",
+        );
+        let comments = vec![
+            comment(
+                1,
+                ("wez", AuthorKind::Human),
+                on_lines("src/lib.rs", 2, 2),
+                "why 2?",
+            ),
+            reply,
+        ];
+        let doc = DiffView::new(theme()).unwrap().render_review(
+            &diff,
+            &comments,
+            &[],
+            ViewLayout::default(),
+        );
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&doc.lines),
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse\n",
+            "<#c0c5ce|-|->why 2?\n",
+            "\n",
+            "<#8fa1b3|-|->opus (agent)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse\n",
+            "<#c0c5ce|-|->because two\n",
+            "\n",
+            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;\n",
+        );
+        wince::snapshot_str!(
+            regions(&doc.comments),
+            "1: header 4 body 5..6 collapsed=false\n",
+            "2: header 7 body 8..9 collapsed=false\n",
         );
     }
 

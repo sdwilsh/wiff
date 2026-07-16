@@ -8,7 +8,7 @@ use wiff_core::record::{
     CommentTarget, Confidence, DiffVersionRecord, FORMAT_VERSION, FileSummary, Record, RecordBody,
     Seq, SessionHeader, SourceKind, VersionNumber,
 };
-use wiff_core::review::{CommentState, ReviewState, fold};
+use wiff_core::review::{CommentState, ReviewState, fold, threads};
 use wiff_core::{Error, SidebandHash};
 use wiff_diff::{FileStatus, LineNo, Side};
 
@@ -443,7 +443,7 @@ fn a_newer_format_version_is_refused() {
     );
     wince::snapshot_display!(
         error,
-        "session format version 3 does not match supported version 2"
+        "session format version 4 does not match supported version 3"
     );
 }
 
@@ -461,7 +461,7 @@ fn an_older_format_version_is_refused() {
     );
     wince::snapshot_display!(
         error,
-        "session format version 1 does not match supported version 2"
+        "session format version 2 does not match supported version 3"
     );
 }
 
@@ -470,4 +470,294 @@ fn a_log_without_a_header_cannot_be_folded() {
     let error = fold(&[]).unwrap_err();
     wince::assert_eq!(matches!(error, Error::MissingHeader), true);
     wince::snapshot_display!(error, "session has no header record");
+}
+
+/// A reply to `parent` by `author` with the given identity and body.
+fn reply_event(id: Ulid, parent: Ulid, author: Author, body: &str) -> RecordBody {
+    create_event(
+        id,
+        author,
+        CommentTarget::Comment { id: parent },
+        0,
+        None,
+        body,
+    )
+}
+
+#[test]
+fn a_reply_folds_with_its_parent_recorded_and_threads_under_it() {
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            create_event(
+                comment_a(),
+                human("wez"),
+                CommentTarget::Review,
+                0,
+                None,
+                "why 3?",
+            ),
+        ),
+        rec(
+            3,
+            reply_event(comment_b(), comment_a(), human("dev"), "it is the bound"),
+        ),
+    ];
+
+    let state = fold(&records).unwrap();
+    let expected = vec![
+        CommentState {
+            id: comment_a(),
+            author: human("wez"),
+            target: CommentTarget::Review,
+            version: VersionNumber(0),
+            anchor: None,
+            body: "why 3?".to_string(),
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+            updated_by: human("wez"),
+            resolved: false,
+            resolved_by: None,
+            resolved_at: None,
+            deleted: false,
+            deleted_by: None,
+            deleted_at: None,
+            confidence: None,
+            origin: None,
+            synced_marker: None,
+            created_seq: Seq(2),
+            updated_seq: Seq(2),
+        },
+        CommentState {
+            id: comment_b(),
+            author: human("dev"),
+            target: CommentTarget::Comment { id: comment_a() },
+            version: VersionNumber(0),
+            anchor: None,
+            body: "it is the bound".to_string(),
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+            updated_by: human("dev"),
+            resolved: false,
+            resolved_by: None,
+            resolved_at: None,
+            deleted: false,
+            deleted_by: None,
+            deleted_at: None,
+            confidence: None,
+            origin: None,
+            synced_marker: None,
+            created_seq: Seq(3),
+            updated_seq: Seq(3),
+        },
+    ];
+    wince::assert_eq!(state.comments, expected);
+
+    let threads = threads(&state.comments);
+    let grouped: Vec<(Ulid, Vec<Ulid>)> = threads
+        .iter()
+        .map(|thread| {
+            (
+                thread.root.id,
+                thread.replies.iter().map(|reply| reply.id).collect(),
+            )
+        })
+        .collect();
+    wince::assert_eq!(grouped, vec![(comment_a(), vec![comment_b()])]);
+}
+
+#[test]
+fn replies_flatten_under_the_root_ordered_by_log_position() {
+    // A reply to a reply flattens into the root's sequence, ordered by log
+    // position so it reads in the order the replies arrived.
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            create_event(
+                comment_a(),
+                human("wez"),
+                CommentTarget::Review,
+                0,
+                None,
+                "root",
+            ),
+        ),
+        // Append a reply to the root, then a reply to that reply; the flattened
+        // order follows their log position.
+        rec(
+            3,
+            reply_event(comment_c(), comment_a(), human("dev"), "first to arrive"),
+        ),
+        rec(
+            4,
+            reply_event(comment_b(), comment_c(), human("wez"), "second to arrive"),
+        ),
+    ];
+
+    let state = fold(&records).unwrap();
+    let threads = threads(&state.comments);
+    let grouped: Vec<(Ulid, Vec<Ulid>)> = threads
+        .iter()
+        .map(|thread| {
+            (
+                thread.root.id,
+                thread.replies.iter().map(|reply| reply.id).collect(),
+            )
+        })
+        .collect();
+    wince::assert_eq!(grouped, vec![(comment_a(), vec![comment_c(), comment_b()])]);
+}
+
+#[test]
+fn a_reply_under_a_deleted_parent_is_kept() {
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            create_event(
+                comment_a(),
+                human("wez"),
+                CommentTarget::Review,
+                0,
+                None,
+                "root",
+            ),
+        ),
+        rec(3, delete_event(comment_a(), human("wez"))),
+        rec(
+            4,
+            reply_event(comment_b(), comment_a(), human("dev"), "still valid"),
+        ),
+    ];
+
+    let state = fold(&records).unwrap();
+    let kept: Vec<(Ulid, Option<Ulid>, bool)> = state
+        .comments
+        .iter()
+        .map(|comment| (comment.id, comment.reply_to(), comment.deleted))
+        .collect();
+    wince::assert_eq!(
+        kept,
+        vec![
+            (comment_a(), None, true),
+            (comment_b(), Some(comment_a()), false),
+        ]
+    );
+}
+
+#[test]
+fn a_reanchor_onto_a_reply_target_is_a_corrupt_log() {
+    // A reply has no anchor and is never reanchored; a reanchor onto a `Comment`
+    // target would turn an anchored comment into a reply, so fold rejects it.
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            create_event(
+                comment_a(),
+                human("wez"),
+                CommentTarget::Review,
+                0,
+                None,
+                "root",
+            ),
+        ),
+        rec(
+            3,
+            reanchor_event(
+                comment_a(),
+                human("wez"),
+                CommentReanchor {
+                    version: VersionNumber(0),
+                    target: CommentTarget::Comment { id: comment_b() },
+                    confidence: Confidence::Exact,
+                },
+            ),
+        ),
+    ];
+
+    let error = fold(&records).unwrap_err();
+    wince::assert_eq!(matches!(error, Error::InconsistentLog(_)), true);
+    wince::snapshot_display!(
+        error,
+        "inconsistent session log: record at seq 3 reanchors comment 00000000000000000000000000 onto a reply target"
+    );
+}
+
+#[test]
+fn a_reply_to_an_unknown_comment_is_a_corrupt_log() {
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            reply_event(comment_b(), comment_a(), human("dev"), "orphan"),
+        ),
+    ];
+
+    let error = fold(&records).unwrap_err();
+    wince::assert_eq!(matches!(error, Error::InconsistentLog(_)), true);
+    wince::snapshot_display!(
+        error,
+        "inconsistent session log: record at seq 2 replies to unknown comment 00000000000000000000000000"
+    );
+}
+
+#[test]
+fn a_self_reply_is_a_corrupt_log() {
+    // A create whose target replies to its own id is rejected as an unknown
+    // parent, since the comment is not folded until after this validation.
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            reply_event(comment_a(), comment_a(), human("wez"), "myself"),
+        ),
+    ];
+
+    let error = fold(&records).unwrap_err();
+    wince::assert_eq!(matches!(error, Error::InconsistentLog(_)), true);
+    wince::snapshot_display!(
+        error,
+        "inconsistent session log: record at seq 2 replies to unknown comment 00000000000000000000000000"
+    );
+}
+
+#[test]
+fn a_reply_that_arrives_before_its_parent_is_a_corrupt_log() {
+    // Fold is single-pass and order-dependent: a reply whose parent has not yet
+    // folded is corruption, not deferred resolution.
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            reply_event(comment_b(), comment_a(), human("dev"), "early"),
+        ),
+        rec(
+            3,
+            create_event(
+                comment_a(),
+                human("wez"),
+                CommentTarget::Review,
+                0,
+                None,
+                "late root",
+            ),
+        ),
+    ];
+
+    let error = fold(&records).unwrap_err();
+    wince::assert_eq!(matches!(error, Error::InconsistentLog(_)), true);
+    wince::snapshot_display!(
+        error,
+        "inconsistent session log: record at seq 2 replies to unknown comment 00000000000000000000000000"
+    );
 }

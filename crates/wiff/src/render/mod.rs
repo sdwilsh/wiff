@@ -11,7 +11,18 @@ mod markdown;
 
 use clap::ValueEnum;
 use wiff_core::record::FileSummary;
-use wiff_core::review::{CommentState, ReviewState};
+use wiff_core::review::{CommentState, ReviewState, threads};
+
+/// A thread reduced to what the read renderers show: its root and the replies
+/// still live. A thread appears while its root is live or, once the root is
+/// withdrawn, while any reply under it is still live; the withdrawn root then
+/// shows as a tombstone so its replies stay reachable and no reply refers to a
+/// root absent from the output. A thread all of whose comments are withdrawn
+/// drops out entirely.
+pub(super) struct VisibleThread<'a> {
+    pub root: &'a CommentState,
+    pub replies: Vec<&'a CommentState>,
+}
 
 /// The output format for `wiff render`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -36,9 +47,32 @@ pub fn render_list(state: &ReviewState) -> String {
     list::render(state)
 }
 
-/// The current (non-withdrawn) comments in creation order.
+/// The visible threads of `state`, in the order their roots were created.
+fn visible_threads(state: &ReviewState) -> Vec<VisibleThread<'_>> {
+    threads(&state.comments)
+        .into_iter()
+        .filter_map(|thread| {
+            let replies: Vec<&CommentState> = thread
+                .replies
+                .into_iter()
+                .filter(|reply| !reply.deleted)
+                .collect();
+            (!thread.root.deleted || !replies.is_empty()).then_some(VisibleThread {
+                root: thread.root,
+                replies,
+            })
+        })
+        .collect()
+}
+
+/// The visible comments flattened in thread order: each root followed by its
+/// live replies. A reply is never emitted without its root, which stays present
+/// as a tombstone once withdrawn.
 fn live_comments(state: &ReviewState) -> Vec<&CommentState> {
-    state.comments.iter().filter(|c| !c.deleted).collect()
+    visible_threads(state)
+        .into_iter()
+        .flat_map(|thread| std::iter::once(thread.root).chain(thread.replies))
+        .collect()
 }
 
 /// The files of the latest diff version, or an empty slice when none.
@@ -113,7 +147,8 @@ mod fixture {
     }
 
     /// A review state exercising every comment target, an anchored range, a
-    /// re-anchored comment, and a withdrawn comment.
+    /// re-anchored comment, a withdrawn comment, and a withdrawn root kept
+    /// visible by a live reply.
     pub(super) fn state() -> ReviewState {
         let mut line = comment(
             "00000000000000000000000001",
@@ -148,6 +183,15 @@ mod fixture {
             "overall solid",
             4,
         );
+        let reply = comment(
+            "00000000000000000000000006",
+            author("opus", AuthorKind::Agent),
+            CommentTarget::Comment {
+                id: ulid("00000000000000000000000001"),
+            },
+            "3 is the loop bound",
+            10,
+        );
         let mut shifted = comment(
             "00000000000000000000000004",
             author("dev", AuthorKind::Human),
@@ -172,6 +216,17 @@ mod fixture {
         gone.deleted_by = Some(author("wez", AuthorKind::Human));
         gone.deleted_at = Some(OffsetDateTime::UNIX_EPOCH);
         gone.updated_seq = Seq(8);
+        // A live reply under the withdrawn root keeps the thread visible: the
+        // root renders as a tombstone so the reply stays reachable.
+        let reply_to_gone = comment(
+            "00000000000000000000000007",
+            author("dev", AuthorKind::Human),
+            CommentTarget::Comment {
+                id: ulid("00000000000000000000000005"),
+            },
+            "still relevant though",
+            11,
+        );
 
         ReviewState {
             session: SessionHeader {
@@ -192,7 +247,7 @@ mod fixture {
                     hunk_count: 1,
                 }],
             }],
-            comments: vec![line, whole, review, shifted, gone],
+            comments: vec![line, whole, review, shifted, gone, reply, reply_to_gone],
         }
     }
 }

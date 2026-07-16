@@ -6,9 +6,9 @@ use wiff_core::review::{CommentState, ReviewState};
 
 use super::{latest_files, live_comments};
 
-/// The JSON schema version emitted by `wiff render --format json`. Bumped to 2
-/// when the comment event envelope added per-event actor and time fields.
-const JSON_SCHEMA_VERSION: u32 = 2;
+/// The version of the JSON shape emitted by `wiff render --format json`,
+/// incremented whenever that shape changes in a way a consumer must notice.
+const JSON_SCHEMA_VERSION: u32 = 3;
 
 /// Render `state` as a versioned JSON document.
 pub(super) fn render(state: &ReviewState) -> anyhow::Result<String> {
@@ -55,11 +55,11 @@ mod tests {
     use crate::render::fixture::state;
 
     #[test]
-    fn json_is_the_versioned_folded_state_without_deleted() {
+    fn json_is_the_versioned_folded_state_threading_replies_and_keeping_withdrawn_roots() {
         let out = render(&state()).unwrap();
         let value: serde_json::Value = serde_json::from_str(&out).unwrap();
         let expected = json!({
-            "schema_version": 2,
+            "schema_version": 3,
             "session": {
                 "ulid": "00000000000000000000000000",
                 "project": "demo",
@@ -103,6 +103,24 @@ mod tests {
                     "confidence": null,
                     "created_seq": 2,
                     "updated_seq": 2
+                },
+                {
+                    "id": "00000000000000000000000006",
+                    "author": { "name": "opus", "kind": "agent" },
+                    "target": { "target": "comment", "id": "00000000000000000000000001" },
+                    "version": 0,
+                    "anchor": null,
+                    "body": "3 is the loop bound",
+                    "created_at": "1970-01-01T00:00:00Z",
+                    "updated_at": "1970-01-01T00:00:00Z",
+                    "updated_by": { "name": "opus", "kind": "agent" },
+                    "resolved": false,
+                    "resolved_by": null,
+                    "deleted": false,
+                    "deleted_by": null,
+                    "confidence": null,
+                    "created_seq": 10,
+                    "updated_seq": 10
                 },
                 {
                     "id": "00000000000000000000000002",
@@ -164,6 +182,49 @@ mod tests {
                     "confidence": "approximate",
                     "created_seq": 5,
                     "updated_seq": 6
+                },
+                {
+                    "id": "00000000000000000000000005",
+                    "author": { "name": "wez", "kind": "human" },
+                    "target": {
+                        "target": "lines",
+                        "file": "main.rs",
+                        "side": "after",
+                        "start_line": 9,
+                        "end_line": 9
+                    },
+                    "version": 0,
+                    "anchor": null,
+                    "body": "never mind",
+                    "created_at": "1970-01-01T00:00:00Z",
+                    "updated_at": "1970-01-01T00:00:00Z",
+                    "updated_by": { "name": "wez", "kind": "human" },
+                    "resolved": false,
+                    "resolved_by": null,
+                    "deleted": true,
+                    "deleted_by": { "name": "wez", "kind": "human" },
+                    "deleted_at": "1970-01-01T00:00:00Z",
+                    "confidence": null,
+                    "created_seq": 7,
+                    "updated_seq": 8
+                },
+                {
+                    "id": "00000000000000000000000007",
+                    "author": { "name": "dev", "kind": "human" },
+                    "target": { "target": "comment", "id": "00000000000000000000000005" },
+                    "version": 0,
+                    "anchor": null,
+                    "body": "still relevant though",
+                    "created_at": "1970-01-01T00:00:00Z",
+                    "updated_at": "1970-01-01T00:00:00Z",
+                    "updated_by": { "name": "dev", "kind": "human" },
+                    "resolved": false,
+                    "resolved_by": null,
+                    "deleted": false,
+                    "deleted_by": null,
+                    "confidence": null,
+                    "created_seq": 11,
+                    "updated_seq": 11
                 }
             ]
         });

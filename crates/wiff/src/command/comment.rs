@@ -58,6 +58,10 @@ struct CommentAddArgs {
     /// Comment on the review overall rather than a file or line.
     #[arg(long, conflicts_with_all = ["file", "line"])]
     review: bool,
+    /// Reply to an existing comment by id, forming a thread. The reply takes its
+    /// position from the comment it answers rather than a file or line.
+    #[arg(long, conflicts_with_all = ["file", "line", "review"])]
+    reply_to: Option<String>,
     /// The comment body. When omitted, it is read from stdin.
     #[arg(long)]
     body: Option<String>,
@@ -98,8 +102,11 @@ impl CommentAddArgs {
         if self.review {
             return Ok(CommentTarget::Review);
         }
+        if let Some(id) = &self.reply_to {
+            return Ok(CommentTarget::Comment { id: parse_id(id)? });
+        }
         let Some(file) = self.file.clone() else {
-            bail!("specify a target with --file, --line, or --review");
+            bail!("specify a target with --file, --line, --review, or --reply-to");
         };
         match &self.line {
             Some(spec) => {

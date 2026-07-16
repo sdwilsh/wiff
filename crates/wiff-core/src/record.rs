@@ -17,7 +17,7 @@ use crate::hash::SidebandHash;
 /// The session format version, bumped when the record schema changes
 /// incompatibly. A log whose header version differs from this, older or newer,
 /// is refused rather than misread.
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 
 /// A record's 0-based position in its session log and its stable id within the
 /// session. The same integer is a comment's `created_seq`/`updated_seq` and the
@@ -291,6 +291,12 @@ pub enum CommentTarget {
     },
     /// The review overall.
     Review,
+    /// A reply to another comment, identified by its parent's id. A reply has no
+    /// anchor of its own.
+    Comment {
+        /// The comment being replied to.
+        id: Ulid,
+    },
 }
 
 /// The captured content a line-range comment rebases against: the anchored

@@ -1,11 +1,17 @@
 //! The markdown rendering of a folded review, for a human or an agent prompt.
 
+use std::collections::HashMap;
+
+use ulid::Ulid;
 use wiff_core::record::{Anchor, CommentTarget, Confidence};
 use wiff_core::review::{CommentState, ReviewState};
 
-use super::live_comments;
+use super::visible_threads;
 
-/// Render `state` as markdown.
+/// Render `state` as markdown. Comments group by file, and within each group a
+/// thread renders as its root followed by its replies. A withdrawn reply drops
+/// out; a withdrawn root shows as a tombstone while it still has a live reply,
+/// and disappears once its whole thread is withdrawn.
 pub(super) fn render(state: &ReviewState) -> String {
     let mut out = String::new();
     out.push_str(&format!("# Review {}\n\n", state.session.ulid));
@@ -21,16 +27,25 @@ pub(super) fn render(state: &ReviewState) -> String {
         None => out.push_str("- version: none\n"),
     }
 
-    let comments = live_comments(state);
+    let mut roots: Vec<&CommentState> = Vec::new();
+    let mut replies: HashMap<Ulid, Vec<&CommentState>> = HashMap::new();
+    for thread in visible_threads(state) {
+        roots.push(thread.root);
+        replies.insert(thread.root.id, thread.replies);
+    }
+
     out.push_str("\n## Comments\n");
-    if comments.is_empty() {
+    if roots.is_empty() {
         out.push_str("\nNo comments.\n");
         return out;
     }
-    for (heading, group) in group_by_file(&comments) {
+    for (heading, group) in group_by_file(&roots) {
         out.push_str(&format!("\n### {heading}\n\n"));
         for comment in group {
             out.push_str(&comment_block(comment));
+            for reply in replies.get(&comment.id).into_iter().flatten() {
+                out.push_str(&reply_block(reply));
+            }
         }
     }
     out
@@ -55,6 +70,24 @@ fn comment_block(comment: &CommentState) -> String {
     }
     if let Some(anchor) = &comment.anchor {
         out.push_str(&anchor_block(anchor, &comment.target));
+    }
+    out
+}
+
+/// One reply rendered as an indented sub-bullet under its root: its id, author,
+/// state flags, and body. A reply has no location or anchor of its own; it
+/// belongs to the thread it is nested under.
+fn reply_block(reply: &CommentState) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "  - {} reply by {} ({}){}\n",
+        reply.id,
+        reply.author.name,
+        reply.author.kind.as_str(),
+        flags(reply),
+    ));
+    for line in reply.body.trim_end().lines() {
+        out.push_str(&format!("    {line}\n"));
     }
     out
 }
@@ -105,6 +138,8 @@ fn group_by_file<'a>(comments: &[&'a CommentState]) -> Vec<(String, Vec<&'a Comm
                 review.push(comment);
                 continue;
             }
+            // A reply is placed by its thread, not grouped on its own.
+            CommentTarget::Comment { .. } => continue,
         };
         match groups.iter_mut().find(|(heading, _)| *heading == file) {
             Some((_, group)) => group.push(comment),
@@ -130,6 +165,9 @@ fn target_rank(target: &CommentTarget) -> u8 {
         CommentTarget::File { .. } => 0,
         CommentTarget::Lines { .. } => 1,
         CommentTarget::Review => 2,
+        // group_by_file threads replies through their root, so a reply never
+        // reaches this ranking.
+        CommentTarget::Comment { .. } => unreachable!("replies are threaded, not grouped"),
     }
 }
 
@@ -151,13 +189,24 @@ fn location(target: &CommentTarget) -> String {
         }
         CommentTarget::File { .. } => "whole file".to_string(),
         CommentTarget::Review => "review".to_string(),
+        // group_by_file threads replies through their root, so a reply never
+        // reaches this location lookup.
+        CommentTarget::Comment { .. } => unreachable!("replies are threaded, not grouped"),
     }
 }
 
-/// The trailing state flags for a comment: resolved with who resolved it,
-/// re-anchor confidence when it is not exact, and who last changed it when that
-/// was someone other than its author.
+/// The trailing state flags for a comment: withdrawn with who withdrew it, or
+/// resolved with who resolved it, re-anchor confidence when it is not exact, and
+/// who last changed it when that was someone other than its author.
 fn flags(comment: &CommentState) -> String {
+    if comment.deleted {
+        return match &comment.deleted_by {
+            Some(author) => {
+                format!(" [withdrawn by {} ({})]", author.name, author.kind.as_str())
+            }
+            None => " [withdrawn]".to_string(),
+        };
+    }
     let mut flags = Vec::new();
     if comment.resolved {
         flags.push(match &comment.resolved_by {
@@ -194,7 +243,7 @@ mod tests {
     use crate::render::fixture::state;
 
     #[test]
-    fn markdown_groups_comments_and_hides_deleted() {
+    fn markdown_groups_comments_threading_replies_and_tombstoning_withdrawn_roots() {
         let out = render(&state());
         let expected = "\
 # Review 00000000000000000000000000
@@ -222,6 +271,12 @@ mod tests {
   >    2 | let b = 3;
        3 | let c = 4;
   ```
+  - 00000000000000000000000006 reply by opus (agent)
+    3 is the loop bound
+- 00000000000000000000000005 line 9 (after) by wez (human) [withdrawn by wez (human)]
+  never mind
+  - 00000000000000000000000007 reply by dev (human)
+    still relevant though
 
 ### other.rs
 

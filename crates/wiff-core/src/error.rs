@@ -80,6 +80,12 @@ pub enum Error {
     #[error("no comment {0} in this session")]
     UnknownComment(Ulid),
 
+    /// A reply named a comment that has been withdrawn. Fold still keeps a reply
+    /// under a parent withdrawn elsewhere, but authoring a fresh reply to a
+    /// comment already gone is refused locally.
+    #[error("cannot reply to withdrawn comment {0}")]
+    WithdrawnComment(Ulid),
+
     /// A session was written by a format version that does not match this
     /// build's, older or newer, so it cannot be safely interpreted. wiff is
     /// pre-release with no migration: discard the session and re-capture.

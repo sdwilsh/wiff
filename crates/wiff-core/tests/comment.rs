@@ -404,6 +404,108 @@ fn mutating_an_unknown_comment_is_an_error() {
 }
 
 #[test]
+fn a_reply_names_its_parent_and_folds_beneath_it() {
+    let (_base, mut log) = session();
+    let root = DraftComment {
+        author: human("wez"),
+        target: CommentTarget::Review,
+        body: "why 3?".to_string(),
+    }
+    .append(&mut log, LockWait::Block)
+    .unwrap();
+    let reply = DraftComment {
+        author: human("dev"),
+        target: CommentTarget::Comment { id: root.id },
+        body: "it is the bound".to_string(),
+    }
+    .append(&mut log, LockWait::Block)
+    .unwrap();
+    wince::assert_eq!(reply.anchor, None);
+
+    let state = fold(&read_records(log.path()).unwrap()).unwrap();
+    let threaded: Vec<(Ulid, Option<Ulid>, CommentTarget)> = state
+        .comments
+        .iter()
+        .map(|comment| (comment.id, comment.reply_to(), comment.target.clone()))
+        .collect();
+    wince::assert_eq!(
+        threaded,
+        vec![
+            (root.id, None, CommentTarget::Review),
+            (
+                reply.id,
+                Some(root.id),
+                CommentTarget::Comment { id: root.id }
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_reply_to_an_unknown_comment_is_rejected_before_it_corrupts_the_session() {
+    // Fold treats a reply to an unknown id as a corrupt log, so appending one
+    // unchecked would make the whole session unreadable. `append` must refuse
+    // the reply and leave the log foldable.
+    let (_base, mut log) = session();
+    let missing = Ulid::new();
+    let error = DraftComment {
+        author: human("wez"),
+        target: CommentTarget::Comment { id: missing },
+        body: "reply to nothing".to_string(),
+    }
+    .append(&mut log, LockWait::Block)
+    .unwrap_err();
+    wince::assert_eq!(matches!(error, Error::UnknownComment(_)), true);
+    wince::assert_eq!(
+        error.to_string(),
+        format!("no comment {missing} in this session")
+    );
+
+    // The refused reply never reached the log, so it still folds cleanly.
+    let state = fold(&read_records(log.path()).unwrap()).unwrap();
+    wince::assert_eq!(state.comments, Vec::<CommentState>::new());
+}
+
+#[test]
+fn a_reply_to_a_withdrawn_comment_is_refused_at_authoring() {
+    // Authoring a fresh reply to an already-withdrawn comment is refused locally;
+    // a sync from another actor may still fold a reply under a parent withdrawn
+    // after the reply was written, but a local author sees the tombstone and is
+    // stopped before adding an orphaned comment.
+    let (_base, mut log) = session();
+    let root = DraftComment {
+        author: human("wez"),
+        target: CommentTarget::Review,
+        body: "why 3?".to_string(),
+    }
+    .append(&mut log, LockWait::Block)
+    .unwrap();
+    delete_comment(&mut log, root.id, human("wez"), LockWait::Block).unwrap();
+
+    let error = DraftComment {
+        author: human("dev"),
+        target: CommentTarget::Comment { id: root.id },
+        body: "too late".to_string(),
+    }
+    .append(&mut log, LockWait::Block)
+    .unwrap_err();
+    wince::assert_eq!(matches!(error, Error::WithdrawnComment(_)), true);
+    wince::assert_eq!(
+        error.to_string(),
+        format!("cannot reply to withdrawn comment {}", root.id)
+    );
+
+    // The refused reply never reached the log; only the withdrawn root remains.
+    let state = fold(&read_records(log.path()).unwrap()).unwrap();
+    let ids: Vec<(Ulid, bool)> = state
+        .comments
+        .iter()
+        .map(|comment| (comment.id, comment.deleted))
+        .collect();
+    wince::assert_eq!(ids, vec![(root.id, true)]);
+}
+
+#[test]
 fn a_file_outside_the_diff_cannot_be_anchored() {
     let (_base, mut log) = session();
     let error = DraftComment {

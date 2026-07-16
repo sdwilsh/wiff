@@ -66,6 +66,19 @@ impl DraftComment {
                 start_line,
                 end_line,
             } => capture_anchor(log, version, file, *side, *start_line, *end_line)?,
+            // A reply names the comment it answers. Confirm that comment exists
+            // before writing: fold rejects a reply to an unknown id as a corrupt
+            // log, so appending an unchecked reply would make the whole session
+            // unreadable for every later reader. Refuse a reply to a comment
+            // already withdrawn locally; fold still tolerates a reply whose
+            // parent was withdrawn on another actor's copy after the reply.
+            CommentTarget::Comment { id } => {
+                let parent = require_comment_in_records(&records, *id)?;
+                if parent.deleted {
+                    return Err(Error::WithdrawnComment(*id));
+                }
+                None
+            }
             CommentTarget::File { .. } | CommentTarget::Review => None,
         };
         let id = Ulid::new();

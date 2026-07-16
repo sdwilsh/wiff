@@ -45,6 +45,66 @@ impl ReviewState {
     }
 }
 
+/// A comment and the replies threaded beneath it.
+pub struct Thread<'a> {
+    /// The comment the thread hangs from: one that is not itself a reply.
+    pub root: &'a CommentState,
+    /// The replies under the root, flattened across nesting and ordered by
+    /// `created_seq`, the log position, so they read in the order they arrived.
+    pub replies: Vec<&'a CommentState>,
+}
+
+/// Group `comments` into threads. Roots (comments that are not replies) keep the
+/// order they appear in `comments`; each reply attaches to the root at the top
+/// of its parent chain, and the replies under a root are ordered by log
+/// position. A reply whose chain does not reach a root in the slice is dropped,
+/// as is one caught in a reference cycle; a folded log produces neither.
+pub fn threads(comments: &[CommentState]) -> Vec<Thread<'_>> {
+    let by_id: HashMap<Ulid, &CommentState> = comments.iter().map(|c| (c.id, c)).collect();
+    let mut threads: Vec<Thread<'_>> = Vec::new();
+    let mut thread_of_root: HashMap<Ulid, usize> = HashMap::new();
+    for comment in comments {
+        if comment.reply_to().is_none() {
+            thread_of_root.insert(comment.id, threads.len());
+            threads.push(Thread {
+                root: comment,
+                replies: Vec::new(),
+            });
+        }
+    }
+    for comment in comments {
+        if comment.reply_to().is_none() {
+            continue;
+        }
+        if let Some(root) = root_of(comment, &by_id)
+            && let Some(&thread) = thread_of_root.get(&root.id)
+        {
+            threads[thread].replies.push(comment);
+        }
+    }
+    for thread in &mut threads {
+        thread.replies.sort_by_key(|comment| comment.created_seq);
+    }
+    threads
+}
+
+/// Walk `comment`'s `reply_to` chain up to the root of its thread. The walk is
+/// bounded by the number of comments so a reference cycle, which a folded log
+/// never produces, terminates with `None` rather than looping forever.
+fn root_of<'a>(
+    comment: &'a CommentState,
+    by_id: &HashMap<Ulid, &'a CommentState>,
+) -> Option<&'a CommentState> {
+    let mut cursor = comment;
+    for _ in 0..by_id.len() {
+        match cursor.reply_to() {
+            None => return Some(cursor),
+            Some(parent) => cursor = by_id.get(&parent)?,
+        }
+    }
+    None
+}
+
 /// A comment reduced from its event chain to its current state.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CommentState {
@@ -147,6 +207,15 @@ impl CommentState {
             synced_marker: event.synced_marker.clone(),
             created_seq: seq,
             updated_seq: seq,
+        }
+    }
+
+    /// The comment this one answers when it is a reply, taken from its target. A
+    /// reply has no anchor of its own; its thread is rooted at the named comment.
+    pub fn reply_to(&self) -> Option<Ulid> {
+        match &self.target {
+            CommentTarget::Comment { id } => Some(*id),
+            _ => None,
         }
     }
 
@@ -261,6 +330,17 @@ fn fold_comment_event(
                     event.id
                 )));
             }
+            // A reply must name a comment already folded, so a thread's parent
+            // is always known before its replies. Validating before the insert
+            // rejects a self-reply (its own id is not yet present) as an
+            // unknown parent rather than a comment that references itself.
+            if let CommentTarget::Comment { id: parent } = &create.target
+                && !comments.contains_key(parent)
+            {
+                return Err(Error::InconsistentLog(format!(
+                    "record at seq {seq} replies to unknown comment {parent}"
+                )));
+            }
             let authored = event.authored_at.unwrap_or(at);
             order.push(event.id);
             comments.insert(
@@ -293,6 +373,15 @@ fn fold_comment_event(
             comment.touch(event, when, seq);
         }
         CommentEventKind::Reanchor(reanchor) => {
+            // A reply has no anchor and is never reanchored. A reanchor onto a
+            // `Comment` target would turn an anchored comment into a reply, so
+            // reject it as a corrupt log rather than record it.
+            if let CommentTarget::Comment { .. } = &reanchor.target {
+                return Err(Error::InconsistentLog(format!(
+                    "record at seq {seq} reanchors comment {} onto a reply target",
+                    event.id
+                )));
+            }
             let comment = require_comment(comments, event.id, seq)?;
             comment.version = reanchor.version;
             comment.target = reanchor.target.clone();
