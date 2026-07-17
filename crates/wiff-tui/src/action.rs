@@ -189,6 +189,8 @@ declare_actions! {
         SelectLines,
         /// Add a comment
         AddComment,
+        /// Reply to the focused comment
+        ReplyComment,
         /// Edit the focused comment
         EditComment,
         /// Resolve or unresolve the comment
@@ -285,6 +287,7 @@ mod tests {
     #[test]
     fn every_action_declares_its_group_name_and_help_label() {
         // The description of each action is its own doc comment, trimmed.
+        #[rustfmt::skip]
         wince::snapshot_str!(
             vocabulary(),
             "Navigation\n",
@@ -315,6 +318,7 @@ mod tests {
             "Comments\n",
             "  select_lines = Select lines for a comment\n",
             "  add_comment = Add a comment\n",
+            "  reply_comment = Reply to the focused comment\n",
             "  edit_comment = Edit the focused comment\n",
             "  resolve_comment = Resolve or unresolve the comment\n",
             "  delete_comment = Delete or restore the comment\n",

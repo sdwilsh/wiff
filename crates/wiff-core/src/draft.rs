@@ -283,6 +283,17 @@ impl DraftBuffer {
             .iter()
             .map(|comment| (comment.id, comment.clone()))
             .collect();
+        // A committed reply sorts within its thread by log order (`created_seq`).
+        // A draft has no seq yet, so each drafted addition gets a number past
+        // every committed comment, keeping it at the bottom of its thread rather
+        // than under the root. This relies on committed seqs being globally
+        // monotonic: exceeding the global max also exceeds every seq in the
+        // draft's own thread. Imported or non-monotonic seqs would break it.
+        let mut draft_seq = committed
+            .iter()
+            .map(|comment| comment.created_seq.0)
+            .max()
+            .unwrap_or(0);
         for op in &self.ops {
             match op {
                 DraftOp::Add(event) => {
@@ -297,9 +308,10 @@ impl DraftBuffer {
                     // real time is the record's `at`); the preview uses the
                     // epoch as a stable placeholder.
                     let at = event.authored_at.unwrap_or(OffsetDateTime::UNIX_EPOCH);
+                    draft_seq += 1;
                     states.push((
                         event.id,
-                        CommentState::from_create(event, create, at, Seq(0)),
+                        CommentState::from_create(event, create, at, Seq(draft_seq)),
                     ));
                 }
                 DraftOp::Edit { id, body, .. } => {
@@ -500,14 +512,14 @@ mod tests {
     }
 
     /// The preview state of a drafted review comment by `author`: the same shape
-    /// [`DraftBuffer::apply`] yields, with the placeholder sequence and epoch
-    /// time a not-yet-committed draft has.
-    fn drafted_state(id: u128, author: Author, body: &str) -> CommentState {
+    /// [`DraftBuffer::apply`] yields, with the epoch time a not-yet-committed
+    /// draft has and the sequence `apply` numbers it past the committed set.
+    fn drafted_state(id: u128, author: Author, body: &str, seq: u64) -> CommentState {
         CommentState {
             author: author.clone(),
             updated_by: author,
-            created_seq: Seq(0),
-            updated_seq: Seq(0),
+            created_seq: Seq(seq),
+            updated_seq: Seq(seq),
             ..committed_comment(id, body, false)
         }
     }
@@ -553,7 +565,7 @@ mod tests {
                     pending: false,
                 },
                 EffectiveComment {
-                    comment: drafted_state(2, agent(), "one more thing"),
+                    comment: drafted_state(2, agent(), "one more thing", 4),
                     pending: true,
                 },
             ]
@@ -634,7 +646,7 @@ mod tests {
         let id = buffer.add(drafted(2, "never mind"));
         buffer.edit(id, actor(), "second thoughts".to_string());
         buffer.delete(id, actor());
-        let mut deleted = drafted_state(2, agent(), "second thoughts");
+        let mut deleted = drafted_state(2, agent(), "second thoughts", 1);
         deleted.deleted = true;
         deleted.deleted_by = Some(actor());
         wince::assert_eq!(

@@ -168,8 +168,9 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
         (Action::PickTheme, vec![chord("T")]),
         (Action::SelectLines, vec![chord("v")]),
         (Action::AddComment, vec![chord("c")]),
+        (Action::ReplyComment, vec![chord("r")]),
         (Action::EditComment, vec![chord("e")]),
-        (Action::ResolveComment, vec![chord("r")]),
+        (Action::ResolveComment, vec![chord("x")]),
         (Action::DeleteComment, vec![chord("d")]),
         (Action::SetVerdict, vec![chord("a")]),
         // The inline editor's own keys, honored only while it is open, so ctrl-d
@@ -182,7 +183,7 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
         (Action::SearchBackward, vec![chord("?")]),
         (Action::SearchNext, vec![chord("n")]),
         (Action::SearchPrev, vec![chord("N")]),
-        (Action::Refresh, vec![chord("R")]),
+        (Action::Refresh, vec![chord("ctrl-r")]),
         (Action::CompareVersions, vec![chord("V")]),
         (Action::OpenInEditor, vec![chord("o")]),
         (Action::Help, vec![chord("h")]),
@@ -245,7 +246,15 @@ mod tests {
             Resolution::Action(Action::AddComment)
         );
         wince::assert_eq!(
-            map.resolve(&presses("R")),
+            map.resolve(&presses("r")),
+            Resolution::Action(Action::ReplyComment)
+        );
+        wince::assert_eq!(
+            map.resolve(&presses("x")),
+            Resolution::Action(Action::ResolveComment)
+        );
+        wince::assert_eq!(
+            map.resolve(&presses("ctrl-r")),
             Resolution::Action(Action::Refresh)
         );
         wince::assert_eq!(map.resolve(&presses("q")), Resolution::Action(Action::Quit));
@@ -291,11 +300,11 @@ mod tests {
 
     #[test]
     fn an_override_replaces_only_that_actions_bindings() {
-        let map = build(&[(Action::LineDown, &["x"])], false).unwrap();
+        let map = build(&[(Action::LineDown, &["R"])], false).unwrap();
         // The override takes effect and the default "j" no longer binds, but
         // untouched actions keep their defaults.
         wince::assert_eq!(
-            map.resolve(&presses("x")),
+            map.resolve(&presses("R")),
             Resolution::Action(Action::LineDown)
         );
         wince::assert_eq!(map.resolve(&presses("j")), Resolution::None);
@@ -305,7 +314,7 @@ mod tests {
         );
         wince::assert_eq!(
             map.chords(Action::LineDown),
-            &["x".parse::<Chord>().unwrap()]
+            &["R".parse::<Chord>().unwrap()]
         );
     }
 

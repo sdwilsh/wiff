@@ -521,6 +521,8 @@ pub struct DiffView {
 pub struct KeyHints {
     /// The key that drafts a new comment.
     pub add_comment: String,
+    /// The key that replies to the focused comment.
+    pub reply_comment: String,
     /// The key that edits the focused comment.
     pub edit_comment: String,
     /// The key that resolves or reopens the focused comment.
@@ -541,6 +543,9 @@ impl KeyHints {
             add_comment: keymap
                 .primary_label(Action::AddComment)
                 .unwrap_or(default.add_comment),
+            reply_comment: keymap
+                .primary_label(Action::ReplyComment)
+                .unwrap_or(default.reply_comment),
             edit_comment: keymap
                 .primary_label(Action::EditComment)
                 .unwrap_or(default.edit_comment),
@@ -564,6 +569,9 @@ impl Default for KeyHints {
         let keymap = Keymap::defaults();
         Self {
             add_comment: keymap.primary_label(Action::AddComment).unwrap_or_default(),
+            reply_comment: keymap
+                .primary_label(Action::ReplyComment)
+                .unwrap_or_default(),
             edit_comment: keymap
                 .primary_label(Action::EditComment)
                 .unwrap_or_default(),
@@ -1451,9 +1459,16 @@ impl DiffView {
         } else {
             "delete"
         };
+        // A withdrawn comment cannot take a reply, so drop the reply hint rather
+        // than advertise an action the review would decline.
+        let reply_hint = if comment.deleted {
+            String::new()
+        } else {
+            format!("  {} to reply", self.hints.reply_comment)
+        };
         spans.push(Span::styled(
             format!(
-                "  press {} to edit  {} to {resolve_verb}  {} to {delete_verb}  {} to expand/collapse",
+                "  press {} to edit{reply_hint}  {} to {resolve_verb}  {} to {delete_verb}  {} to expand/collapse",
                 self.hints.edit_comment,
                 self.hints.resolve_comment,
                 self.hints.delete_comment,
@@ -2648,7 +2663,7 @@ mod tests {
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
-            "<#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse\n",
+            "<#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse\n",
             "<#c0c5ce|-|->why 2?\n",
             "\n",
             "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;\n",
@@ -2677,7 +2692,7 @@ mod tests {
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
-            "<#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse\n",
+            "<#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse\n",
             "<#c0c5ce|-|->why 2?\n",
             "\n",
             "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;\n",
@@ -2724,10 +2739,10 @@ mod tests {
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
-            "<#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse\n",
+            "<#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse\n",
             "<#c0c5ce|-|->why 2?\n",
             "\n",
-            "<#8fa1b3|-|->opus (agent)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse\n",
+            "<#8fa1b3|-|->opus (agent)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse\n",
             "<#c0c5ce|-|->because two\n",
             "\n",
             "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;\n",
@@ -2839,7 +2854,7 @@ mod tests {
             "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
-            "<#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse\n",
+            "<#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse\n",
             "<#c0c5ce|-|->why 2?\n",
             "\n",
             "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;\n",
@@ -2874,7 +2889,7 @@ mod tests {
             "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
-            "<#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to unresolve  d to delete  tab to expand/collapse\n",
+            "<#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse\n",
             "<#c0c5ce|-|->done\n",
             "\n",
             "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;\n",
@@ -2910,7 +2925,7 @@ mod tests {
         wince::snapshot_str!(
             dump(&doc.lines),
             "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
-            "<#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse\n",
+            "<#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse\n",
             "<#c0c5ce|-|->looks good overall\n",
             "\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
@@ -2982,7 +2997,7 @@ mod tests {
             dump(&doc.lines),
             "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
-            "<#8fa1b3|-|->dev (human)<#d08770|-|-> [outdated]<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse\n",
+            "<#8fa1b3|-|->dev (human)<#d08770|-|-> [outdated]<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse\n",
             "<#c0c5ce|-|->stale\n",
             "\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
@@ -3025,7 +3040,7 @@ mod tests {
             "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
-            "<#8fa1b3|-|->wez (human)<#767b84|-|-> [changed by opus]<#767b84|-|->  press e to edit  r to resolve  d to delete  tab to expand/collapse\n",
+            "<#8fa1b3|-|->wez (human)<#767b84|-|-> [changed by opus]<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse\n",
             "<#c0c5ce|-|->why 2?\n",
             "\n",
             "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;\n",

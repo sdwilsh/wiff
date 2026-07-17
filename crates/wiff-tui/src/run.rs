@@ -666,7 +666,7 @@ mod tests {
             screen(70, 14, app),
             "m┌Key bindings──────────────────────────────────────────────────────┐ \n",
             "@│Navigation                                                        █ \n",
-            " │  down, j                  Move down one line                     █ \n",
+            " │  down, j                  Move down one line                     ║ \n",
             " │  up, k                    Move up one line                       ║ \n",
             " │  space, ctrl-f, pagedown  Scroll down one page                   ║ \n",
             " │  b, ctrl-b, pageup        Scroll up one page                     ║ \n",
@@ -810,6 +810,91 @@ mod tests {
             "                             ││why 2?                      │\n",
             "                             │└────────────────────────────┘\n",
             "                             │   2 +└let y = 2;             \n",
+            "src/lib.rs                                       1 open  57%\n",
+        );
+    }
+
+    #[test]
+    fn replying_to_a_side_by_side_comment_opens_the_editor_in_its_column() {
+        use crate::render::DiffMode;
+        use ulid::Ulid;
+        use wiff_core::record::CommentTarget;
+        use wiff_core::review::CommentState;
+        use wiff_diff::Side;
+        // An after-side comment on the added line renders its box in the right
+        // column. Replying threads a new editor beneath it in that same column,
+        // not spanning the full width.
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[
+                    (LineKind::Context, "let x = 1;", 1),
+                    (LineKind::Added, "let y = 2;", 2),
+                ],
+            )],
+        };
+        let comment = CommentState {
+            id: Ulid(2),
+            author: Author {
+                name: "wez".to_string(),
+                kind: AuthorKind::Human,
+            },
+            target: CommentTarget::Lines {
+                file: "src/lib.rs".to_string(),
+                side: Side::After,
+                start_line: crate::render::testutil::ln(2),
+                end_line: crate::render::testutil::ln(2),
+            },
+            version: VersionNumber(0),
+            anchor: None,
+            body: "why 2?".to_string(),
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+            updated_by: Author {
+                name: "wez".to_string(),
+                kind: AuthorKind::Human,
+            },
+            resolved: false,
+            resolved_by: None,
+            resolved_at: None,
+            deleted: false,
+            deleted_by: None,
+            deleted_at: None,
+            disposition: None,
+            confidence: None,
+            origin: None,
+            synced_marker: None,
+            created_seq: Seq(0),
+            updated_seq: Seq(0),
+        };
+        let view = DiffView::new(theme()).expect("view");
+        let author = Author {
+            name: "wez".to_string(),
+            kind: AuthorKind::Human,
+        };
+        let mut app = App::reviewing(
+            Review::new(view, diff, author, 0, vec![comment], None),
+            0,
+            &theme(),
+        )
+        .with_diff_mode(DiffMode::SideBySide, 0);
+        app.update(Action::NextComment);
+        app.update(Action::ReplyComment);
+        for c in "agreed".chars() {
+            app.compose_key(KeyPress::new(Key::Char(c)));
+        }
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            screen(60, 9, app),
+            "@@ -1,2 +1,2 @@                                             \n",
+            "   1   let x = 1;            │   1   let x = 1;             \n",
+            "                             │┌ wez (human)  press e to ed ┐\n",
+            "                             ││why 2?                      │\n",
+            "                             │└─────┬──────────────────────┘\n",
+            "                             │┌ reply  ctrl-d submit  esc c┐\n",
+            "                             ││agreed                      │\n",
+            "                             │└────────────────────────────┘\n",
             "src/lib.rs                                       1 open  57%\n",
         );
     }
@@ -1195,7 +1280,7 @@ mod tests {
         wince::snapshot_str!(
             screen(50, 11, app),
             "Review [press c here to draft the review comment] \n",
-            "┌ we┌You have uncommitted comments───────────┐esol\n",
+            "┌ we┌You have uncommitted comments───────────┐eply\n",
             "│why│> Commit review                         │   │\n",
             "└───│  Quit without saving                   │───┘\n",
             "modi│  Remove session                        │    \n",

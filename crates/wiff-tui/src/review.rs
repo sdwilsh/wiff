@@ -425,6 +425,17 @@ impl Review {
         self.drafts.add(event)
     }
 
+    /// Whether comment `id` can take a reply: it is present in the effective
+    /// set and not withdrawn. A withdrawn comment refuses a reply, matching the
+    /// CLI authoring rule.
+    pub fn can_reply(&self, id: Ulid) -> bool {
+        self.drafts
+            .apply(&self.committed)
+            .into_iter()
+            .find(|entry| entry.comment.id == id)
+            .is_some_and(|entry| !entry.comment.deleted)
+    }
+
     /// The version and target a comment authored on `target` at the cursor is
     /// anchored against. On the after side, and outside a comparison, that is the
     /// review's own version. On a comparison's before side it is the version and

@@ -316,7 +316,8 @@ no thousand-line nested match driving the UI.
 Input is decoded into an **action** (an enum of intents: page up/down, next/prev
 file, next/prev hunk, next/prev comment, toggle fold, toggle comment, hide
 comments, toggle
-wrap, pick file, pick comment, pick theme, select lines, add comment, edit comment, resolve
+wrap, pick file, pick comment, pick theme, select lines, add comment, reply
+comment, edit comment, resolve
 comment, delete comment, submit comment, cancel
 comment, save, search forward/backward, search next/prev, refresh,
 `open_in_editor`, `quit`, `quit_keep`, `quit_remove`, etc.). Nothing in the UI
@@ -340,8 +341,10 @@ reassignable and keeps the update logic small.
   `t` opens the file picker, `C` the comment picker, and `T` the theme picker
   (see below). `v` starts a line selection for anchoring a comment to a range
   (see Comments), `V` opens the compare-versions picker, `H` hides and shows all
-  comments, and `R` refreshes (see Version comparison and refresh). Lowercase
-  `h` is left unbound for a planned help modal.
+  comments. On a comment, `r` replies (threading beneath it), `e` edits, `x`
+  resolves, and `d` withdraws. `ctrl-r` refreshes (see Version comparison and
+  refresh), mirroring `ctrl-s` for save. Lowercase `h` is left unbound for a
+  planned help modal.
 
 ### Modal pickers
 
@@ -368,7 +371,7 @@ stays the latest, the left is the chosen version, so the reviewer sees only what
 moved since then. The list opens on the version in effect, and choosing the
 latest returns to the full diff.
 
-Refresh (`R`) recaptures the source into a new version and rebases comments and
+Refresh (`ctrl-r`) recaptures the source into a new version and rebases comments and
 drafts forward (see Comments & anchoring). It keeps the reviewer on the version
 they were viewing and then opens the compare-versions picker, opening on where
 they were and marking where they last committed comments, so they choose how to

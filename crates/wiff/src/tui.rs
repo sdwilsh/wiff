@@ -690,22 +690,23 @@ mod tests {
         // reports the tally. A version-comparison prompt is offered over the full
         // diff, opening on the latest where the reviewer was reading.
         wince::assert_eq!(app.picking(), true);
-        let expected = "\
-Review [press c here to draft the review comment] [press e to write the description]
-modified  f.txt
-@@ -1,3 +1,5 @@
-        1 + zero
-   1    2   alpha
-   2    3   beta
-   3    4   gamma
-┌ wez (human)  press e to edit  r to resolve  d to delete  tab to expand/collapse ┐
-│why delta?                                                                    │
-└──────────┬───────────────────────────────────────────────────────────────────┘
-        5 +└delta
----
-captured v1; rebased 1 comment: 1 exact, 0 shifted, 0 outdated
-";
-        wince::assert_eq!(screen(&app, 80), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            screen(&app, 80),
+            "Review [press c here to draft the review comment] [press e to write the description]\n",
+            "modified  f.txt\n",
+            "@@ -1,3 +1,5 @@\n",
+            "        1 + zero\n",
+            "   1    2   alpha\n",
+            "   2    3   beta\n",
+            "   3    4   gamma\n",
+            "┌ wez (human)  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse ┐\n",
+            "│why delta?                                                                    │\n",
+            "└──────────┬───────────────────────────────────────────────────────────────────┘\n",
+            "        5 +└delta\n",
+            "---\n",
+            "captured v1; rebased 1 comment: 1 exact, 0 shifted, 0 outdated\n",
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -993,21 +994,22 @@ new file mode 100644
 
         // The reloaded review shows the comment as committed (no draft badge)
         // above the alpha line, and the status line reports the commit.
-        let expected = "\
-Review [press c here to draft the review comment] [press e to write the description]
-added  f.txt
-@@ -0,0 +1,4 @@
-┌ wez (human)  press e to edit  r to resolve  d to delete  tab to expand/collapse ┐
-│why alpha?                                                                    │
-└──────────┬───────────────────────────────────────────────────────────────────┘
-        1 +└alpha
-        2 + beta
-        3 + gamma
-        4 + delta
----
-committed 1 change
-";
-        wince::assert_eq!(screen(&app, 80), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            screen(&app, 80),
+            "Review [press c here to draft the review comment] [press e to write the description]\n",
+            "added  f.txt\n",
+            "@@ -0,0 +1,4 @@\n",
+            "┌ wez (human)  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse ┐\n",
+            "│why alpha?                                                                    │\n",
+            "└──────────┬───────────────────────────────────────────────────────────────────┘\n",
+            "        1 +└alpha\n",
+            "        2 + beta\n",
+            "        3 + gamma\n",
+            "        4 + delta\n",
+            "---\n",
+            "committed 1 change\n",
+        );
     }
 
     #[test]
@@ -1115,21 +1117,22 @@ new file mode 100644
 
         // The agent's comment now shows as committed above the alpha line, and
         // the status line reports what was synced.
-        let expected = "\
-Review [press c here to draft the review comment] [press e to write the description]
-added  f.txt
-@@ -0,0 +1,4 @@
-┌ assistant (agent)  press e to edit  r to resolve  d to delete  tab to expand/collapse ┐
-│alpha looks off                                                               │
-└──────────┬───────────────────────────────────────────────────────────────────┘
-        1 +└alpha
-        2 + beta
-        3 + gamma
-        4 + delta
----
-synced: 1 added
-";
-        wince::assert_eq!(screen(&app, 80), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            screen(&app, 80),
+            "Review [press c here to draft the review comment] [press e to write the description]\n",
+            "added  f.txt\n",
+            "@@ -0,0 +1,4 @@\n",
+            "┌ assistant (agent)  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse ┐\n",
+            "│alpha looks off                                                               │\n",
+            "└──────────┬───────────────────────────────────────────────────────────────────┘\n",
+            "        1 +└alpha\n",
+            "        2 + beta\n",
+            "        3 + gamma\n",
+            "        4 + delta\n",
+            "---\n",
+            "synced: 1 added\n",
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1422,7 +1425,7 @@ synced: 1 added
             "@@ -1,3 +1,3 @@\n",
             "   1    1   alpha\n",
             "   2      - beta\n",
-            "┌ wez (human)  press e to edit  r to resolve  d to delete  tab to expand/collapse ┐\n",
+            "┌ wez (human)  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse ┐\n",
             "│why uppercase?                                                                │\n",
             "└──────────┬───────────────────────────────────────────────────────────────────┘\n",
             "        2 +└BETA\n",
@@ -1522,11 +1525,11 @@ synced: 1 added
             "@@ -1,3 +1,3 @@\n",
             "   1      - alpha\n",
             "   2      - beta\n",
-            "┌ wez (human)  press e to edit  r to resolve  d to delete  tab to expand/collapse ┐\n",
+            "┌ wez (human)  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse ┐\n",
             "│why line 1?                                                                   │\n",
             "└──────────┬───────────────────────────────────────────────────────────────────┘\n",
             "        1 +└ALPHA\n",
-            "┌ wez (human)  press e to edit  r to resolve  d to delete  tab to expand/collapse ┐\n",
+            "┌ wez (human)  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse ┐\n",
             "│why line 2?                                                                   │\n",
             "└──────────┬───────────────────────────────────────────────────────────────────┘\n",
             "        2 +└BETA\n",

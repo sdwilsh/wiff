@@ -101,12 +101,12 @@ fn an_empty_config_is_all_defaults() {
 
 #[test]
 fn the_configured_keymap_overlays_the_defaults() {
-    let config = Config::parse("[keymap]\nline_down = [\"x\"]\n").unwrap();
+    let config = Config::parse("[keymap]\nline_down = [\"R\"]\n").unwrap();
     let map = config.keymap().unwrap();
     // The override binds and the default "j" is gone, while untouched actions
     // keep their defaults.
     wince::assert_eq!(
-        map.resolve(&presses("x")),
+        map.resolve(&presses("R")),
         Resolution::Action(Action::LineDown)
     );
     wince::assert_eq!(map.resolve(&presses("j")), Resolution::None);
