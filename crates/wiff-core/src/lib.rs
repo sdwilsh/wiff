@@ -19,7 +19,10 @@ pub mod session;
 pub mod source;
 
 pub use capture::{create_session, write_diff_version};
-pub use comment::{AddedComment, DraftComment, delete_comment, set_disposition, set_resolved};
+pub use comment::{
+    AddedComment, AnchorFailures, DraftComment, capture_draft_anchors, delete_comment,
+    set_disposition, set_resolved,
+};
 pub use compare::{Comparison, LineOrigin, compare_versions};
 pub use config::AuthorDefaults;
 pub use description::set_description;

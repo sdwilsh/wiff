@@ -410,10 +410,9 @@ impl Review {
         !deleted
     }
 
-    /// Draft a new comment on `target` with `body`, returning its identity so
-    /// the caller can focus it. The draft is anchored against the review's diff
-    /// version and attributed to its author; snippet capture is left for a
-    /// later refresh.
+    /// Draft a new comment on `target` with `body`, attributed to this review's
+    /// author and recorded against its diff version without an anchor, and return
+    /// its identity.
     pub fn add_comment(&mut self, target: CommentTarget, body: String) -> Ulid {
         let (version, target) = self.anchor_target(target);
         let event = draft_create(

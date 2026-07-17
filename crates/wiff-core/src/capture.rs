@@ -60,6 +60,13 @@ pub fn create_session(
 /// Write diff version `number` into `log` through the held `lock`: persist the
 /// raw text to the sideband `vN.diff` and append its indexed
 /// [`DiffVersionRecord`]. Returns the assigned sequence number.
+///
+/// A version is written once and never rewritten; a later change captures a new
+/// numbered version rather than editing an existing one, and the record naming it
+/// is appended only after the file is fully written. A reader that has observed
+/// that record can therefore read `vN.diff` without the session lock: it sees a
+/// complete diff, never a partial or superseded one (a removed session may find
+/// it gone instead).
 pub fn write_diff_version(
     log: &mut SessionLog,
     lock: &mut SessionLock,

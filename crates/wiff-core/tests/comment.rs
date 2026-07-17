@@ -5,14 +5,16 @@ use std::path::Path;
 use time::OffsetDateTime;
 use ulid::Ulid;
 use wiff_core::record::{
-    Anchor, Author, AuthorKind, CommentTarget, DiffVersionRecord, Disposition, FORMAT_VERSION,
-    FileSummary, Seq, SessionHeader, SourceKind, VersionNumber,
+    Anchor, Author, AuthorKind, CommentEvent, CommentEventKind, CommentTarget, DiffVersionRecord,
+    Disposition, FORMAT_VERSION, FileSummary, RecordBody, Seq, SessionHeader, SourceKind,
+    VersionNumber,
 };
 use wiff_core::review::{CommentState, fold};
 use wiff_core::session::read_records;
 use wiff_core::{
     CapturedDiff, DraftComment, Error, LockWait, ProjectIdentity, SessionLog, SidebandHash,
-    create_session, delete_comment, set_disposition, set_resolved,
+    capture_draft_anchors, create_session, delete_comment, draft_create, set_disposition,
+    set_resolved,
 };
 use wiff_diff::{FileStatus, LineNo, Side};
 
@@ -595,6 +597,152 @@ fn a_reply_to_a_withdrawn_comment_is_refused_at_authoring() {
         .map(|comment| (comment.id, comment.deleted))
         .collect();
     wince::assert_eq!(ids, vec![(root.id, true)]);
+}
+
+#[test]
+fn capturing_draft_anchors_fills_a_line_range_comment_authored_without_one() {
+    // A comment drafted in the TUI is buffered without an anchor. Capturing the
+    // batch fills the line-range comment from its version's diff and leaves the
+    // review-level comment, which has no lines to anchor, untouched.
+    let (_base, log) = session();
+    let mut drafts = vec![
+        RecordBody::CommentEvent(draft_create(
+            human("wez"),
+            lines_target("src/main.rs", 2, 2),
+            VersionNumber(0),
+            None,
+            "why 3?".to_string(),
+        )),
+        RecordBody::CommentEvent(draft_create(
+            human("wez"),
+            CommentTarget::Review,
+            VersionNumber(0),
+            None,
+            "looks good".to_string(),
+        )),
+        RecordBody::CommentEvent(draft_create(
+            human("wez"),
+            lines_target("src/main.rs", 40, 40),
+            VersionNumber(0),
+            None,
+            "beyond the window".to_string(),
+        )),
+        RecordBody::CommentEvent(draft_create(
+            human("wez"),
+            lines_target("nope.rs", 1, 1),
+            VersionNumber(0),
+            None,
+            "not in the diff".to_string(),
+        )),
+    ];
+    let failures = capture_draft_anchors(&log, &mut drafts);
+    let errors: Vec<String> = failures.errors.iter().map(ToString::to_string).collect();
+
+    // The in-window line comment gains its snippet; the review comment and the
+    // out-of-window line comment stay bare locators without error; only the
+    // comment on a file absent from the diff is counted and reported as a
+    // failure.
+    let anchors: Vec<Option<Anchor>> = drafts
+        .iter()
+        .map(|draft| match draft {
+            RecordBody::CommentEvent(CommentEvent {
+                kind: CommentEventKind::Create(create),
+                ..
+            }) => create.anchor.clone(),
+            other => panic!("expected a create event, got {other:?}"),
+        })
+        .collect();
+    wince::assert_eq!(
+        anchors,
+        vec![
+            Some(Anchor {
+                snippet: vec!["let b = 3;".to_string()],
+                context_before: vec!["let a = 1;".to_string()],
+                context_after: vec!["let c = 4;".to_string()],
+            }),
+            None,
+            None,
+            None,
+        ]
+    );
+    wince::assert_eq!(failures.unanchored, 1);
+    wince::assert_eq!(
+        errors,
+        vec!["cannot anchor comment: nope.rs is not part of diff v0".to_string()]
+    );
+}
+
+#[test]
+fn capturing_draft_anchors_reports_one_fault_per_damage_across_drafts() {
+    // Two drafts share a version whose diff cannot be read, and two more share a
+    // file absent from a readable version's diff. Each fault is reported once,
+    // however many comments it leaves unanchored, while every affected comment
+    // is counted.
+    let (_base, log) = session();
+
+    // v0 is the only captured version, so reading any other version's diff fails.
+    let unread_version = VersionNumber(7);
+
+    let mut drafts = vec![
+        RecordBody::CommentEvent(draft_create(
+            human("wez"),
+            lines_target("src/main.rs", 2, 2),
+            unread_version,
+            None,
+            "first against the unread diff".to_string(),
+        )),
+        RecordBody::CommentEvent(draft_create(
+            human("wez"),
+            lines_target("src/main.rs", 3, 3),
+            unread_version,
+            None,
+            "second against the unread diff".to_string(),
+        )),
+        RecordBody::CommentEvent(draft_create(
+            human("wez"),
+            lines_target("nope.rs", 1, 1),
+            VersionNumber(0),
+            None,
+            "first on the absent file".to_string(),
+        )),
+        RecordBody::CommentEvent(draft_create(
+            human("wez"),
+            lines_target("nope.rs", 2, 2),
+            VersionNumber(0),
+            None,
+            "second on the absent file".to_string(),
+        )),
+    ];
+    let failures = capture_draft_anchors(&log, &mut drafts);
+    let sideband = log.sideband_dir().display().to_string();
+    let errors: Vec<String> = failures
+        .errors
+        .iter()
+        .map(|err| err.to_string().replace(&sideband, "TMPDIR"))
+        .collect();
+
+    // No draft gained an anchor.
+    let anchors: Vec<Option<Anchor>> = drafts
+        .iter()
+        .map(|draft| match draft {
+            RecordBody::CommentEvent(CommentEvent {
+                kind: CommentEventKind::Create(create),
+                ..
+            }) => create.anchor.clone(),
+            other => panic!("expected a create event, got {other:?}"),
+        })
+        .collect();
+    wince::assert_eq!(anchors, vec![None, None, None, None]);
+
+    // All four comments are counted, but the two shared faults report once each.
+    wince::assert_eq!(failures.unanchored, 4);
+    wince::assert_eq!(
+        errors,
+        vec![
+            "io error at TMPDIR/v7.diff: No such file or directory (os error 2)".to_string(),
+            "cannot anchor comment: nope.rs is not part of diff v0".to_string(),
+        ]
+    );
 }
 
 #[test]

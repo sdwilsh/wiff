@@ -1,20 +1,16 @@
-//! Authoring comments against a session.
-//!
-//! A [`DraftComment`] names who is commenting, what they are commenting on, and
-//! the body. Appending it captures the diff version the comment is authored
-//! against and, for a line-range target, an [`Anchor`]: the exact text of the
-//! anchored lines plus a window of surrounding context, reconstructed from that
-//! version's diff so the comment can later be rebased onto newer versions.
-//!
-//! Anchoring is best-effort. A reviewer may point at a line range purely to
-//! direct the reader's attention, and those lines can sit outside the captured
-//! context window. When the range cannot be reconstructed the comment is still
-//! recorded, just without an anchor and so without rebasing support.
+//! Authoring comments against a review session: attributing each to an author,
+//! tying it to the diff version under review, and, for a line-range target,
+//! anchoring it so it can be relocated onto later versions when the reviewed
+//! lines move. Anchoring is best-effort; a range outside the captured diff
+//! leaves the comment a bare locator without rebasing support.
+
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 
 use ulid::Ulid;
 use wiff_diff::parse::parse;
 use wiff_diff::reconstitute::known_lines;
-use wiff_diff::{LineNo, Side};
+use wiff_diff::{Diff, FileDiff, LineNo, Side};
 
 use crate::error::{Error, Result};
 use crate::record::{
@@ -62,12 +58,7 @@ impl DraftComment {
         let (mut lock, records) = log.lock_and_sync(wait)?;
         let version = latest_diff_version(&records)?.number;
         let anchor = match &self.target {
-            CommentTarget::Lines {
-                file,
-                side,
-                start_line,
-                end_line,
-            } => capture_anchor(log, version, file, *side, *start_line, *end_line)?,
+            CommentTarget::Lines { .. } => capture_target_anchor(log, version, &self.target)?,
             // A reply names the comment it answers. Confirm that comment exists
             // before writing: fold rejects a reply to an unknown id as a corrupt
             // log, so appending an unchecked reply would make the whole session
@@ -106,6 +97,149 @@ impl DraftComment {
             anchor,
         })
     }
+}
+
+/// The comments a batch anchor-capture could not anchor and why, for the caller
+/// to report to the reviewer.
+#[derive(Debug, Default)]
+pub struct AnchorFailures {
+    /// The number of line-range drafts left without an anchor by an unreadable or
+    /// unparsable version diff, or a file absent from it.
+    pub unanchored: usize,
+    /// The distinct causes behind those comments, deduplicated by message and in
+    /// first-encounter order: several comments sharing one fault produce one
+    /// message, not a flood of identical ones.
+    pub errors: Vec<Error>,
+}
+
+impl AnchorFailures {
+    /// Returns a one-line summary of how many comments could not be anchored, or
+    /// `None` when every comment anchored. Suitable for a status line that has no
+    /// room for the individual causes.
+    pub fn summary(&self) -> Option<String> {
+        (self.unanchored > 0).then(|| {
+            format!(
+                "{} comment{} could not be anchored",
+                self.unanchored,
+                if self.unanchored == 1 { "" } else { "s" }
+            )
+        })
+    }
+}
+
+/// Fill the anchor for every line-range draft among `drafts` that lacks one,
+/// reading the diff of the version each was authored against. Returns the
+/// comments left unanchored by a genuine failure and the distinct faults behind
+/// them; those comments still commit, as bare locators.
+///
+/// A comment drafted in the TUI is buffered without an anchor; filling it before
+/// commit gives it the same rebasing support as one authored through the CLI.
+/// A drafted comment's target line numbers are in its own `version`'s coordinate
+/// space, since [`DraftBuffer::rebase`] moves the two together. A written
+/// version's diff is fixed once its indexing record is appended, so this reads it
+/// without the session lock and cannot observe a partial or superseded diff.
+///
+/// A range outside the captured window is a deliberate bare locator, not counted
+/// as a failure; a file absent from the version's diff is counted and reported
+/// but still commits, so one bad draft does not cost the reviewer the whole batch.
+///
+/// [`DraftBuffer::rebase`]: crate::draft::DraftBuffer::rebase
+pub fn capture_draft_anchors(log: &SessionLog, drafts: &mut [RecordBody]) -> AnchorFailures {
+    // Parse each version's diff once and reuse it for every draft against that
+    // version: a batch usually comments several times on one version.
+    let mut diffs: HashMap<VersionNumber, Option<Diff>> = HashMap::new();
+    // Several comments can share one fault; report its message once while still
+    // counting each comment it left unanchored.
+    let mut reported: HashSet<String> = HashSet::new();
+    let mut failures = AnchorFailures::default();
+    for draft in drafts {
+        let RecordBody::CommentEvent(CommentEvent {
+            kind: CommentEventKind::Create(create),
+            ..
+        }) = draft
+        else {
+            continue;
+        };
+        if create.anchor.is_some() || !matches!(create.target, CommentTarget::Lines { .. }) {
+            continue;
+        }
+        let diff = match diffs.entry(create.version) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                let parsed = match read_version_diff(log, create.version) {
+                    Ok(diff) => Some(diff),
+                    Err(err) => {
+                        if reported.insert(err.to_string()) {
+                            failures.errors.push(err);
+                        }
+                        None
+                    }
+                };
+                entry.insert(parsed)
+            }
+        };
+        let Some(diff) = diff else {
+            failures.unanchored += 1;
+            continue;
+        };
+        match anchor_in_diff(diff, create.version, &create.target) {
+            Ok(anchor) => create.anchor = anchor,
+            Err(err) => {
+                failures.unanchored += 1;
+                if reported.insert(err.to_string()) {
+                    failures.errors.push(err);
+                }
+            }
+        }
+    }
+    failures
+}
+
+/// Capture the anchor for a line-range `target` in diff version `number` by
+/// reading and parsing that version's sideband diff. Yields `Ok(None)` for a
+/// range beyond the captured window, and an error for a file absent from the
+/// diff.
+fn capture_target_anchor(
+    log: &SessionLog,
+    number: VersionNumber,
+    target: &CommentTarget,
+) -> Result<Option<Anchor>> {
+    let diff = read_version_diff(log, number)?;
+    anchor_in_diff(&diff, number, target)
+}
+
+fn read_version_diff(log: &SessionLog, number: VersionNumber) -> Result<Diff> {
+    Ok(parse(&log.read_diff(number)?)?)
+}
+
+/// Returns the anchor for a line-range `target` within `diff`, using `number`
+/// only for the error message. Yields `Ok(None)` for a non-line target or a range
+/// beyond the captured window, and an error for a file absent from the diff.
+pub(crate) fn anchor_in_diff(
+    diff: &Diff,
+    number: VersionNumber,
+    target: &CommentTarget,
+) -> Result<Option<Anchor>> {
+    let CommentTarget::Lines {
+        file,
+        side,
+        start_line,
+        end_line,
+    } = target
+    else {
+        return Ok(None);
+    };
+    let file_diff = diff
+        .files
+        .iter()
+        .find(|candidate| candidate.display_path() == file)
+        .ok_or_else(|| Error::Anchor(format!("{file} is not part of diff v{number}")))?;
+    Ok(anchor_in_file_diff(
+        file_diff,
+        *side,
+        *start_line,
+        *end_line,
+    ))
 }
 
 /// Set the resolved state of an existing comment, appending a resolve record
@@ -220,41 +354,29 @@ fn latest_diff_version(records: &[Record]) -> Result<&DiffVersionRecord> {
         .ok_or(Error::NoDiffVersion)
 }
 
-/// Capture the anchor for a line range on one side of `file` in diff version
-/// `number`: the exact text of lines `start..=end`, plus up to
-/// [`ANCHOR_CONTEXT`] known lines of context on each side.
-///
-/// The diff is captured with wide context, so its reconstructed lines cover most
-/// or all of each changed file and the range is almost always present. When it
-/// is not, because the target sits beyond the captured window, this returns
-/// `Ok(None)`: the comment stands as a locator without a rebasable anchor. A
-/// file absent from the diff entirely is a hard error, since there is nothing
-/// for the comment to point into.
-fn capture_anchor(
-    log: &SessionLog,
-    number: VersionNumber,
-    file: &str,
+/// Returns the anchor for lines `start..=end` on `side` within a single file's
+/// diff: the exact text of those lines, plus up to [`ANCHOR_CONTEXT`] known
+/// context lines on each side. Yields `None` when the range is not present as
+/// one contiguous run in the captured window.
+fn anchor_in_file_diff(
+    file_diff: &FileDiff,
     side: Side,
     start: LineNo,
     end: LineNo,
-) -> Result<Option<Anchor>> {
-    let path = log.sideband_dir().join(format!("v{number}.diff"));
-    let text = std::fs::read_to_string(&path).map_err(|source| Error::io(&path, source))?;
-    let diff = parse(&text)?;
-    let file_diff = diff
-        .files
-        .iter()
-        .find(|candidate| candidate.display_path() == file)
-        .ok_or_else(|| Error::Anchor(format!("{file} is not part of diff v{number}")))?;
-
+) -> Option<Anchor> {
+    // The line count below is `end - start + 1` on `NonZeroU32` and underflows
+    // for a reversed range. Callers construct ranges low-to-high, so guarding
+    // here is defensive.
+    if end < start {
+        return None;
+    }
     let lines = known_lines(file_diff, side);
-    let Some(first) = lines
+    // `position` guarantees `lines[first]` exists, so `snippet` below holds at
+    // least one line and indexing it by `snippet.len() - 1` cannot underflow.
+    let first = lines
         .iter()
         .position(|(lineno, _)| *lineno >= start)
-        .filter(|&index| lines[index].0 == start)
-    else {
-        return Ok(None);
-    };
+        .filter(|&index| lines[index].0 == start)?;
     let want = (end.get() - start.get() + 1) as usize;
     let snippet: Vec<String> = lines
         .iter()
@@ -267,7 +389,7 @@ fn capture_anchor(
     // is nothing to anchor exactly to and the comment stays a bare locator.
     let last_lineno = lines[first + snippet.len() - 1].0;
     if snippet.len() != want || last_lineno != end {
-        return Ok(None);
+        return None;
     }
 
     let context_before = lines[first.saturating_sub(ANCHOR_CONTEXT)..first]
@@ -281,9 +403,9 @@ fn capture_anchor(
         .map(|(_, text)| text.clone())
         .collect();
 
-    Ok(Some(Anchor {
+    Some(Anchor {
         snippet,
         context_before,
         context_after,
-    }))
+    })
 }

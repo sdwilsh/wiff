@@ -13,8 +13,8 @@ use wiff_core::record::{
 };
 use wiff_core::session::{SessionWatcher, read_records, remove_session};
 use wiff_core::{
-    LockWait, RefreshOutcome, ReviewState, SessionLog, SidebandHash, compare_versions,
-    refresh_session,
+    AnchorFailures, LockWait, RefreshOutcome, ReviewState, SessionLog, SidebandHash,
+    capture_draft_anchors, compare_versions, refresh_session,
 };
 use wiff_tui::{
     App, CommentSync, CompareRequest, DiffView, Exit, ExitDefault, KeyHints, Review, Theme, run,
@@ -255,16 +255,25 @@ fn save_in_place(session_path: &Path, app: &mut App) -> anyhow::Result<()> {
         return Ok(());
     }
     let count = drafts.len();
-    commit_drafts(session_path, drafts)?;
+    let anchor_failures = commit_drafts(session_path, drafts)?;
     app.clear_drafts();
     let changes = format!("{count} change{}", if count == 1 { "" } else { "s" });
     // The commit is durable once it returns; a reload failure here only leaves
     // the view stale until the next sync tick, so report the commit as done
     // rather than as a failed save that discarded nothing.
-    match reload_committed(session_path, app) {
-        Ok(_) => app.set_message(format!("committed {changes}")),
-        Err(err) => app.set_message(format!("committed {changes}; view refresh failed: {err}")),
+    let mut message = match reload_committed(session_path, app) {
+        Ok(_) => format!("committed {changes}"),
+        Err(err) => format!("committed {changes}; view refresh failed: {err}"),
+    };
+    // Report unanchored comments as a count: the status line is one row, and the
+    // per-fault detail would bury the commit result. A comment still commits,
+    // just without rebasing support. The causes are dropped here; a reviewer who
+    // wants them sees the per-cause detail on the exit-commit path instead.
+    if let Some(summary) = anchor_failures.summary() {
+        message.push_str("; ");
+        message.push_str(&summary);
     }
+    app.set_message(message);
     Ok(())
 }
 
@@ -356,7 +365,15 @@ fn exit_default(on_exit: OnExit) -> ExitDefault {
 fn resolve_exit(exit: Exit, session_path: &Path, drafts: Vec<RecordBody>) -> anyhow::Result<()> {
     match exit {
         Exit::Commit => {
-            commit_drafts(session_path, drafts)?;
+            // Report the same count the interactive save shows, then the causes
+            // stderr has room for that the one-row status line does not.
+            let failures = commit_drafts(session_path, drafts)?;
+            if let Some(summary) = failures.summary() {
+                eprintln!("warning: {summary}");
+                for cause in &failures.errors {
+                    eprintln!("  {cause}");
+                }
+            }
             println!("kept session at {}", session_path.display());
         }
         Exit::Discard => {
@@ -373,21 +390,29 @@ fn resolve_exit(exit: Exit, session_path: &Path, drafts: Vec<RecordBody>) -> any
     Ok(())
 }
 
-/// Append the reviewer's buffered draft edits to the session log in order under
-/// a single lock acquisition, so a contended or diverged file writes none of
-/// them and the caller can retry the whole batch without duplicating a prefix.
-/// Does nothing when there are no drafts.
-fn commit_drafts(session_path: &Path, drafts: Vec<RecordBody>) -> anyhow::Result<()> {
+/// Commit the reviewer's buffered drafts, capturing each line comment's anchor
+/// first. Returns the comments left unanchored by a damaged session and the
+/// distinct faults behind them; those comments still commit, as bare locators.
+fn commit_drafts(
+    session_path: &Path,
+    mut drafts: Vec<RecordBody>,
+) -> anyhow::Result<AnchorFailures> {
     if drafts.is_empty() {
-        return Ok(());
+        return Ok(AnchorFailures::default());
     }
     let mut log = SessionLog::open(session_path)?;
+    // Capture anchors before the append: the anchor must be part of the same
+    // committed batch as the comment it belongs to. This reads each version's
+    // sideband diff without the session lock; a written version's diff is fixed
+    // once its record is appended, and if a concurrent removal takes it out from
+    // under this read the comment simply commits as a bare locator.
+    let anchor_failures = capture_draft_anchors(&log, &mut drafts);
     // Buffered drafts append as a batch that rejects a diverged file rather
     // than resyncing to it. The reviewer composed them against the view folded
     // at save time; failing the save on a concurrent write lets the view reload
     // and reconcile before the reviewer retries.
     log.append_all_locked(drafts)?;
-    Ok(())
+    Ok(anchor_failures)
 }
 
 #[cfg(test)]
@@ -1105,5 +1130,418 @@ added  f.txt
 synced: 1 added
 ";
         wince::assert_eq!(screen(&app, 80), expected.to_string());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_comment_drafted_in_the_tui_renders_its_snippet_after_commit() {
+        // A reviewer highlights a changed line in the TUI and drafts a comment
+        // on it. Committing captures the line's anchor, so `wiff render` shows
+        // the fenced snippet the same as a comment added through the CLI.
+        let repo = tempfile::tempdir().expect("repo tempdir");
+        let data = tempfile::tempdir().expect("data tempdir");
+        let file = repo.path().join("f.txt");
+
+        git(repo.path(), &["init", "-q"]);
+        std::fs::write(&file, "alpha\nbeta\ngamma\n").expect("write base");
+        git(repo.path(), &["add", "f.txt"]);
+        git(repo.path(), &["commit", "-q", "-m", "base"]);
+        // The working tree changes the middle line; this is the diff v0 captures.
+        std::fs::write(&file, "alpha\nBETA\ngamma\n").expect("write v0");
+
+        let identity = ProjectIdentity {
+            canonical: "demo".to_string(),
+            repo_root: Some(repo.path().to_path_buf()),
+            scm: Some(ScmType::Git),
+        };
+        let captured = capture_scm_diff(
+            Some(ScmType::Git),
+            repo.path().to_path_buf(),
+            DiffSelection::Worktree,
+        )
+        .await
+        .expect("capture v0");
+        let log = create_session(data.path(), &identity, repo.path(), &captured, None)
+            .expect("create session");
+        let session_path = log.path().to_path_buf();
+        drop(log);
+
+        let theme = Theme::dark();
+        let state = ReviewState::load(&session_path).expect("load state");
+        let version = state.latest_version().expect("a captured version").number;
+        let diff = wiff_diff::parse(
+            &SessionLog::open(&session_path)
+                .unwrap()
+                .read_diff(version)
+                .unwrap(),
+        )
+        .expect("parse v0");
+        let mut review = Review::new(
+            DiffView::new(theme).expect("renderer"),
+            diff,
+            wez(),
+            version.get(),
+            state.comments.clone(),
+            None,
+        );
+
+        // The reviewer drafts a comment on the changed line, then commits it.
+        review.add_comment(
+            CommentTarget::Lines {
+                file: "f.txt".to_string(),
+                side: Side::After,
+                start_line: LineNo::new(2).unwrap(),
+                end_line: LineNo::new(2).unwrap(),
+            },
+            "why uppercase?".to_string(),
+        );
+        let drafts = review.take_drafts();
+        commit_drafts(&session_path, drafts).expect("commit");
+
+        // The rendered review shows the comment with its captured snippet: the
+        // changed line marked, with the line above and below as context. The
+        // session's ulid and the comment's are variable, so both are normalized
+        // before the comparison.
+        let state = ReviewState::load(&session_path).expect("reload state");
+        let rendered = crate::render::render(&state, crate::render::Format::Markdown)
+            .expect("render markdown");
+        let normalized = rendered
+            .replace(&state.session.ulid.to_string(), "SESSION")
+            .replace(&state.comments[0].id.to_string(), "COMMENT");
+        wince::snapshot_str!(
+            normalized,
+            "# Review SESSION\n",
+            "\n",
+            "- project: demo\n",
+            "- source: git_worktree\n",
+            "- version: v0 (1 file)\n",
+            "\n",
+            "## Comments\n",
+            "\n",
+            "### f.txt\n",
+            "\n",
+            "- COMMENT line 2 (after) by wez (human)\n",
+            "  why uppercase?\n",
+            "\n",
+            "  ```\n",
+            "       1 | alpha\n",
+            "  >    2 | BETA\n",
+            "       3 | gamma\n",
+            "  ```\n",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_draft_refreshed_before_commit_captures_its_anchor_from_the_new_version() {
+        // A comment is drafted against v0, then a refresh recaptures the working
+        // tree as v1 and rebases the draft forward before it is committed. The
+        // commit must capture the anchor from v1, where the draft now lives, so
+        // the rendered snippet shows the reviewed line at its v1 position with
+        // its v1 context rather than v0's.
+        let repo = tempfile::tempdir().expect("repo tempdir");
+        let data = tempfile::tempdir().expect("data tempdir");
+        let file = repo.path().join("f.txt");
+
+        git(repo.path(), &["init", "-q"]);
+        std::fs::write(&file, "alpha\nbeta\ngamma\n").expect("write base");
+        git(repo.path(), &["add", "f.txt"]);
+        git(repo.path(), &["commit", "-q", "-m", "base"]);
+        // v0 appends delta; the draft comments on it at line 4.
+        std::fs::write(&file, "alpha\nbeta\ngamma\ndelta\n").expect("write v0");
+
+        let identity = ProjectIdentity {
+            canonical: "demo".to_string(),
+            repo_root: Some(repo.path().to_path_buf()),
+            scm: Some(ScmType::Git),
+        };
+        let captured = capture_scm_diff(
+            Some(ScmType::Git),
+            repo.path().to_path_buf(),
+            DiffSelection::Worktree,
+        )
+        .await
+        .expect("capture v0");
+        let log = create_session(data.path(), &identity, repo.path(), &captured, None)
+            .expect("create session");
+        let session_path = log.path().to_path_buf();
+        drop(log);
+
+        let theme = Theme::dark();
+        let state = ReviewState::load(&session_path).expect("load state");
+        let version = state.latest_version().expect("a captured version").number;
+        let diff = wiff_diff::parse(
+            &SessionLog::open(&session_path)
+                .unwrap()
+                .read_diff(version)
+                .unwrap(),
+        )
+        .expect("parse v0");
+        let mut review = Review::new(
+            DiffView::new(theme.clone()).expect("renderer"),
+            diff,
+            wez(),
+            version.get(),
+            state.comments.clone(),
+            None,
+        );
+        review.add_comment(
+            CommentTarget::Lines {
+                file: "f.txt".to_string(),
+                side: Side::After,
+                start_line: LineNo::new(4).unwrap(),
+                end_line: LineNo::new(4).unwrap(),
+            },
+            "why delta?".to_string(),
+        );
+        let mut app = App::reviewing(review, 40, &theme);
+
+        // A line inserted at the top slides delta from line 4 to line 5; the
+        // refresh recaptures this as v1 and rebases the draft onto it.
+        std::fs::write(&file, "zero\nalpha\nbeta\ngamma\ndelta\n").expect("write v1");
+        refresh_in_place(
+            &session_path,
+            &wez(),
+            wiff_diff::DEFAULT_TAB_WIDTH,
+            &mut app,
+        )
+        .expect("refresh in place");
+
+        let drafts = app.draft_records();
+        commit_drafts(&session_path, drafts).expect("commit");
+
+        // The committed comment renders its anchor from v1: delta at line 5 with
+        // gamma above it, proving the capture read the version the draft rebased
+        // onto rather than the v0 it was authored against.
+        let state = ReviewState::load(&session_path).expect("reload state");
+        let rendered = crate::render::render(&state, crate::render::Format::Markdown)
+            .expect("render markdown");
+        let normalized = rendered
+            .replace(&state.session.ulid.to_string(), "SESSION")
+            .replace(&state.comments[0].id.to_string(), "COMMENT");
+        wince::snapshot_str!(
+            normalized,
+            "# Review SESSION\n",
+            "\n",
+            "- project: demo\n",
+            "- source: git_worktree\n",
+            "- version: v1 (1 file)\n",
+            "\n",
+            "## Comments\n",
+            "\n",
+            "### f.txt\n",
+            "\n",
+            "- COMMENT line 5 (after) by wez (human)\n",
+            "  why delta?\n",
+            "\n",
+            "  ```\n",
+            "       2 | alpha\n",
+            "       3 | beta\n",
+            "       4 | gamma\n",
+            "  >    5 | delta\n",
+            "  ```\n",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn saving_a_draft_whose_diff_is_gone_reports_the_comment_as_unanchored() {
+        // A comment is drafted against v0, then that version's sideband diff is
+        // removed before the reviewer saves. The commit cannot read the diff to
+        // capture the anchor, so the comment commits as a bare locator and the
+        // status line reports it as unanchored without failing the save.
+        let repo = tempfile::tempdir().expect("repo tempdir");
+        let data = tempfile::tempdir().expect("data tempdir");
+        let file = repo.path().join("f.txt");
+
+        git(repo.path(), &["init", "-q"]);
+        std::fs::write(&file, "alpha\nbeta\ngamma\n").expect("write base");
+        git(repo.path(), &["add", "f.txt"]);
+        git(repo.path(), &["commit", "-q", "-m", "base"]);
+        std::fs::write(&file, "alpha\nBETA\ngamma\n").expect("write v0");
+
+        let identity = ProjectIdentity {
+            canonical: "demo".to_string(),
+            repo_root: Some(repo.path().to_path_buf()),
+            scm: Some(ScmType::Git),
+        };
+        let captured = capture_scm_diff(
+            Some(ScmType::Git),
+            repo.path().to_path_buf(),
+            DiffSelection::Worktree,
+        )
+        .await
+        .expect("capture v0");
+        let log = create_session(data.path(), &identity, repo.path(), &captured, None)
+            .expect("create session");
+        let session_path = log.path().to_path_buf();
+        drop(log);
+
+        let theme = Theme::dark();
+        let state = ReviewState::load(&session_path).expect("load state");
+        let version = state.latest_version().expect("a captured version").number;
+        let diff = wiff_diff::parse(
+            &SessionLog::open(&session_path)
+                .unwrap()
+                .read_diff(version)
+                .unwrap(),
+        )
+        .expect("parse v0");
+        let mut review = Review::new(
+            DiffView::new(theme.clone()).expect("renderer"),
+            diff,
+            wez(),
+            version.get(),
+            state.comments.clone(),
+            None,
+        );
+        review.add_comment(
+            CommentTarget::Lines {
+                file: "f.txt".to_string(),
+                side: Side::After,
+                start_line: LineNo::new(2).unwrap(),
+                end_line: LineNo::new(2).unwrap(),
+            },
+            "why uppercase?".to_string(),
+        );
+        let mut app = App::reviewing(review, 40, &theme);
+
+        // Remove the sideband diff the anchor would be captured from.
+        let diff_path = SessionLog::open(&session_path)
+            .unwrap()
+            .sideband_dir()
+            .join(format!("v{version}.diff"));
+        std::fs::remove_file(&diff_path).expect("remove sideband diff");
+
+        save_in_place(&session_path, &mut app).expect("save");
+
+        // The comment commits and shows above the reviewed line; the status line
+        // reports the one comment that could not be anchored as a count.
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            screen(&app, 80),
+            "Review [press c here to draft the review comment] [press e to write the description]\n",
+            "modified  f.txt\n",
+            "@@ -1,3 +1,3 @@\n",
+            "   1    1   alpha\n",
+            "   2      - beta\n",
+            "┌ wez (human)  press e to edit  r to resolve  d to delete  tab to expand/collapse ┐\n",
+            "│why uppercase?                                                                │\n",
+            "└──────────┬───────────────────────────────────────────────────────────────────┘\n",
+            "        2 +└BETA\n",
+            "   3    3   gamma\n",
+            "---\n",
+            "committed 1 change; 1 comment could not be anchored\n",
+        );
+
+        // The comment persisted as a bare locator, without an anchor.
+        let anchors: Vec<Option<wiff_core::record::Anchor>> = ReviewState::load(&session_path)
+            .expect("reload state")
+            .comments
+            .iter()
+            .map(|comment| comment.anchor.clone())
+            .collect();
+        wince::assert_eq!(anchors, vec![None]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn saving_two_drafts_whose_diff_is_gone_reports_the_plural_count() {
+        // Two comments are drafted against v0, then that version's sideband diff
+        // is removed before the reviewer saves. Both commit as bare locators and
+        // the status line pluralizes the unanchored count.
+        let repo = tempfile::tempdir().expect("repo tempdir");
+        let data = tempfile::tempdir().expect("data tempdir");
+        let file = repo.path().join("f.txt");
+
+        git(repo.path(), &["init", "-q"]);
+        std::fs::write(&file, "alpha\nbeta\ngamma\n").expect("write base");
+        git(repo.path(), &["add", "f.txt"]);
+        git(repo.path(), &["commit", "-q", "-m", "base"]);
+        std::fs::write(&file, "ALPHA\nBETA\ngamma\n").expect("write v0");
+
+        let identity = ProjectIdentity {
+            canonical: "demo".to_string(),
+            repo_root: Some(repo.path().to_path_buf()),
+            scm: Some(ScmType::Git),
+        };
+        let captured = capture_scm_diff(
+            Some(ScmType::Git),
+            repo.path().to_path_buf(),
+            DiffSelection::Worktree,
+        )
+        .await
+        .expect("capture v0");
+        let log = create_session(data.path(), &identity, repo.path(), &captured, None)
+            .expect("create session");
+        let session_path = log.path().to_path_buf();
+        drop(log);
+
+        let theme = Theme::dark();
+        let state = ReviewState::load(&session_path).expect("load state");
+        let version = state.latest_version().expect("a captured version").number;
+        let diff = wiff_diff::parse(
+            &SessionLog::open(&session_path)
+                .unwrap()
+                .read_diff(version)
+                .unwrap(),
+        )
+        .expect("parse v0");
+        let mut review = Review::new(
+            DiffView::new(theme.clone()).expect("renderer"),
+            diff,
+            wez(),
+            version.get(),
+            state.comments.clone(),
+            None,
+        );
+        for line in [1u32, 2] {
+            review.add_comment(
+                CommentTarget::Lines {
+                    file: "f.txt".to_string(),
+                    side: Side::After,
+                    start_line: LineNo::new(line).unwrap(),
+                    end_line: LineNo::new(line).unwrap(),
+                },
+                format!("why line {line}?"),
+            );
+        }
+        let mut app = App::reviewing(review, 40, &theme);
+
+        // Remove the sideband diff both anchors would be captured from.
+        let diff_path = SessionLog::open(&session_path)
+            .unwrap()
+            .sideband_dir()
+            .join(format!("v{version}.diff"));
+        std::fs::remove_file(&diff_path).expect("remove sideband diff");
+
+        save_in_place(&session_path, &mut app).expect("save");
+
+        // Both comments commit and the status line reports the plural count.
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            screen(&app, 80),
+            "Review [press c here to draft the review comment] [press e to write the description]\n",
+            "modified  f.txt\n",
+            "@@ -1,3 +1,3 @@\n",
+            "   1      - alpha\n",
+            "   2      - beta\n",
+            "┌ wez (human)  press e to edit  r to resolve  d to delete  tab to expand/collapse ┐\n",
+            "│why line 1?                                                                   │\n",
+            "└──────────┬───────────────────────────────────────────────────────────────────┘\n",
+            "        1 +└ALPHA\n",
+            "┌ wez (human)  press e to edit  r to resolve  d to delete  tab to expand/collapse ┐\n",
+            "│why line 2?                                                                   │\n",
+            "└──────────┬───────────────────────────────────────────────────────────────────┘\n",
+            "        2 +└BETA\n",
+            "   3    3   gamma\n",
+            "---\n",
+            "committed 2 changes; 2 comments could not be anchored\n",
+        );
+
+        // Both comments persisted as bare locators, without anchors.
+        let anchors: Vec<Option<wiff_core::record::Anchor>> = ReviewState::load(&session_path)
+            .expect("reload state")
+            .comments
+            .iter()
+            .map(|comment| comment.anchor.clone())
+            .collect();
+        wince::assert_eq!(anchors, vec![None, None]);
     }
 }

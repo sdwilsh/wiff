@@ -23,7 +23,7 @@ use time::OffsetDateTime;
 use ulid::Ulid;
 use wiff_diff::Diff;
 
-use crate::comment::{delete_event, disposition_event, edit_event, resolve_event};
+use crate::comment::{anchor_in_diff, delete_event, disposition_event, edit_event, resolve_event};
 use crate::description::local_description;
 use crate::error::Result;
 use crate::rebase::rebase_line_comment;
@@ -246,8 +246,24 @@ impl DraftBuffer {
                 && matches!(create.target, CommentTarget::Lines { .. })
             {
                 let old = old_diff(create.version)?;
+                // Reconstruct a drafted comment's missing anchor in memory so the
+                // fuzzy fallback can relocate it when the reviewed line's content
+                // changed. This copy serves only this move and is not stored back:
+                // it is in the old version's coordinate space, while the rebase
+                // below moves the comment onto the new version, so storing it would
+                // persist a mismatched anchor. The persisted anchor is captured
+                // from the raw sideband diff at commit, against whatever version
+                // the draft finally rebased onto. A failed reconstruction (a file
+                // the old diff no longer contains, or any other cause) drops to no
+                // anchor, where commit-time capture would instead report it.
+                let anchor = match &create.anchor {
+                    Some(anchor) => Some(anchor.clone()),
+                    None => anchor_in_diff(&old, create.version, &create.target)
+                        .ok()
+                        .flatten(),
+                };
                 if let Some(rebased) =
-                    rebase_line_comment(&create.target, create.anchor.as_ref(), &old, new_diff)
+                    rebase_line_comment(&create.target, anchor.as_ref(), &old, new_diff)
                 {
                     create.target = rebased.target;
                     create.version = new_version;
@@ -707,7 +723,7 @@ new file mode 100644
 +delta
 ";
 
-    /// A drafted comment on line `line` of `f.txt`'s after side, authored
+    /// Builds a drafted comment on line `line` of `f.txt`'s after side, authored
     /// against `version` with the given identity.
     fn drafted_line(id: u128, line: u32, version: VersionNumber) -> CommentEvent {
         let mut event = draft_create(
@@ -721,6 +737,25 @@ new file mode 100644
             version,
             None,
             "why gamma?".to_string(),
+        );
+        event.id = Ulid(id);
+        event
+    }
+
+    /// Builds a drafted comment on lines `start..=end` of `f.txt`'s after side,
+    /// authored against `version` with the given identity.
+    fn drafted_range(id: u128, start: u32, end: u32, version: VersionNumber) -> CommentEvent {
+        let mut event = draft_create(
+            actor(),
+            CommentTarget::Lines {
+                file: "f.txt".to_string(),
+                side: Side::After,
+                start_line: LineNo::new(start).unwrap(),
+                end_line: LineNo::new(end).unwrap(),
+            },
+            version,
+            None,
+            "why this block?".to_string(),
         );
         event.id = Ulid(id);
         event
@@ -760,6 +795,49 @@ new file mode 100644
             vec![RecordBody::CommentEvent(drafted_line(
                 2,
                 4,
+                VersionNumber(1)
+            ))]
+        );
+    }
+
+    #[test]
+    fn rebasing_relocates_a_drafted_range_through_its_reconstructed_anchor() {
+        // The drafted range spans beta, gamma, delta. The new version inserts a
+        // line at the top and edits beta, so offset mapping cannot move the range
+        // -- part of it changed. Reconstructing the anchor from the authored diff
+        // lets the fuzzy fallback find the mostly-unchanged snippet and relocate
+        // the range to lines 3-5 rather than leaving it pinned at 2-4.
+        let mut buffer = DraftBuffer::new();
+        buffer.add(drafted_range(2, 2, 4, VersionNumber(0)));
+        let old: Diff = parse(V0).unwrap();
+        let new = parse(
+            "\
+diff --git a/f.txt b/f.txt
+new file mode 100644
+--- /dev/null
++++ b/f.txt
+@@ -0,0 +1,5 @@
++zero
++alpha
++BETA
++gamma
++delta
+",
+        )
+        .unwrap();
+        buffer
+            .rebase(VersionNumber(1), &new, |version| {
+                wince::assert_eq!(version, VersionNumber(0));
+                Ok(old.clone())
+            })
+            .unwrap();
+
+        wince::assert_eq!(
+            buffer.into_records(),
+            vec![RecordBody::CommentEvent(drafted_range(
+                2,
+                3,
+                5,
                 VersionNumber(1)
             ))]
         );
