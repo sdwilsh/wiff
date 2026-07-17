@@ -163,6 +163,7 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
         (Action::DiffModeUnified, vec![chord("1")]),
         (Action::DiffModeSideBySide, vec![chord("2")]),
         (Action::DiffModeOnlyAfter, vec![chord("3")]),
+        (Action::DiffModeRendered, vec![chord("4")]),
         (Action::HideComments, vec![chord("H")]),
         (Action::PickFile, vec![chord("t")]),
         (Action::PickComment, vec![chord("C")]),

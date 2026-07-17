@@ -12,7 +12,7 @@
 //! it, recovered by [`wiff_diff::SectionMatchers`] since the wide-context
 //! capture merges each file into one hunk with no per-change context header.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 
 use ratatui::style::{Color, Modifier, Style};
@@ -24,11 +24,12 @@ use wiff_core::record::{Author, CommentTarget, Confidence, Disposition};
 use wiff_core::review::{CommentState, threads};
 use wiff_diff::{
     Diff, DiffLine, FileDiff, FileStatus, HighlightError, HighlightedLine, Highlighter, LineKind,
-    LineNo, LiveHighlighter, ParsedSide, Parser, Rgb, Section, SectionMatchers, Side, StyledSpan,
-    intraline,
+    LineNo, LiveHighlighter, ParsedSide, Parser, ReconLine, Rgb, Section, SectionMatchers, Side,
+    StyledSpan, intraline, reconstitute,
 };
 
 use crate::action::Action;
+use crate::filerender::FileRenderer;
 use crate::keymap::Keymap;
 use crate::markdown::{self, MarkdownColors};
 use crate::theme::{Theme, legible_over};
@@ -93,7 +94,7 @@ pub struct RailCell {
 /// The character column the anchor rail for a comment on `side` occupies.
 pub(crate) fn rail_column(mode: LayoutMode, side: Side, width: usize) -> usize {
     match mode {
-        LayoutMode::Unified | LayoutMode::OnlyAfter => RAIL_COLUMN,
+        LayoutMode::Unified | LayoutMode::OnlyAfter | LayoutMode::Rendered => RAIL_COLUMN,
         LayoutMode::SideBySide => match side {
             Side::Before => COLUMN_GUTTER_WIDTH - 1,
             Side::After => ColumnGeometry::split(width).left + 1 + COLUMN_GUTTER_WIDTH - 1,
@@ -191,9 +192,8 @@ pub struct CommentRegion {
     pub anchor_rail: bool,
 }
 
-/// Which layout a render targets: the interleaved single column, or two columns
-/// side by side with the old content on the left and the new on the right. Auto
-/// selection resolves to one of these from the viewport width before rendering.
+/// The concrete layout a render targets, resolved from a [`DiffMode`] and the
+/// viewport width before rendering.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub enum LayoutMode {
     /// One column, removed and added lines interleaved.
@@ -204,14 +204,18 @@ pub enum LayoutMode {
     /// One column of the after side alone: context and added lines, with removed
     /// lines dropped so the column reads as the resulting file.
     OnlyAfter,
+    /// One column of the after side rendered through a type-specific renderer.
+    /// A file whose type has no renderer falls back to the
+    /// [`OnlyAfter`](Self::OnlyAfter) source column.
+    Rendered,
 }
 
 /// The default width, in columns, at or above which auto mode chooses the
 /// side-by-side layout.
 pub const DEFAULT_SIDE_BY_SIDE_MIN_WIDTH: usize = 130;
 
-/// The diff layout a reviewer selects: always one column, always two, the after
-/// side alone, or two only once the viewport reaches a configured width.
+/// The diff layout a reviewer selects, resolved against the viewport width by
+/// [`resolve`](Self::resolve).
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DiffMode {
@@ -224,6 +228,9 @@ pub enum DiffMode {
     SideBySide,
     /// Always the after side alone in one column.
     OnlyAfter,
+    /// Always the after side rendered through a type-specific renderer, falling
+    /// back to the after-side source column where no renderer fits the file.
+    Rendered,
 }
 
 impl DiffMode {
@@ -234,6 +241,7 @@ impl DiffMode {
             DiffMode::Unified => LayoutMode::Unified,
             DiffMode::SideBySide => LayoutMode::SideBySide,
             DiffMode::OnlyAfter => LayoutMode::OnlyAfter,
+            DiffMode::Rendered => LayoutMode::Rendered,
             DiffMode::Auto if width >= min_width => LayoutMode::SideBySide,
             DiffMode::Auto => LayoutMode::Unified,
         }
@@ -896,6 +904,12 @@ impl DiffView {
                 },
             );
         }
+        if layout.mode == LayoutMode::Rendered
+            && let Some(rows) = self.render_after_content(file, width)
+        {
+            self.emit_rendered(doc, index, placement, pending, &rows, layout);
+            return;
+        }
         // Paint from the cached highlight when it has arrived; render plain
         // while it is still being computed; or, when no cache is kept, run the
         // syntect pass for this file now.
@@ -965,7 +979,7 @@ impl DiffView {
                     &mut line_end,
                     &mut first_row,
                 ),
-                LayoutMode::OnlyAfter => self.emit_hunk_unified(
+                LayoutMode::OnlyAfter | LayoutMode::Rendered => self.emit_hunk_unified(
                     doc,
                     &emission,
                     true,
@@ -1072,6 +1086,116 @@ impl DiffView {
             }
             line_end[line_index] = doc.rows.len();
         }
+    }
+
+    /// Render `file`'s after-side content through the renderer its type selects,
+    /// pairing each display row with the source line it derives from. Returns
+    /// `None` when no renderer fits the file or its after side cannot be fully
+    /// reconstructed, in which case the caller shows the source column instead.
+    fn render_after_content(
+        &self,
+        file: &FileDiff,
+        width: usize,
+    ) -> Option<Vec<(Line<'static>, LineNo)>> {
+        let renderer = FileRenderer::for_path(file.display_path())?;
+        let text = after_side_text(file)?;
+        let content_width = width.saturating_sub(GUTTER_WIDTH).max(1);
+        let mapped = match renderer {
+            FileRenderer::Markdown => {
+                let colors = MarkdownColors::from_theme(&self.theme);
+                markdown::render_source_mapped(&text, content_width, &colors, &self.highlighter)
+            }
+        };
+        Some(
+            mapped
+                .into_iter()
+                .filter_map(|(line, n)| LineNo::new(n).map(|n| (line, n)))
+                .collect(),
+        )
+    }
+
+    /// Emit a file's rendered after-side content as one column: each row leads
+    /// with a line-number gutter, numbered once where the source line changes,
+    /// and a comment anchored to a rendered source line opens above that line's
+    /// first row. A line comment whose anchor has no rendered row (a before-side
+    /// line, or a source line the renderer drops) floats to the file header
+    /// instead of being lost.
+    fn emit_rendered(
+        &self,
+        doc: &mut Document,
+        index: usize,
+        placement: &FilePlacement,
+        pending: &[Ulid],
+        rows: &[(Line<'static>, LineNo)],
+        layout: ViewLayout,
+    ) {
+        let width = layout.width;
+        // The after-side source lines that reach a visible row; a comment on any
+        // other line has nowhere to open inline and floats to the header.
+        let rendered_lines: HashSet<u32> = rows
+            .iter()
+            .filter(|(line, _)| !line.spans.iter().all(|s| s.content.trim().is_empty()))
+            .map(|(_, source)| source.get())
+            .collect();
+        for lc in &placement.lines {
+            if lc.side != Side::After || !rendered_lines.contains(&lc.start) {
+                self.push_thread(
+                    doc,
+                    index,
+                    &lc.placed,
+                    pending,
+                    BoxPlacement {
+                        width,
+                        column: None,
+                        rail: false,
+                    },
+                );
+            }
+        }
+        let mut first_row: HashMap<(Side, u32), usize> = HashMap::new();
+        let mut prev_line: Option<u32> = None;
+        for (line, source) in rows {
+            let n = source.get();
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            // A blank separator between blocks shows no number and no comment;
+            // both go to the first row of the source line that shows content.
+            let renderable = !text.trim().is_empty();
+            let first_of_line = renderable && prev_line != Some(n);
+            if first_of_line {
+                for lc in placement.at(Side::After, n) {
+                    self.push_thread(
+                        doc,
+                        index,
+                        &lc.placed,
+                        pending,
+                        BoxPlacement {
+                            width,
+                            column: None,
+                            rail: true,
+                        },
+                    );
+                }
+            }
+            if renderable {
+                first_row.entry((Side::After, n)).or_insert(doc.rows.len());
+                prev_line = Some(n);
+            }
+            let shown = if first_of_line { Some(*source) } else { None };
+            let gutter = Span::styled(
+                format!("{} {} {} ", lineno(None), lineno(shown), ' '),
+                Style::default().fg(color(self.theme.gutter_fg)),
+            );
+            let mut spans = vec![gutter];
+            spans.extend(line.spans.iter().cloned());
+            doc.push(
+                index,
+                RowKind::content(Side::After, Some(*source)),
+                None,
+                text,
+                Line::from(spans),
+            );
+        }
+        self.trace_rails(doc, placement, pending, &first_row, layout);
     }
 
     /// Emit one hunk's content rows in the side-by-side layout: removed and added
@@ -1927,6 +2051,33 @@ const NEUTRAL_STYLE: wiff_diff::Style = wiff_diff::Style {
     underline: false,
 };
 
+/// The whole after-side text of `file`, reconstructed from its hunks. Returns
+/// `None` when the capture omits any interior lines, since a partial
+/// reconstruction cannot render faithfully; the trailing tail past the last
+/// hunk is the natural end of the file and does not count against this.
+///
+/// The lines must be contiguous from line 1: the rendered view recovers each
+/// row's source line by counting newlines in the joined text, which matches the
+/// file's own numbering only when no line is missing before the last. A gap
+/// enforces that, and each known line's own number is checked against its
+/// position to catch any future drift.
+fn after_side_text(file: &FileDiff) -> Option<String> {
+    let mut lines = Vec::new();
+    for recon in reconstitute(file, Side::After) {
+        match recon {
+            ReconLine::Known { text, lineno } => {
+                if lineno.get() as usize != lines.len() + 1 {
+                    return None;
+                }
+                lines.push(text);
+            }
+            ReconLine::Gap { count: Some(_) } => return None,
+            ReconLine::Gap { count: None } => {}
+        }
+    }
+    Some(lines.join("\n"))
+}
+
 /// A right-aligned line number, or blank space when the line is absent on this
 /// side.
 fn lineno(number: Option<wiff_diff::LineNo>) -> String {
@@ -2598,6 +2749,162 @@ mod tests {
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
             "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#f3e1db|#5b695b|->3<#e3e5e9|#5b695b|->;\n",
             "<#9ea1a9|#414a4a|->        3 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> z <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->4<#c0c5ce|#414a4a|->;\n",
+        );
+    }
+
+    #[test]
+    fn rendered_mode_shows_markdown_formatted_with_source_line_gutter() {
+        // An added markdown file renders as formatted text in one column: the
+        // heading loses its `#` marker and the gutter numbers each source line
+        // once, so the reviewer reads the resulting document.
+        let diff = Diff {
+            files: vec![file(
+                "README.md",
+                FileStatus::Added,
+                &[
+                    (LineKind::Added, "# Title", 1),
+                    (LineKind::Added, "body text", 2),
+                ],
+            )],
+        };
+        let view = DiffView::new(theme()).unwrap();
+        let layout = ViewLayout {
+            width: 40,
+            wrap_content: false,
+            mode: super::LayoutMode::Rendered,
+        };
+
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&view.render_review(&diff, &[], &[], layout).lines),
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>added  README.md\n",
+            "<#7d828c|-|->        1   <#ebcb8b|-|bu>Title\n",
+            "<#7d828c|-|->            \n",
+            "<#7d828c|-|->        2   <#c0c5ce|-|->body text\n",
+        );
+    }
+
+    #[test]
+    fn a_rendered_comment_opens_above_its_source_line() {
+        // A comment anchored to the after-side line 2 opens above that line's
+        // first rendered row, so annotating the formatted document anchors to
+        // the right source line.
+        let diff = Diff {
+            files: vec![file(
+                "README.md",
+                FileStatus::Added,
+                &[
+                    (LineKind::Added, "# Title", 1),
+                    (LineKind::Added, "body text", 2),
+                ],
+            )],
+        };
+        let comments = vec![comment(
+            1,
+            ("wez", AuthorKind::Human),
+            on_lines("README.md", 2, 2),
+            "reword this",
+        )];
+        let view = DiffView::new(theme()).unwrap();
+        let layout = ViewLayout {
+            width: 40,
+            wrap_content: false,
+            mode: super::LayoutMode::Rendered,
+        };
+
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&view.render_review(&diff, &comments, &[], layout).lines),
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>added  README.md\n",
+            "<#7d828c|-|->        1   <#ebcb8b|-|bu>Title\n",
+            "<#7d828c|-|->            \n",
+            "<#8fa1b3|-|->#1 wez (human)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse\n",
+            "<#c0c5ce|-|->reword this\n",
+            "\n",
+            "<#7d828c|-|->        2   <#c0c5ce|-|->body text\n",
+        );
+    }
+
+    #[test]
+    fn a_rendered_comment_with_no_rendered_row_floats_to_the_file_header() {
+        // The comment anchors to the removed (before-side) line 2, which the
+        // rendered after side never shows. Rather than vanish, it floats to the
+        // file header, above the rendered content.
+        let diff = Diff {
+            files: vec![file(
+                "README.md",
+                FileStatus::Modified,
+                &[
+                    (LineKind::Context, "# Title", 1),
+                    (LineKind::Removed, "old body", 2),
+                    (LineKind::Added, "new body", 2),
+                ],
+            )],
+        };
+        let comments = vec![comment(
+            1,
+            ("wez", AuthorKind::Human),
+            CommentTarget::Lines {
+                file: "README.md".to_string(),
+                side: Side::Before,
+                start_line: ln(2),
+                end_line: ln(2),
+            },
+            "this line went away",
+        )];
+        let view = DiffView::new(theme()).unwrap();
+        let layout = ViewLayout {
+            width: 40,
+            wrap_content: false,
+            mode: super::LayoutMode::Rendered,
+        };
+
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&view.render_review(&diff, &comments, &[], layout).lines),
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  README.md\n",
+            "<#8fa1b3|-|->#1 wez (human)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse\n",
+            "<#c0c5ce|-|->this line went away\n",
+            "\n",
+            "<#7d828c|-|->        1   <#ebcb8b|-|bu>Title\n",
+            "<#7d828c|-|->            \n",
+            "<#7d828c|-|->        2   <#c0c5ce|-|->new body\n",
+        );
+    }
+
+    #[test]
+    fn rendered_mode_falls_back_to_the_after_column_without_a_renderer() {
+        // A source file has no whole-file renderer, so the rendered layout shows
+        // its after side as source, dropping the removed line like only-after.
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[
+                    (LineKind::Context, "let x = 1;", 1),
+                    (LineKind::Removed, "let y = 2;", 2),
+                    (LineKind::Added, "let y = 3;", 2),
+                ],
+            )],
+        };
+        let view = DiffView::new(theme()).unwrap();
+        let layout = ViewLayout {
+            width: 40,
+            wrap_content: false,
+            mode: super::LayoutMode::Rendered,
+        };
+
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&view.render_review(&diff, &[], &[], layout).lines),
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,3 +1,3 @@\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#f3e1db|#5b695b|->3<#e3e5e9|#5b695b|->;\n",
         );
     }
 

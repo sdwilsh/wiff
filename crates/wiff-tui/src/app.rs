@@ -833,6 +833,7 @@ impl App {
             DiffMode::SideBySide => Action::DiffModeSideBySide,
             DiffMode::Unified => Action::DiffModeUnified,
             DiffMode::OnlyAfter => Action::DiffModeOnlyAfter,
+            DiffMode::Rendered => Action::DiffModeRendered,
         }
     }
 
@@ -874,6 +875,7 @@ impl App {
             Action::DiffModeSideBySide => return self.set_diff_mode(DiffMode::SideBySide),
             Action::DiffModeUnified => return self.set_diff_mode(DiffMode::Unified),
             Action::DiffModeOnlyAfter => return self.set_diff_mode(DiffMode::OnlyAfter),
+            Action::DiffModeRendered => return self.set_diff_mode(DiffMode::Rendered),
             Action::HideComments => self.toggle_comments_hidden(),
             Action::PickFile => self.open_file_picker(),
             Action::PickComment => self.open_comment_picker(),
@@ -3316,6 +3318,7 @@ fn is_navigation(action: Action) -> bool {
             | Action::DiffModeSideBySide
             | Action::DiffModeUnified
             | Action::DiffModeOnlyAfter
+            | Action::DiffModeRendered
             | Action::HideComments
             | Action::SearchForward
             | Action::SearchBackward

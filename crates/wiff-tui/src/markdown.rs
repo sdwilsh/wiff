@@ -88,6 +88,54 @@ pub fn render(
     renderer.out
 }
 
+/// Render `md` like [`render`], but pairing each display line with the 1-based
+/// source line it derives from. A paragraph or table maps every row to the line
+/// its block opens on, since reflow breaks the one-to-one tie to a source line;
+/// a code block, which keeps one row per source line, maps each row precisely.
+pub fn render_source_mapped(
+    md: &str,
+    width: usize,
+    colors: &MarkdownColors,
+    highlighter: &Highlighter,
+) -> Vec<(Line<'static>, u32)> {
+    let width = if width == 0 { usize::MAX } else { width };
+    let mut renderer = Md::new(width, *colors, highlighter);
+    renderer.line_starts = Some(line_starts(md));
+    for (event, range) in Parser::new_ext(md, options()).into_offset_iter() {
+        match &event {
+            // A block anchors to the line it opens on; inline events within it do
+            // not move it, so a wrapped paragraph's rows share one source line.
+            Event::Start(_) | Event::Rule => {
+                renderer.block_line = renderer.line_of(range.start);
+            }
+            // A code block emits one row per source line; record where its body
+            // begins so emit_code can number the rows down it one by one.
+            Event::Text(_) if renderer.code.as_deref() == Some("") => {
+                renderer.code_line = renderer.line_of(range.start);
+            }
+            _ => {}
+        }
+        renderer.event(event);
+    }
+    renderer.flush_inline();
+    // Every push_out records one source line, so the two grow together; a
+    // mismatch is a bug that zipping would otherwise hide by dropping rows.
+    assert_eq!(renderer.out.len(), renderer.line_nos.len());
+    renderer.out.into_iter().zip(renderer.line_nos).collect()
+}
+
+/// The byte offset each line of `text` starts at, for mapping a source offset to
+/// its 1-based line number.
+fn line_starts(text: &str) -> Vec<usize> {
+    let mut starts = vec![0];
+    for (i, byte) in text.bytes().enumerate() {
+        if byte == b'\n' {
+            starts.push(i + 1);
+        }
+    }
+    starts
+}
+
 /// A per-line indent/gutter contributed by an enclosing list item or blockquote.
 /// `head` prefixes the first emitted line (e.g. a bullet), `tail` the rest; both
 /// share a display width so wrapping stays aligned.
@@ -135,6 +183,18 @@ struct Md<'h> {
     /// The destination URL and accumulated text of an open link.
     link: Option<(String, String)>,
     table: Option<TableState>,
+    /// The byte offset each source line starts at, present only when rendering
+    /// with source-line mapping; absent for comment bodies, which need none.
+    line_starts: Option<Vec<usize>>,
+    /// Source line number of the current block, used when source-line mapping is
+    /// active.
+    block_line: u32,
+    /// Source line where the open code block's body begins, used to number its
+    /// rows one by one.
+    code_line: u32,
+    /// The source line of each row, parallel to `out`; filled only when
+    /// source-line mapping is active.
+    line_nos: Vec<u32>,
 }
 
 impl<'h> Md<'h> {
@@ -153,7 +213,31 @@ impl<'h> Md<'h> {
             code_lang: String::new(),
             link: None,
             table: None,
+            line_starts: None,
+            block_line: 1,
+            code_line: 1,
+            line_nos: Vec::new(),
         }
+    }
+
+    /// The 1-based source line containing byte `offset`, or 1 when no source-line
+    /// map is present.
+    fn line_of(&self, offset: usize) -> u32 {
+        let Some(starts) = &self.line_starts else {
+            return 1;
+        };
+        match starts.binary_search(&offset) {
+            Ok(i) => i as u32 + 1,
+            Err(i) => i as u32,
+        }
+    }
+
+    /// Append one rendered row, recording its source line while mapping is on.
+    fn push_out(&mut self, line: Line<'static>) {
+        if self.line_starts.is_some() {
+            self.line_nos.push(self.block_line);
+        }
+        self.out.push(line);
     }
 
     fn event(&mut self, event: Event) {
@@ -440,7 +524,7 @@ impl<'h> Md<'h> {
     fn begin_block(&mut self) {
         self.flush_inline();
         if self.need_blank && !self.out.is_empty() {
-            self.out.push(Line::from(String::new()));
+            self.push_out(Line::from(String::new()));
         }
         self.need_blank = false;
     }
@@ -467,7 +551,7 @@ impl<'h> Md<'h> {
     fn emit_line(&mut self, mut content: Vec<Span<'static>>) {
         let mut spans = self.line_prefix();
         spans.append(&mut content);
-        self.out.push(Line::from(spans));
+        self.push_out(Line::from(spans));
     }
 
     /// Emit a fenced code block body. When `lang` names a known syntax the body
@@ -475,7 +559,10 @@ impl<'h> Md<'h> {
     /// Either way a line wider than `body_width` wraps rather than overflowing.
     fn emit_code(&mut self, lang: &str, body: &str, body_width: usize) {
         if let Some(lines) = self.highlighter.highlight_code(lang, body) {
-            for spans in lines {
+            for (i, spans) in lines.iter().enumerate() {
+                // Each highlighted line is one source line; anchor its rows to
+                // that line so a comment attaches to the code line it sits on.
+                self.block_line = self.code_line + i as u32;
                 let line = Line::from(
                     spans
                         .iter()
@@ -489,7 +576,8 @@ impl<'h> Md<'h> {
             return;
         }
         let flat = Style::default().fg(self.colors.code_block);
-        for source_line in body.split('\n') {
+        for (i, source_line) in body.split('\n').enumerate() {
+            self.block_line = self.code_line + i as u32;
             let line = Line::from(Span::styled(source_line.to_string(), flat));
             for wrapped in wrap_line(&line, body_width) {
                 self.emit_line(wrapped.spans);
@@ -866,6 +954,41 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Render markdown with source mapping to a `line: text` per row, so the
+    /// source line each rendered row anchors to is asserted alongside its text.
+    fn show_mapped(md: &str, width: usize) -> String {
+        let highlighter = Highlighter::with_theme(TEST_THEME).expect("theme");
+        render_source_mapped(md, width, &palette(), &highlighter)
+            .iter()
+            .map(|(line, source)| {
+                let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+                format!("{source}: {text}")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn source_mapping_anchors_each_row_to_the_line_it_opens_on() {
+        // A heading, a paragraph spanning two source lines, and a bullet each
+        // anchor to the line the block opens on; the blank separators between
+        // blocks take the following block's line.
+        wince::snapshot_str!(
+            show_mapped("# Title\n\nfirst\nsecond\n\n- item\n", 40),
+            "1: Title\n3: \n3: first second\n6: \n6: - item",
+        );
+    }
+
+    #[test]
+    fn source_mapping_numbers_each_code_block_line_precisely() {
+        // Unlike a paragraph, a fenced code block keeps one row per source line,
+        // so each row anchors to its own line rather than the opening fence.
+        wince::snapshot_str!(
+            show_mapped("intro\n\n```\none\ntwo\nthree\n```\n", 40),
+            "1: intro\n3: \n4: one\n5: two\n6: three",
+        );
     }
 
     fn tag(style: Style) -> String {

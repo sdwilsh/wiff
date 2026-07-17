@@ -11,6 +11,7 @@ pub mod compose;
 mod editor_wrap;
 pub mod event;
 pub mod exit;
+mod filerender;
 pub mod help;
 pub mod highlight;
 pub mod input;
