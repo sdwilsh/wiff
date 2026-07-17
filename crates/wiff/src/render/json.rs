@@ -113,6 +113,7 @@ mod tests {
                     "deleted": false,
                     "deleted_by": null,
                     "confidence": null,
+                    "number": 1,
                     "created_seq": 2,
                     "updated_seq": 2
                 },
@@ -131,6 +132,7 @@ mod tests {
                     "deleted": false,
                     "deleted_by": null,
                     "confidence": null,
+                    "number": 6,
                     "created_seq": 10,
                     "updated_seq": 10
                 },
@@ -150,6 +152,7 @@ mod tests {
                     "deleted": false,
                     "deleted_by": null,
                     "confidence": null,
+                    "number": 2,
                     "created_seq": 3,
                     "updated_seq": 9
                 },
@@ -169,6 +172,7 @@ mod tests {
                     "deleted_by": null,
                     "disposition": "approve",
                     "confidence": null,
+                    "number": 3,
                     "created_seq": 4,
                     "updated_seq": 4
                 },
@@ -194,6 +198,7 @@ mod tests {
                     "deleted_by": null,
                     "disposition": "request_changes",
                     "confidence": "approximate",
+                    "number": 4,
                     "created_seq": 5,
                     "updated_seq": 6
                 },
@@ -219,6 +224,7 @@ mod tests {
                     "deleted_by": { "name": "wez", "kind": "human" },
                     "deleted_at": "1970-01-01T00:00:00Z",
                     "confidence": null,
+                    "number": 5,
                     "created_seq": 7,
                     "updated_seq": 8
                 },
@@ -237,6 +243,7 @@ mod tests {
                     "deleted": false,
                     "deleted_by": null,
                     "confidence": null,
+                    "number": 7,
                     "created_seq": 11,
                     "updated_seq": 11
                 }

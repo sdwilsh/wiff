@@ -41,10 +41,15 @@ wiff comment list
 ```
 
 - `wiff render` prints the review as markdown: comments grouped by file, each
-  led by its id and showing its author and kind, target location, resolved or
-  outdated state, body, and a fenced snippet of the surrounding code. This is
-  the one command you need to read the review and to pick up the ids you act on
-  below.
+  led by its number (like `#3`) and showing its author and kind, target
+  location, resolved or outdated state, body, and a fenced snippet of the
+  surrounding code. This is the one command you need to read the review and to
+  pick up the numbers you act on below.
+- Each comment has a short review-scoped number, shown as `#N`, and a long ULID.
+  Every command that names a comment (`resolve`, `verdict`, `rm`, `--reply-to`)
+  accepts either. Prefer the number: pass it as the bare digits `N` (a leading
+  `#` starts a comment in the shell, so write `3`, not `#3`, unless you quote it
+  as `'#3'`). The ULID stays valid and is the durable identity across sessions.
 - When the review has a description (a title and optional body, the same shape
   as a commit message), `wiff render` prints it under a `## Description` heading
   and the JSON includes it in a top-level `description` field. See below to set
@@ -54,7 +59,7 @@ wiff comment list
   changes or find the most recent one, use `updated_seq`, which always advances;
   `updated_at` is a display timestamp and, for a comment imported from a forge,
   can predate an earlier change.
-- `wiff comment list` is an optional compact form: one comment per line, id
+- `wiff comment list` is an optional compact form: one comment per line, number
   first, with its status and location, when you want a terse pass without the
   bodies and snippets.
 
@@ -63,7 +68,7 @@ Pass `--agent` here too, so the resolution is attributed to you rather than the
 human:
 
 ```bash
-wiff comment resolve --agent 01J8ZC0FEXAMPLECOMMENT7
+wiff comment resolve --agent 7
 ```
 
 ## Leaving review comments
@@ -78,15 +83,15 @@ wiff comment add --agent --file src/lib.rs --line 10-14 --body "Extract this loo
 wiff comment add --agent --file src/lib.rs --line 42 --side before --body "..."
 wiff comment add --agent --file src/lib.rs --body "This module needs tests."
 wiff comment add --agent --review --body "Overall the change reads well."
-wiff comment add --agent --reply-to 01J8ZC0FRESQ5S6M00P8NJBBJD --body "Agreed, done."
+wiff comment add --agent --reply-to 3 --body "Agreed, done."
 ```
 
 - `--file F --line N` comments on a single line; `--line N-M` on an inclusive
   range. Line numbers are 1-based.
-- `--reply-to <id>` replies to an existing comment, forming a thread. A reply
-  takes its position from the comment it answers, so it needs no file or line.
-  A thread shows as a flat sequence in the order the replies were written; a
-  reply to a withdrawn comment is refused.
+- `--reply-to <comment>` replies to an existing comment, named by its number or
+  ULID, forming a thread. A reply takes its position from the comment it
+  answers, so it needs no file or line. A thread shows as a flat sequence in the
+  order the replies were written; a reply to a withdrawn comment is refused.
 - `--side after` (the default) refers to the post-change content; `--side
   before` refers to the pre-change content.
 - `--file F` with no `--line` comments on the whole file; `--review` comments on
@@ -104,18 +109,19 @@ To revise your own comments:
 
 ```bash
 wiff comment list
-wiff comment resolve --agent 01J8ZC0FRESQ5S6M00P8NJBBJD
-wiff comment resolve --agent --reopen 01J8ZC0FRESQ5S6M00P8NJBBJD
-wiff comment verdict --agent 01J8ZC0FRESQ5S6M00P8NJBBJD request_changes
-wiff comment rm --agent 01J8ZC0FRESQ5S6M00P8NJBBJD
+wiff comment resolve --agent 3
+wiff comment resolve --agent --reopen 3
+wiff comment verdict --agent 3 request_changes
+wiff comment rm --agent 3
 ```
 
-- `wiff comment resolve <id>` marks a comment resolved; `--reopen` undoes that.
-- `wiff comment verdict <id> approve|request_changes|none` sets or clears the
-  verdict on your own comment. Only its author may. `wiff render` reports each
-  actor's current verdict, reduced from their comments, under a `## Verdicts`
-  heading and in a top-level `verdicts` field in the JSON.
-- `wiff comment rm <id>` withdraws a comment.
+- `wiff comment resolve <comment>` marks a comment resolved; `--reopen` undoes
+  that. Name the comment by its number or ULID, as everywhere.
+- `wiff comment verdict <comment> approve|request_changes|none` sets or clears
+  the verdict on your own comment. Only its author may. `wiff render` reports
+  each actor's current verdict, reduced from their comments, under a
+  `## Verdicts` heading and in a top-level `verdicts` field in the JSON.
+- `wiff comment rm <comment>` withdraws a comment.
 
 ## Describing the review
 

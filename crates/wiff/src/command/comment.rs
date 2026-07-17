@@ -1,9 +1,11 @@
 //! `wiff comment`: author comments against a session.
 
-use anyhow::{Context, bail};
+use std::path::Path;
+
+use anyhow::{Context, anyhow, bail};
 use clap::{Args, Subcommand};
 use ulid::Ulid;
-use wiff_core::record::{CommentTarget, Disposition};
+use wiff_core::record::{CommentRef, CommentTarget, Disposition};
 use wiff_core::review::ReviewState;
 use wiff_core::{
     DraftComment, LockWait, SessionLog, delete_comment, set_disposition, set_resolved,
@@ -63,8 +65,9 @@ struct CommentAddArgs {
     /// Comment on the review overall rather than a file or line.
     #[arg(long, conflicts_with_all = ["file", "line"])]
     review: bool,
-    /// Reply to an existing comment by id, forming a thread. The reply takes its
-    /// position from the comment it answers rather than a file or line.
+    /// Reply to an existing comment, named by its number or ULID, forming a
+    /// thread. The reply takes its position from the comment it answers rather
+    /// than a file or line.
     #[arg(long, conflicts_with_all = ["file", "line", "review"])]
     reply_to: Option<String>,
     /// The comment body. When omitted, it is read from stdin.
@@ -92,7 +95,7 @@ impl CommentAddArgs {
     /// Append a comment to a session and report its id.
     async fn run(self) -> anyhow::Result<()> {
         let path = resolve_session(self.session.as_deref(), self.project.as_deref())?;
-        let target = self.target()?;
+        let target = self.target(&path)?;
         let body = comment_body(self.body.clone()).await?;
         let author = resolve_author(self.agent, self.author.clone())?;
         let mut log = SessionLog::open(&path)?;
@@ -107,13 +110,17 @@ impl CommentAddArgs {
         Ok(())
     }
 
-    /// Resolve the comment's target from the target-selecting flags.
-    fn target(&self) -> anyhow::Result<CommentTarget> {
+    /// Resolve the comment's target from the target-selecting flags. A
+    /// `--reply-to` reference is resolved against `path`'s folded state so it
+    /// accepts a comment number as readily as a ULID.
+    fn target(&self, path: &Path) -> anyhow::Result<CommentTarget> {
         if self.review {
             return Ok(CommentTarget::Review);
         }
-        if let Some(id) = &self.reply_to {
-            return Ok(CommentTarget::Comment { id: parse_id(id)? });
+        if let Some(reference) = &self.reply_to {
+            return Ok(CommentTarget::Comment {
+                id: resolve_comment_ref(path, reference)?,
+            });
         }
         let Some(file) = self.file.clone() else {
             bail!("specify a target with --file, --line, --review, or --reply-to");
@@ -145,7 +152,7 @@ struct CommentListArgs {
 }
 
 impl CommentListArgs {
-    /// Print the session's live comments, id first.
+    /// Print the session's live comments, number first.
     fn run(self) -> anyhow::Result<()> {
         let path = resolve_session(self.session.as_deref(), self.project.as_deref())?;
         let state = ReviewState::load(&path)?;
@@ -157,7 +164,7 @@ impl CommentListArgs {
 /// Arguments for `wiff comment resolve`.
 #[derive(Debug, Args)]
 struct CommentResolveArgs {
-    /// The id of the comment to resolve.
+    /// The comment to resolve, named by its number or ULID.
     id: String,
     /// Reopen the comment instead of resolving it.
     #[arg(long)]
@@ -180,11 +187,13 @@ impl CommentResolveArgs {
     /// Toggle a comment's resolved state and report the outcome.
     fn run(self) -> anyhow::Result<()> {
         let path = resolve_session(self.session.as_deref(), self.project.as_deref())?;
-        let id = parse_id(&self.id)?;
+        let id = resolve_comment_ref(&path, &self.id)?;
         let author = resolve_author(self.agent, self.author.clone())?;
         let mut log = SessionLog::open(&path)?;
         let comment = set_resolved(&mut log, id, !self.reopen, author, LockWait::Block)?;
         let verb = if self.reopen { "reopened" } else { "resolved" };
+        // The user named the comment, so echo the ULID rather than the number:
+        // it shows the underlying cross-session identity of what they acted on.
         println!("{verb} comment {}", comment.id);
         Ok(())
     }
@@ -193,7 +202,8 @@ impl CommentResolveArgs {
 /// Arguments for `wiff comment verdict`.
 #[derive(Debug, Args)]
 struct CommentVerdictArgs {
-    /// The id of the comment to set a verdict on. Only its author may.
+    /// The comment to set a verdict on, named by its number or ULID. Only its
+    /// author may.
     id: String,
     /// The verdict: `approve`, `request_changes`, or `none` to return to
     /// neutral.
@@ -216,11 +226,13 @@ impl CommentVerdictArgs {
     /// Set or clear a comment's verdict and report the outcome.
     fn run(self) -> anyhow::Result<()> {
         let path = resolve_session(self.session.as_deref(), self.project.as_deref())?;
-        let id = parse_id(&self.id)?;
+        let id = resolve_comment_ref(&path, &self.id)?;
         let author = resolve_author(self.agent, self.author.clone())?;
         let disposition = self.verdict.into_disposition();
         let mut log = SessionLog::open(&path)?;
         let comment = set_disposition(&mut log, id, disposition, author, LockWait::Block)?;
+        // Echo the ULID, not the number: it shows the cross-session identity of
+        // the comment the user named.
         println!("{}", verdict_outcome(comment.id, disposition));
         Ok(())
     }
@@ -237,7 +249,7 @@ fn verdict_outcome(id: Ulid, disposition: Option<Disposition>) -> String {
 /// Arguments for `wiff comment rm`.
 #[derive(Debug, Args)]
 struct CommentRmArgs {
-    /// The id of the comment to withdraw.
+    /// The comment to withdraw, named by its number or ULID.
     id: String,
     /// The author's display name.
     #[arg(long)]
@@ -257,10 +269,12 @@ impl CommentRmArgs {
     /// Withdraw a comment and report the outcome.
     fn run(self) -> anyhow::Result<()> {
         let path = resolve_session(self.session.as_deref(), self.project.as_deref())?;
-        let id = parse_id(&self.id)?;
+        let id = resolve_comment_ref(&path, &self.id)?;
         let author = resolve_author(self.agent, self.author.clone())?;
         let mut log = SessionLog::open(&path)?;
         let comment = delete_comment(&mut log, id, author, LockWait::Block)?;
+        // Echo the ULID, not the number: it shows the cross-session identity of
+        // the comment the user named.
         println!("withdrew comment {}", comment.id);
         Ok(())
     }
@@ -291,9 +305,23 @@ impl VerdictArg {
     }
 }
 
-/// Parse a comment id from its ULID text.
-fn parse_id(id: &str) -> anyhow::Result<Ulid> {
-    Ulid::from_string(id).with_context(|| format!("{id} is not a valid comment id"))
+/// Returns the stable id of the comment named by `reference`, a full ULID or a
+/// review-scoped number.
+///
+/// A ULID passes straight through without a read; the mutation it feeds
+/// validates the comment's existence under its own lock. A number is looked up
+/// in a folded snapshot read here without the lock, which is sound because the
+/// log never renumbers (append-only, withdrawals are tombstones), so a number
+/// maps to the same comment across the gap to the locked mutation. The one
+/// visible effect of the unlocked read is that a number a concurrent writer only
+/// just appended can be refused as unknown until the next read; it never
+/// resolves to the wrong comment.
+fn resolve_comment_ref(path: &Path, reference: &str) -> anyhow::Result<Ulid> {
+    let reference: CommentRef = reference.parse().map_err(|message| anyhow!("{message}"))?;
+    match reference {
+        CommentRef::Ulid(id) => Ok(id),
+        reference => Ok(ReviewState::load(path)?.resolve_ref(reference)?),
+    }
 }
 
 /// Which side of the diff a line-range comment refers to.
@@ -349,10 +377,77 @@ async fn comment_body(body: Option<String>) -> anyhow::Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use ulid::Ulid;
-    use wiff_core::record::Disposition;
+    use std::path::Path;
 
-    use super::{VerdictArg, verdict_outcome};
+    use ulid::Ulid;
+    use wiff_core::record::{Author, AuthorKind, CommentTarget, Disposition, SourceKind};
+    use wiff_core::{CapturedDiff, DraftComment, LockWait, ProjectIdentity, create_session};
+
+    use super::{VerdictArg, resolve_comment_ref, verdict_outcome};
+
+    const DIFF: &str = "\
+diff --git a/f.txt b/f.txt
+--- a/f.txt
++++ b/f.txt
+@@ -1 +1 @@
+-old
++new
+";
+
+    /// A review with two committed review comments, so their numbers are `#1`
+    /// and `#2` in the order they were added.
+    fn two_comment_session(base: &Path) -> (std::path::PathBuf, Ulid, Ulid) {
+        let captured = CapturedDiff {
+            text: DIFF.to_string(),
+            source: SourceKind::Stdin,
+        };
+        let identity = ProjectIdentity {
+            canonical: "demo".to_string(),
+            repo_root: None,
+            scm: None,
+        };
+        let mut log = create_session(base, &identity, Path::new("/work"), &captured, None).unwrap();
+        let author = Author {
+            name: "wez".to_string(),
+            kind: AuthorKind::Human,
+        };
+        let add = |log: &mut _, body: &str| {
+            DraftComment {
+                author: author.clone(),
+                target: CommentTarget::Review,
+                body: body.to_string(),
+                disposition: None,
+            }
+            .append(log, LockWait::Block)
+            .unwrap()
+            .id
+        };
+        let first = add(&mut log, "first");
+        let second = add(&mut log, "second");
+        (log.path().to_path_buf(), first, second)
+    }
+
+    #[test]
+    fn a_comment_reference_resolves_a_number_a_hash_number_and_a_ulid() {
+        let base = tempfile::tempdir().unwrap();
+        let (path, first, second) = two_comment_session(base.path());
+        let resolved: Vec<Option<Ulid>> = ["1", "#2", &second.to_string(), "9", "nope"]
+            .into_iter()
+            .map(|reference| resolve_comment_ref(&path, reference).ok())
+            .collect();
+        wince::assert_eq!(
+            resolved,
+            vec![Some(first), Some(second), Some(second), None, None]
+        );
+    }
+
+    #[test]
+    fn an_unknown_number_reports_the_reference_it_could_not_resolve() {
+        let base = tempfile::tempdir().unwrap();
+        let (path, _first, _second) = two_comment_session(base.path());
+        let message = resolve_comment_ref(&path, "9").unwrap_err().to_string();
+        wince::assert_eq!(message, "no comment #9 in this session".to_string());
+    }
 
     #[test]
     fn each_verdict_word_maps_to_its_disposition_or_clears_it() {

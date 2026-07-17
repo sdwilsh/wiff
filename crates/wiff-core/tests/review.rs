@@ -6,10 +6,10 @@ use wiff_core::comment::{
     delete_event, disposition_event, edit_event, reanchor_event, resolve_event,
 };
 use wiff_core::record::{
-    Anchor, Author, AuthorKind, CommentCreate, CommentEvent, CommentEventKind, CommentReanchor,
-    CommentTarget, Confidence, Description, DescriptionRecord, DiffVersionRecord, Disposition,
-    ExternalKind, ExternalRef, FORMAT_VERSION, FileSummary, ForgeId, Record, RecordBody, Seq,
-    SessionHeader, SourceKind, VersionNumber,
+    Anchor, Author, AuthorKind, CommentCreate, CommentEvent, CommentEventKind, CommentNumber,
+    CommentReanchor, CommentRef, CommentTarget, Confidence, Description, DescriptionRecord,
+    DiffVersionRecord, Disposition, ExternalKind, ExternalRef, FORMAT_VERSION, FileSummary,
+    ForgeId, Record, RecordBody, Seq, SessionHeader, SourceKind, VersionNumber,
 };
 use wiff_core::review::{ActorVerdict, CommentState, DescriptionState, ReviewState, fold, threads};
 use wiff_core::{Error, SidebandHash};
@@ -195,6 +195,7 @@ fn folds_versions_and_comment_chains() {
                 confidence: None,
                 origin: None,
                 synced_marker: None,
+                number: Some(wiff_core::record::CommentNumber(1)),
                 created_seq: Seq(2),
                 updated_seq: Seq(6),
             },
@@ -220,6 +221,7 @@ fn folds_versions_and_comment_chains() {
                 confidence: Some(Confidence::Approximate),
                 origin: None,
                 synced_marker: None,
+                number: Some(wiff_core::record::CommentNumber(2)),
                 created_seq: Seq(3),
                 updated_seq: Seq(8),
             },
@@ -243,6 +245,7 @@ fn folds_versions_and_comment_chains() {
                 confidence: None,
                 origin: None,
                 synced_marker: None,
+                number: Some(wiff_core::record::CommentNumber(3)),
                 created_seq: Seq(9),
                 updated_seq: Seq(9),
             },
@@ -538,6 +541,7 @@ fn a_reply_folds_with_its_parent_recorded_and_threads_under_it() {
             confidence: None,
             origin: None,
             synced_marker: None,
+            number: Some(wiff_core::record::CommentNumber(1)),
             created_seq: Seq(2),
             updated_seq: Seq(2),
         },
@@ -561,6 +565,7 @@ fn a_reply_folds_with_its_parent_recorded_and_threads_under_it() {
             confidence: None,
             origin: None,
             synced_marker: None,
+            number: Some(wiff_core::record::CommentNumber(2)),
             created_seq: Seq(3),
             updated_seq: Seq(3),
         },
@@ -578,6 +583,64 @@ fn a_reply_folds_with_its_parent_recorded_and_threads_under_it() {
         })
         .collect();
     wince::assert_eq!(grouped, vec![(comment_a(), vec![comment_b()])]);
+}
+
+#[test]
+fn a_comment_reference_resolves_a_number_to_its_id_and_passes_a_ulid_through() {
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            create_event(
+                comment_a(),
+                human("wez"),
+                CommentTarget::Review,
+                0,
+                None,
+                "first",
+            ),
+        ),
+        rec(
+            3,
+            create_event(
+                comment_b(),
+                human("dev"),
+                CommentTarget::Review,
+                0,
+                None,
+                "second",
+            ),
+        ),
+    ];
+    let state = fold(&records).unwrap();
+    // Numbers run in create order, so comment_a is #1 and comment_b is #2.
+    wince::assert_eq!(
+        state
+            .comment_by_number(CommentNumber(2))
+            .map(|comment| (comment.number, comment.id)),
+        Some((Some(CommentNumber(2)), comment_b()))
+    );
+    wince::assert_eq!(
+        state.comment_by_number(CommentNumber(3)).map(|c| c.id),
+        None
+    );
+    // A number resolves to its comment's id; a ULID passes straight through.
+    wince::assert_eq!(
+        state.resolve_ref(CommentRef::Number(CommentNumber(1))).ok(),
+        Some(comment_a())
+    );
+    wince::assert_eq!(
+        state.resolve_ref(CommentRef::Ulid(comment_b())).ok(),
+        Some(comment_b())
+    );
+    // A number past the last comment is refused.
+    wince::assert_eq!(
+        state
+            .resolve_ref(CommentRef::Number(CommentNumber(9)))
+            .map_err(|err| err.to_string()),
+        Err("no comment #9 in this session".to_string())
+    );
 }
 
 #[test]

@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 use ulid::Ulid;
 
+use crate::record::CommentNumber;
+
 /// The result type used throughout the core layer.
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -79,6 +81,11 @@ pub enum Error {
     /// A mutation named a comment the session has no record of.
     #[error("no comment {0} in this session")]
     UnknownComment(Ulid),
+
+    /// A reference named a review-scoped comment number with no matching
+    /// comment in this session.
+    #[error("no comment {0} in this session")]
+    UnknownCommentNumber(CommentNumber),
 
     /// A reply named a comment that has been withdrawn. Fold still keeps a reply
     /// under a parent withdrawn elsewhere, but authoring a fresh reply to a

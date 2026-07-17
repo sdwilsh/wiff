@@ -41,7 +41,7 @@ pub fn render(state: &ReviewState, format: Format) -> anyhow::Result<String> {
     }
 }
 
-/// Render `state`'s comments as a compact, id-first list for `wiff comment
+/// Render `state`'s comments as a compact, number-first list for `wiff comment
 /// list`.
 pub fn render_list(state: &ReviewState) -> String {
     list::render(state)
@@ -89,8 +89,9 @@ mod fixture {
     use ulid::Ulid;
     use wiff_core::SidebandHash;
     use wiff_core::record::{
-        Anchor, Author, AuthorKind, CommentTarget, Confidence, Description, DiffVersionRecord,
-        Disposition, FORMAT_VERSION, FileSummary, Seq, SessionHeader, SourceKind, VersionNumber,
+        Anchor, Author, AuthorKind, CommentNumber, CommentTarget, Confidence, Description,
+        DiffVersionRecord, Disposition, FORMAT_VERSION, FileSummary, Seq, SessionHeader,
+        SourceKind, VersionNumber,
     };
     use wiff_core::review::{ActorVerdict, CommentState, DescriptionState, ReviewState};
     use wiff_diff::{FileStatus, LineNo, Side};
@@ -133,9 +134,24 @@ mod fixture {
             confidence: None,
             origin: None,
             synced_marker: None,
+            number: None,
             created_seq: Seq(seq),
             updated_seq: Seq(seq),
         }
+    }
+
+    /// Assign each comment its review-scoped number the way the fold does: by
+    /// the log's append order, which the fold numbers from directly. Append
+    /// order matches ascending `created_seq`, so sorting on that here rather
+    /// than trusting the input order keeps the numbers faithful to a real fold
+    /// even if the fixture's Vec is later reordered.
+    fn number_in_order(mut comments: Vec<CommentState>) -> Vec<CommentState> {
+        let mut by_creation: Vec<&mut CommentState> = comments.iter_mut().collect();
+        by_creation.sort_by_key(|comment| comment.created_seq);
+        for (index, comment) in by_creation.into_iter().enumerate() {
+            comment.number = Some(CommentNumber(index as u32 + 1));
+        }
+        comments
     }
 
     fn lines(file: &str, start: u32, end: u32) -> CommentTarget {
@@ -260,7 +276,15 @@ mod fixture {
                 origin: None,
                 synced_marker: None,
             }),
-            comments: vec![line, whole, review, shifted, gone, reply, reply_to_gone],
+            comments: number_in_order(vec![
+                line,
+                whole,
+                review,
+                shifted,
+                gone,
+                reply,
+                reply_to_gone,
+            ]),
             verdicts: vec![
                 ActorVerdict {
                     author: author("wez", AuthorKind::Human),

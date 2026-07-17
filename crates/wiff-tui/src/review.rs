@@ -310,6 +310,7 @@ impl Review {
             confidence: None,
             origin: None,
             synced_marker: None,
+            number: None,
             created_seq: Seq(0),
             updated_seq: Seq(0),
         };
@@ -639,6 +640,7 @@ mod tests {
             confidence: None,
             origin: None,
             synced_marker: None,
+            number: None,
             created_seq: Seq(updated_seq),
             updated_seq: Seq(updated_seq),
         }

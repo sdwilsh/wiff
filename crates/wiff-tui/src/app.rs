@@ -1733,16 +1733,43 @@ impl App {
             .map(|(_, entry)| entry.comment.author.name.chars().count())
             .max()
             .unwrap_or(0);
+        // A committed comment shows its review-scoped number; a draft has none
+        // until committed and leaves the column blank.
+        let numbers: Vec<String> = listed
+            .iter()
+            .map(|(_, entry)| {
+                entry
+                    .comment
+                    .number
+                    .map(|number| number.to_string())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let number_width = numbers
+            .iter()
+            .map(|number| number.chars().count())
+            .max()
+            .unwrap_or(0);
 
         let rows: Vec<Box<dyn PickerRow<App>>> = listed
             .iter()
             .zip(&locations)
-            .map(|((_, entry), location)| {
+            .zip(&numbers)
+            .map(|(((_, entry), location), number)| {
                 let (marker, marker_color) = self.comment_marker(&entry.comment, entry.pending);
                 let author = entry.comment.author.name.as_str();
                 let preview = comment_preview(&entry.comment.body);
-                let body =
-                    format!("{location:<location_width$}  {author:<author_width$}  {preview}");
+                // The number column and its separator vanish entirely when no
+                // listed comment has a number, so an all-drafts picker does not
+                // read as indented by a blank column.
+                let number_column = if number_width == 0 {
+                    String::new()
+                } else {
+                    format!("{number:<number_width$}  ")
+                };
+                let body = format!(
+                    "{number_column}{location:<location_width$}  {author:<author_width$}  {preview}"
+                );
                 let withdrawn = entry.comment.deleted;
                 let spans = vec![
                     RowSpan {
@@ -3570,8 +3597,8 @@ mod tests {
     use time::OffsetDateTime;
     use ulid::Ulid;
     use wiff_core::record::{
-        Author, AuthorKind, CommentEvent, CommentEventKind, CommentTarget, Confidence, Description,
-        DescriptionRecord, Disposition, RecordBody, Seq, VersionNumber,
+        Author, AuthorKind, CommentEvent, CommentEventKind, CommentNumber, CommentTarget,
+        Confidence, Description, DescriptionRecord, Disposition, RecordBody, Seq, VersionNumber,
     };
     use wiff_core::review::{CommentState, DescriptionState};
     use wiff_diff::{Diff, FileStatus, LineKind, Side};
@@ -3737,6 +3764,11 @@ mod tests {
             confidence: None,
             origin: None,
             synced_marker: None,
+            // This hand-built state feeds rendering directly, so the number is
+            // whatever the snapshot asserts, not a fold's output. Fixtures pass
+            // ids in create order, so reusing the id as the number reads
+            // naturally.
+            number: Some(CommentNumber(id as u32)),
             created_seq: Seq(0),
             updated_seq: Seq(0),
         }
@@ -4087,7 +4119,7 @@ mod tests {
             "<#fcf7ee|#65737e|b>Review<#f7f7f8|#65737e|-> [press c here to draft the review comment]<#f7f7f8|#65737e|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
-            "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->#1 opus (agent)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#767b84|-|->│<#c0c5ce|-|->this comment runs well past the width<-|-|-> <#767b84|-|->│\n",
             "<#767b84|-|->│<#c0c5ce|-|->of the box and must wrap<-|-|->              <#767b84|-|->│\n",
             "<#767b84|-|->└──────────┬───────────────────────────┘\n",
@@ -4286,8 +4318,8 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_str!(
             dump_picker(&mut app),
-            "<#c0c5ce|#65737e|->> <#c0c5ce|#65737e|->  <#c0c5ce|#65737e|->src/lib.rs:2  wez   why 2?<#c0c5ce|#65737e|->          \n",
-            "<#c0c5ce|#2b303b|->  <#767b84|#2b303b|->✓ <#c0c5ce|#2b303b|->src/lib.rs:1  opus  ok<#c0c5ce|#2b303b|->              \n",
+            "<#c0c5ce|#65737e|->> <#c0c5ce|#65737e|->  <#c0c5ce|#65737e|->#2  src/lib.rs:2  wez   why 2?<#c0c5ce|#65737e|->      \n",
+            "<#c0c5ce|#2b303b|->  <#767b84|#2b303b|->✓ <#c0c5ce|#2b303b|->#1  src/lib.rs:1  opus  ok<#c0c5ce|#2b303b|->          \n",
             "<-|#2b303b|->                                        \n",
             "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
         );
@@ -4363,12 +4395,12 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_str!(
             dump_picker(&mut app),
-            "<#c0c5ce|#65737e|->> <#a3be8c|#65737e|->* <#767b84|#65737e|s>src/lib.rs:4  wez   withdrawn one<#c0c5ce|#65737e|->   \n",
-            "<#c0c5ce|#2b303b|->  <#c0c5ce|#2b303b|->  <#c0c5ce|#2b303b|->src/lib.rs:1  wez   open one<#c0c5ce|#2b303b|->        \n",
-            "<#c0c5ce|#2b303b|->  <#d08770|#2b303b|->! <#c0c5ce|#2b303b|->src/lib.rs:3  wez   shifted one<#c0c5ce|#2b303b|->     \n",
-            "<#c0c5ce|#2b303b|->  <#767b84|#2b303b|->✓ <#c0c5ce|#2b303b|->src/lib.rs:2  opus  resolved one<#c0c5ce|#2b303b|->    \n",
-            "<-|#2b303b|->                                        \n",
-            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
+            "<#c0c5ce|#65737e|->> <#a3be8c|#65737e|->* <#767b84|#65737e|s>#4  src/lib.rs:4  wez   withdrawn one\n",
+            "<#c0c5ce|#2b303b|->  <#c0c5ce|#2b303b|->  <#c0c5ce|#2b303b|->#1  src/lib.rs:1  wez   open one<#c0c5ce|#2b303b|->     \n",
+            "<#c0c5ce|#2b303b|->  <#d08770|#2b303b|->! <#c0c5ce|#2b303b|->#3  src/lib.rs:3  wez   shifted one<#c0c5ce|#2b303b|->  \n",
+            "<#c0c5ce|#2b303b|->  <#767b84|#2b303b|->✓ <#c0c5ce|#2b303b|->#2  src/lib.rs:2  opus  resolved one<#c0c5ce|#2b303b|-> \n",
+            "<-|#2b303b|->                                         \n",
+            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel \n",
         );
     }
 
@@ -4828,10 +4860,10 @@ mod tests {
             "<#fcf7ee|#65737e|b>Review<#f7f7f8|#65737e|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
-            "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->#1 opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#767b84|-|->└──────────┬───────────────────────────┘\n",
             "<#7d828c|-|->   1    1  <#767b84|-|->└<#7d828c|-|-><#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
-            "<#767b84|-|->┌ <#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->#2 wez (human)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│\n",
             "<#767b84|-|->└──────────┬───────────────────────────┘\n",
             "<#9ea1a9|#414a4a|->        2 +<#989ca3|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
@@ -4884,10 +4916,10 @@ mod tests {
             "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
-            "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->#1 opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#767b84|-|->└──────────┬───────────────────────────┘\n",
             "<#7d828c|-|->   1    1  <#767b84|-|->└<#7d828c|-|-><#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
-            "<#cfd1d4|#65737e|->┌ <#f9fafb|#65737e|->wez (human)<#cfd1d4|#65737e|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse<#cfd1d4|#65737e|-> <#cfd1d4|#65737e|->┐\n",
+            "<#cfd1d4|#65737e|->┌ <#f9fafb|#65737e|->#2 wez (human)<#cfd1d4|#65737e|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse<#cfd1d4|#65737e|-> <#cfd1d4|#65737e|->┐\n",
             "<#767b84|-|->└──────────┬───────────────────────────┘\n",
             "<#9ea1a9|#414a4a|->        2 +<#989ca3|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
         );
@@ -4909,10 +4941,10 @@ mod tests {
             "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
-            "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->#1 opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#767b84|-|->└──────────┬───────────────────────────┘\n",
             "<#7d828c|-|->   1    1  <#767b84|-|->└<#7d828c|-|-><#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
-            "<#cfd1d4|#65737e|->┌ <#f9fafb|#65737e|->wez (human)<#cfd1d4|#65737e|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse<#cfd1d4|#65737e|-> <#cfd1d4|#65737e|->┐\n",
+            "<#cfd1d4|#65737e|->┌ <#f9fafb|#65737e|->#2 wez (human)<#cfd1d4|#65737e|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse<#cfd1d4|#65737e|-> <#cfd1d4|#65737e|->┐\n",
             "<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│\n",
             "<#767b84|-|->└──────────┬───────────────────────────┘\n",
             "<#9ea1a9|#414a4a|->        2 +<#989ca3|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
@@ -4963,10 +4995,10 @@ mod tests {
             "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
-            "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->#1 opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#767b84|-|->└──────────┬───────────────────────────┘\n",
             "<#7d828c|-|->   1    1  <#767b84|-|->└<#7d828c|-|-><#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
-            "<#767b84|-|->┌ <#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->#2 wez (human)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│\n",
             "<#767b84|-|->└──────────┬───────────────────────────┘\n",
             "<#f5f6f6|#65737e|->        2 +<#fafafa|#65737e|->└<#f5f6f6|#65737e|-><#faf7f9|#65737e|->let<#f6f6f8|#65737e|-> y <#f6f6f8|#65737e|->=<#f6f6f8|#65737e|-> <#fcf7f5|#65737e|->2<#f6f6f8|#65737e|->;<-|#65737e|->                  \n",
@@ -4994,10 +5026,10 @@ mod tests {
             "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
-            "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->#1 opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#767b84|-|->└──────────┬───────────────────────────┘\n",
             "<#7d828c|-|->   1    1  <#767b84|-|->└<#7d828c|-|-><#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
-            "<#f6f9f4|#65737e|->┌ <#f9fafb|#65737e|->wez (human)<#f6f9f4|#65737e|-> [draft]<#cfd1d4|#65737e|-> [resolved by wez]<#cfd1d4|#65737e|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse<#f6f9f4|#65737e|-> <#f6f9f4|#65737e|->┐\n",
+            "<#f6f9f4|#65737e|->┌ <#f9fafb|#65737e|->#2 wez (human)<#f6f9f4|#65737e|-> [draft]<#cfd1d4|#65737e|-> [resolved by wez]<#cfd1d4|#65737e|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse<#f6f9f4|#65737e|-> <#f6f9f4|#65737e|->┐\n",
             "<#a3be8c|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#a3be8c|-|->│\n",
             "<#a3be8c|-|->└──────────┬───────────────────────────┘\n",
             "<#9ea1a9|#414a4a|->        2 +<#a8c192|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
@@ -5026,10 +5058,10 @@ mod tests {
             "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
-            "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->#1 opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#767b84|-|->└──────────┬───────────────────────────┘\n",
             "<#7d828c|-|->   1    1  <#767b84|-|->└<#7d828c|-|-><#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
-            "<#f6f9f4|#65737e|->┌ <#f9fafb|#65737e|->wez (human)<#f6f9f4|#65737e|-> [draft]<#cfd1d4|#65737e|-> [deleted by wez]<#cfd1d4|#65737e|->  press e to edit  x to resolve  d to undelete  tab to expand/collapse<#f6f9f4|#65737e|-> <#f6f9f4|#65737e|->┐\n",
+            "<#f6f9f4|#65737e|->┌ <#f9fafb|#65737e|->#2 wez (human)<#f6f9f4|#65737e|-> [draft]<#cfd1d4|#65737e|-> [deleted by wez]<#cfd1d4|#65737e|->  press e to edit  x to resolve  d to undelete  tab to expand/collapse<#f6f9f4|#65737e|-> <#f6f9f4|#65737e|->┐\n",
             "<#a3be8c|-|->└──────────┬───────────────────────────┘\n",
             "<#9ea1a9|#414a4a|->        2 +<#a8c192|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
         );
@@ -5058,10 +5090,10 @@ mod tests {
             "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
-            "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->#1 opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#767b84|-|->└──────────┬───────────────────────────┘\n",
             "<#7d828c|-|->   1    1  <#767b84|-|->└<#7d828c|-|-><#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
-            "<#cfd1d4|#65737e|->┌ <#f9fafb|#65737e|->wez (human)<#cfd1d4|#65737e|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse<#cfd1d4|#65737e|-> <#cfd1d4|#65737e|->┐\n",
+            "<#cfd1d4|#65737e|->┌ <#f9fafb|#65737e|->#2 wez (human)<#cfd1d4|#65737e|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse<#cfd1d4|#65737e|-> <#cfd1d4|#65737e|->┐\n",
             "<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│\n",
             "<#767b84|-|->└──────────┬───────────────────────────┘\n",
             "<#9ea1a9|#414a4a|->        2 +<#989ca3|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
@@ -5846,10 +5878,10 @@ mod tests {
             "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
-            "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->#1 opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#767b84|-|->└──────────┬───────────────────────────┘\n",
             "<#7d828c|-|->   1    1  <#767b84|-|->└<#7d828c|-|-><#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
-            "<#f6f9f4|#65737e|->┌ <#f9fafb|#65737e|->wez (human)<#f6f9f4|#65737e|-> [draft]<#cfd1d4|#65737e|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse<#f6f9f4|#65737e|-> <#f6f9f4|#65737e|->┐\n",
+            "<#f6f9f4|#65737e|->┌ <#f9fafb|#65737e|->#2 wez (human)<#f6f9f4|#65737e|-> [draft]<#cfd1d4|#65737e|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse<#f6f9f4|#65737e|-> <#f6f9f4|#65737e|->┐\n",
             "<#a3be8c|-|->│<#c0c5ce|-|->use a constant<-|-|->                        <#a3be8c|-|->│\n",
             "<#a3be8c|-|->└──────────┬───────────────────────────┘\n",
             "<#9ea1a9|#414a4a|->        2 +<#a8c192|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
@@ -5880,10 +5912,10 @@ mod tests {
             "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
-            "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->#1 opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#767b84|-|->└──────────┬───────────────────────────┘\n",
             "<#7d828c|-|->   1    1  <#767b84|-|->└<#7d828c|-|-><#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
-            "<#767b84|-|->┌ <#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->#2 wez (human)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│\n",
             "<#767b84|-|->└──────────┬───────────────────────────┘\n",
             "<#f6f9f4|#65737e|->┌ <#f9fafb|#65737e|->wez (human)<#f6f9f4|#65737e|-> [draft]<#cfd1d4|#65737e|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse<#f6f9f4|#65737e|-> <#f6f9f4|#65737e|->┐\n",
@@ -5934,10 +5966,10 @@ mod tests {
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
-            "<#767b84|-|->┌ <#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->#2 wez (human)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#767b84|-|->│<#c0c5ce|-|->why 2?<-|-|->                                <#767b84|-|->│\n",
             "<#767b84|-|->└──────────┬───────────────────────────┘\n",
-            "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->#3 opus (agent)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#767b84|-|->│<#c0c5ce|-|->because<-|-|->                               <#767b84|-|->│\n",
             "<#767b84|-|->└──────────────────────────────────────┘\n",
             "<#f6f9f4|#65737e|->┌ <#f9fafb|#65737e|->wez (human)<#f6f9f4|#65737e|-> [draft]<#cfd1d4|#65737e|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse<#f6f9f4|#65737e|-> <#f6f9f4|#65737e|->┐\n",
@@ -5975,7 +6007,7 @@ mod tests {
             "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
-            "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->#1 opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#767b84|-|->└──────────┬───────────────────────────┘\n",
             "<#7d828c|-|->   1    1  <#767b84|-|->└<#7d828c|-|-><#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
             "--editor cursor 8,1--\n",
@@ -6011,7 +6043,7 @@ mod tests {
             "--below--\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
-            "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->#1 opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#767b84|-|->└──────────┬───────────────────────────┘\n",
             "<#7d828c|-|->   1    1  <#767b84|-|->└<#7d828c|-|-><#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
         );
@@ -6310,10 +6342,10 @@ mod tests {
             "<#fcf7ee|#65737e|b>Review<#f7f7f8|#65737e|-> [press c here to draft the review comment]<#f7f7f8|#65737e|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
-            "<-|-|->                         <#7d828c|-|->│<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved<#767b84|-|-> <#767b84|-|->┐\n",
+            "<-|-|->                         <#7d828c|-|->│<#767b84|-|->┌ <#8fa1b3|-|->#1 opus (agent)<#767b84|-|-> [resol<#767b84|-|-> <#767b84|-|->┐\n",
             "<-|-|->                         <#7d828c|-|->│<#767b84|-|->└─────┬──────────────────┘\n",
             "<#7d828c|-|->   1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;<-|-|->        <#7d828c|-|->│<#7d828c|-|->   1  <#767b84|-|->└<#7d828c|-|-><#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;<-|-|->         \n",
-            "<-|-|->                         <#7d828c|-|->│<#767b84|-|->┌ <#8fa1b3|-|->wez (human)<#767b84|-|->  press e t<#767b84|-|-> <#767b84|-|->┐\n",
+            "<-|-|->                         <#7d828c|-|->│<#767b84|-|->┌ <#8fa1b3|-|->#2 wez (human)<#767b84|-|->  press <#767b84|-|-> <#767b84|-|->┐\n",
             "<-|-|->                         <#7d828c|-|->│<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->         <#767b84|-|->│\n",
             "<-|-|->                         <#7d828c|-|->│<#767b84|-|->└─────┬──────────────────┘\n",
             "<-|-|->                         <#7d828c|-|->│<#9ea1a9|#414a4a|->   2 +<#989ca3|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->         \n",
@@ -6546,11 +6578,33 @@ mod tests {
             "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
-            "<#767b84|-|->┌ <#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->#1 opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
             "<#cfd1d4|#65737e|->│<#f6f6f8|#686255|->ok<-|#65737e|->                                    <#cfd1d4|#65737e|->│\n",
             "<#767b84|-|->└──────────┬───────────────────────────┘\n",
             "<#7d828c|-|->   1    1  <#767b84|-|->└<#7d828c|-|-><#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
-            "<#767b84|-|->┌ <#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->#2 wez (human)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│\n",
+            "<#767b84|-|->└──────────┬───────────────────────────┘\n",
+            "<#9ea1a9|#414a4a|->        2 +<#989ca3|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+        );
+    }
+
+    #[test]
+    fn a_search_jumps_to_a_comment_by_its_review_scoped_number() {
+        // The header row is searchable by the number the title leads with, so
+        // `#2 ` jumps the cursor onto that comment and washes the visible label.
+        let mut app = App::reviewing(commented_review(), 14, &theme());
+        search_for(&mut app, Action::SearchForward, "#2 ");
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#767b84|-|->┌ <#8fa1b3|-|->#1 opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse<#767b84|-|-> <#767b84|-|->┐\n",
+            "<#767b84|-|->└──────────┬───────────────────────────┘\n",
+            "<#7d828c|-|->   1    1  <#767b84|-|->└<#7d828c|-|-><#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#cfd1d4|#65737e|->┌ <#f9fafb|#686255|->#2 <#f9fafb|#65737e|->wez (human)<#cfd1d4|#65737e|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse<#cfd1d4|#65737e|-> <#cfd1d4|#65737e|->┐\n",
             "<#767b84|-|->│<#c0c5ce|-|->why 2? say more<-|-|->                       <#767b84|-|->│\n",
             "<#767b84|-|->└──────────┬───────────────────────────┘\n",
             "<#9ea1a9|#414a4a|->        2 +<#989ca3|#414a4a|->└<#9ea1a9|#414a4a|-><#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
@@ -6749,6 +6803,7 @@ mod tests {
             confidence: None,
             origin: None,
             synced_marker: None,
+            number: Some(CommentNumber(1)),
             created_seq: Seq(0),
             updated_seq: Seq(0),
         };
@@ -6778,7 +6833,7 @@ mod tests {
             "   2      - beta\n",
             "        2 + BETA\n",
             "   3    3   gamma\n",
-            "┌ opus (agent)  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse ┐\n",
+            "┌ #1 opus (agent)  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse ┐\n",
             "│why delta?                                                                    │\n",
             "└──────────┬───────────────────────────────────────────────────────────────────┘\n",
             "        4 +└delta\n",
@@ -6919,7 +6974,7 @@ mod tests {
             "   5    5   ctx05\n",
             "   6    6   ctx06\n",
             "   7    7   ctx07\n",
-            "┌ opus (agent)  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse ┐\n",
+            "┌ #1 opus (agent)  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse ┐\n",
             "│why?                                  │\n",
             "└──────────┬───────────────────────────┘\n",
             "   8    8  └ctx08\n",

@@ -83,15 +83,14 @@ pub(super) fn render(state: &ReviewState) -> String {
     out
 }
 
-/// One comment rendered as a bullet with its id, location, attribution, state
-/// flags, body, and, for an anchored line range, a fenced context block. The id
-/// leads the bullet so a reader can act on the comment (resolve or withdraw it)
-/// straight from this rendering.
+/// Renders one comment as a markdown bullet: its handle, metadata, body, and
+/// code context. The handle leads the bullet so a reader can act on the comment
+/// (resolve or withdraw it) straight from this rendering.
 fn comment_block(comment: &CommentState) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "- {} {} by {} ({}){}\n",
-        comment.id,
+        comment.handle(),
         location(&comment.target),
         comment.author.name,
         comment.author.kind.as_str(),
@@ -106,14 +105,13 @@ fn comment_block(comment: &CommentState) -> String {
     out
 }
 
-/// One reply rendered as an indented sub-bullet under its root: its id, author,
-/// state flags, and body. A reply has no location or anchor of its own; it
-/// belongs to the thread it is nested under.
+/// Renders one reply as an indented sub-bullet under its root. A reply has no
+/// location or anchor of its own; it belongs to the thread it is nested under.
 fn reply_block(reply: &CommentState) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "  - {} reply by {} ({}){}\n",
-        reply.id,
+        reply.handle(),
         reply.author.name,
         reply.author.kind.as_str(),
         flags(reply),
@@ -279,56 +277,56 @@ mod tests {
 
     #[test]
     fn markdown_groups_comments_threading_replies_and_tombstoning_withdrawn_roots() {
-        let out = render(&state());
-        let expected = "\
-# Review 00000000000000000000000000
-
-- project: demo
-- source: git_worktree
-- version: v0 (1 file)
-
-## Description
-
-**Tidy the parser**
-
-Split the lexer out and cover it with tests.
-
-## Verdicts
-
-- wez (human): approve
-- dev (human): request_changes
-
-## Comments
-
-### Review
-
-- 00000000000000000000000003 review by wez (human) [approve]
-  overall solid
-
-### main.rs
-
-- 00000000000000000000000002 whole file by assistant (agent) [resolved by wez (human)]
-  needs tests
-- 00000000000000000000000001 line 2 (after) by wez (human)
-  why 3?
-
-  ```rust
-       1 | let a = 1;
-  >    2 | let b = 3;
-       3 | let c = 4;
-  ```
-  - 00000000000000000000000006 reply by opus (agent)
-    3 is the loop bound
-- 00000000000000000000000005 line 9 (after) by wez (human) [withdrawn by wez (human)]
-  never mind
-  - 00000000000000000000000007 reply by dev (human)
-    still relevant though
-
-### other.rs
-
-- 00000000000000000000000004 lines 5-6 (after) by dev (human) [shifted, request_changes, changed by opus (agent)]
-  moved code
-";
-        wince::assert_eq!(out, expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            render(&state()),
+            "# Review 00000000000000000000000000\n",
+            "\n",
+            "- project: demo\n",
+            "- source: git_worktree\n",
+            "- version: v0 (1 file)\n",
+            "\n",
+            "## Description\n",
+            "\n",
+            "**Tidy the parser**\n",
+            "\n",
+            "Split the lexer out and cover it with tests.\n",
+            "\n",
+            "## Verdicts\n",
+            "\n",
+            "- wez (human): approve\n",
+            "- dev (human): request_changes\n",
+            "\n",
+            "## Comments\n",
+            "\n",
+            "### Review\n",
+            "\n",
+            "- #3 review by wez (human) [approve]\n",
+            "  overall solid\n",
+            "\n",
+            "### main.rs\n",
+            "\n",
+            "- #2 whole file by assistant (agent) [resolved by wez (human)]\n",
+            "  needs tests\n",
+            "- #1 line 2 (after) by wez (human)\n",
+            "  why 3?\n",
+            "\n",
+            "  ```rust\n",
+            "       1 | let a = 1;\n",
+            "  >    2 | let b = 3;\n",
+            "       3 | let c = 4;\n",
+            "  ```\n",
+            "  - #6 reply by opus (agent)\n",
+            "    3 is the loop bound\n",
+            "- #5 line 9 (after) by wez (human) [withdrawn by wez (human)]\n",
+            "  never mind\n",
+            "  - #7 reply by dev (human)\n",
+            "    still relevant though\n",
+            "\n",
+            "### other.rs\n",
+            "\n",
+            "- #4 lines 5-6 (after) by dev (human) [shifted, request_changes, changed by opus (agent)]\n",
+            "  moved code\n",
+        );
     }
 }

@@ -16,9 +16,9 @@ use ulid::Ulid;
 
 use crate::error::{Error, Result};
 use crate::record::{
-    Anchor, Author, CommentCreate, CommentEvent, CommentEventKind, CommentTarget, Confidence,
-    Description, DescriptionRecord, DiffVersionRecord, Disposition, ExternalRef, FORMAT_VERSION,
-    Record, RecordBody, Seq, SessionHeader, VersionNumber,
+    Anchor, Author, CommentCreate, CommentEvent, CommentEventKind, CommentNumber, CommentRef,
+    CommentTarget, Confidence, Description, DescriptionRecord, DiffVersionRecord, Disposition,
+    ExternalRef, FORMAT_VERSION, Record, RecordBody, Seq, SessionHeader, VersionNumber,
 };
 use crate::session::read_records;
 
@@ -79,6 +79,26 @@ impl ReviewState {
     /// The most recently captured diff version, if any.
     pub fn latest_version(&self) -> Option<&DiffVersionRecord> {
         self.versions.last()
+    }
+
+    /// Returns the comment whose review-scoped handle is `number`, or `None`
+    /// when none has it.
+    pub fn comment_by_number(&self, number: CommentNumber) -> Option<&CommentState> {
+        self.comments
+            .iter()
+            .find(|comment| comment.number == Some(number))
+    }
+
+    /// Resolves a [`CommentRef`], a ULID or review-scoped number, to the
+    /// comment's stable id.
+    pub fn resolve_ref(&self, reference: CommentRef) -> Result<Ulid> {
+        match reference {
+            CommentRef::Ulid(id) => Ok(id),
+            CommentRef::Number(number) => self
+                .comment_by_number(number)
+                .map(|comment| comment.id)
+                .ok_or(Error::UnknownCommentNumber(number)),
+        }
     }
 }
 
@@ -208,6 +228,12 @@ pub struct CommentState {
     /// a later phase mirrors forge state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub synced_marker: Option<String>,
+    /// This comment's review-scoped human handle, assigned by the fold from its
+    /// create-order. `None` on a comment not yet committed (a TUI draft preview)
+    /// or a synthesized render-only comment, neither of which has a stable
+    /// position in the log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<CommentNumber>,
     /// The sequence number of the creating record.
     pub created_seq: Seq,
     /// The sequence number of the most recent record that touched it, a
@@ -246,8 +272,19 @@ impl CommentState {
             confidence: None,
             origin: event.origin.clone(),
             synced_marker: event.synced_marker.clone(),
+            number: None,
             created_seq: seq,
             updated_seq: seq,
+        }
+    }
+
+    /// Returns this comment's display handle: its review-scoped number when it
+    /// has one, else its ULID. Folded state always has a number; the ULID is the
+    /// fallback for a draft preview or a synthesized comment that has none.
+    pub fn handle(&self) -> String {
+        match self.number {
+            Some(number) => number.to_string(),
+            None => self.id.to_string(),
         }
     }
 
@@ -344,10 +381,15 @@ pub fn fold(records: &[Record]) -> Result<ReviewState> {
     let session = session.ok_or(Error::MissingHeader)?;
     let comments: Vec<CommentState> = order
         .into_iter()
-        .map(|id| {
-            comments
+        .enumerate()
+        .map(|(index, id)| {
+            let mut comment = comments
                 .remove(&id)
-                .expect("id came from an inserted comment")
+                .expect("id came from an inserted comment");
+            let position =
+                u32::try_from(index + 1).expect("a review holds fewer than u32::MAX comments");
+            comment.number = Some(CommentNumber(position));
+            comment
         })
         .collect();
     let verdicts = derive_verdicts(&comments);

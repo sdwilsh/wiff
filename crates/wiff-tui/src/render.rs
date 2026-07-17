@@ -1375,7 +1375,7 @@ impl DiffView {
             file,
             RowKind::CommentHeader { id },
             Some(border),
-            comment.author.name.clone(),
+            self.header_search_text(comment, id),
             self.comment_title(comment, id, pending),
         );
         let body_start = doc.rows.len();
@@ -1427,15 +1427,25 @@ impl DiffView {
         }
     }
 
-    /// The title shown along a comment box's top edge: the author and kind, the
-    /// status badges, and a dimmed hint at the keys that edit, resolve, delete,
-    /// and expand or collapse the comment.
+    /// Returns the plain text a header row matches against in search: `#N author
+    /// (kind)` for a comment, `author (kind)` for the description. The
+    /// description's title also leads with a fixed "Description" word, which is
+    /// not part of this text.
+    fn header_search_text(&self, comment: &CommentState, id: BoxId) -> String {
+        if id == BoxId::Description {
+            return format!("{} ({})", comment.author.name, comment.author.kind.as_str());
+        }
+        comment_label(comment)
+    }
+
+    /// Builds the title shown along a comment box's top edge: its label, status
+    /// badges, and a dimmed hint at the keys that act on the comment.
     fn comment_title(&self, comment: &CommentState, id: BoxId, pending: bool) -> Line<'static> {
         if id == BoxId::Description {
             return self.description_title(comment, pending);
         }
         let mut spans = vec![Span::styled(
-            format!("{} ({})", comment.author.name, comment.author.kind.as_str()),
+            comment_label(comment),
             Style::default().fg(color(self.theme.comment_author_fg)),
         )];
         for (text, style) in badges(comment, pending) {
@@ -1998,6 +2008,20 @@ enum BadgeStyle {
     Draft,
 }
 
+/// The label leading a comment's title: its review-scoped number when it has
+/// one, then the author and kind. A draft comment has no number yet, so it
+/// leads with the author.
+fn comment_label(comment: &CommentState) -> String {
+    match comment.number {
+        Some(number) => format!(
+            "{number} {} ({})",
+            comment.author.name,
+            comment.author.kind.as_str()
+        ),
+        None => format!("{} ({})", comment.author.name, comment.author.kind.as_str()),
+    }
+}
+
 /// A comment's status badges, in display order. A pending comment leads with a
 /// `draft` badge. A resolved or withdrawn comment names who acted, and a comment
 /// last changed by someone other than its author names that actor. A deleted
@@ -2419,6 +2443,11 @@ mod tests {
             confidence: None,
             origin: None,
             synced_marker: None,
+            // This hand-built state feeds rendering directly, so the number is
+            // whatever the snapshot asserts, not a fold's output. Fixtures pass
+            // ids in create order, so reusing the id as the number reads
+            // naturally.
+            number: Some(wiff_core::record::CommentNumber(id as u32)),
             created_seq: Seq(0),
             updated_seq: Seq(0),
         }
@@ -2663,7 +2692,7 @@ mod tests {
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
-            "<#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse\n",
+            "<#8fa1b3|-|->#1 wez (human)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse\n",
             "<#c0c5ce|-|->why 2?\n",
             "\n",
             "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;\n",
@@ -2692,7 +2721,7 @@ mod tests {
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
-            "<#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse\n",
+            "<#8fa1b3|-|->#1 wez (human)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse\n",
             "<#c0c5ce|-|->why 2?\n",
             "\n",
             "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;\n",
@@ -2739,10 +2768,10 @@ mod tests {
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
             "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
-            "<#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse\n",
+            "<#8fa1b3|-|->#1 wez (human)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse\n",
             "<#c0c5ce|-|->why 2?\n",
             "\n",
-            "<#8fa1b3|-|->opus (agent)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse\n",
+            "<#8fa1b3|-|->#2 opus (agent)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse\n",
             "<#c0c5ce|-|->because two\n",
             "\n",
             "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;\n",
@@ -2854,7 +2883,7 @@ mod tests {
             "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
-            "<#8fa1b3|-|->wez (human)<#a3be8c|-|-> [draft]<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse\n",
+            "<#8fa1b3|-|->#1 wez (human)<#a3be8c|-|-> [draft]<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse\n",
             "<#c0c5ce|-|->why 2?\n",
             "\n",
             "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;\n",
@@ -2889,7 +2918,7 @@ mod tests {
             "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
-            "<#8fa1b3|-|->opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse\n",
+            "<#8fa1b3|-|->#7 opus (agent)<#767b84|-|-> [resolved]<#767b84|-|->  press e to edit  r to reply  x to unresolve  d to delete  tab to expand/collapse\n",
             "<#c0c5ce|-|->done\n",
             "\n",
             "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;\n",
@@ -2925,7 +2954,7 @@ mod tests {
         wince::snapshot_str!(
             dump(&doc.lines),
             "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
-            "<#8fa1b3|-|->wez (human)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse\n",
+            "<#8fa1b3|-|->#3 wez (human)<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse\n",
             "<#c0c5ce|-|->looks good overall\n",
             "\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
@@ -2997,7 +3026,7 @@ mod tests {
             dump(&doc.lines),
             "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
-            "<#8fa1b3|-|->dev (human)<#d08770|-|-> [outdated]<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse\n",
+            "<#8fa1b3|-|->#5 dev (human)<#d08770|-|-> [outdated]<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse\n",
             "<#c0c5ce|-|->stale\n",
             "\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
@@ -3040,7 +3069,7 @@ mod tests {
             "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
-            "<#8fa1b3|-|->wez (human)<#767b84|-|-> [changed by opus]<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse\n",
+            "<#8fa1b3|-|->#8 wez (human)<#767b84|-|-> [changed by opus]<#767b84|-|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse\n",
             "<#c0c5ce|-|->why 2?\n",
             "\n",
             "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;\n",

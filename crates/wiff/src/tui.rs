@@ -700,7 +700,7 @@ mod tests {
             "   1    2   alpha\n",
             "   2    3   beta\n",
             "   3    4   gamma\n",
-            "┌ wez (human)  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse ┐\n",
+            "┌ #1 wez (human)  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse ┐\n",
             "│why delta?                                                                    │\n",
             "└──────────┬───────────────────────────────────────────────────────────────────┘\n",
             "        5 +└delta\n",
@@ -1000,7 +1000,7 @@ new file mode 100644
             "Review [press c here to draft the review comment] [press e to write the description]\n",
             "added  f.txt\n",
             "@@ -0,0 +1,4 @@\n",
-            "┌ wez (human)  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse ┐\n",
+            "┌ #1 wez (human)  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse ┐\n",
             "│why alpha?                                                                    │\n",
             "└──────────┬───────────────────────────────────────────────────────────────────┘\n",
             "        1 +└alpha\n",
@@ -1123,7 +1123,7 @@ new file mode 100644
             "Review [press c here to draft the review comment] [press e to write the description]\n",
             "added  f.txt\n",
             "@@ -0,0 +1,4 @@\n",
-            "┌ assistant (agent)  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse ┐\n",
+            "┌ #1 assistant (agent)  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse ┐\n",
             "│alpha looks off                                                               │\n",
             "└──────────┬───────────────────────────────────────────────────────────────────┘\n",
             "        1 +└alpha\n",
@@ -1202,14 +1202,12 @@ new file mode 100644
 
         // The rendered review shows the comment with its captured snippet: the
         // changed line marked, with the line above and below as context. The
-        // session's ulid and the comment's are variable, so both are normalized
-        // before the comparison.
+        // session's ulid is variable, so it is normalized before the comparison.
         let state = ReviewState::load(&session_path).expect("reload state");
         let rendered = crate::render::render(&state, crate::render::Format::Markdown)
             .expect("render markdown");
-        let normalized = rendered
-            .replace(&state.session.ulid.to_string(), "SESSION")
-            .replace(&state.comments[0].id.to_string(), "COMMENT");
+        let normalized = rendered.replace(&state.session.ulid.to_string(), "SESSION");
+        #[rustfmt::skip]
         wince::snapshot_str!(
             normalized,
             "# Review SESSION\n",
@@ -1222,7 +1220,7 @@ new file mode 100644
             "\n",
             "### f.txt\n",
             "\n",
-            "- COMMENT line 2 (after) by wez (human)\n",
+            "- #1 line 2 (after) by wez (human)\n",
             "  why uppercase?\n",
             "\n",
             "  ```\n",
@@ -1317,9 +1315,8 @@ new file mode 100644
         let state = ReviewState::load(&session_path).expect("reload state");
         let rendered = crate::render::render(&state, crate::render::Format::Markdown)
             .expect("render markdown");
-        let normalized = rendered
-            .replace(&state.session.ulid.to_string(), "SESSION")
-            .replace(&state.comments[0].id.to_string(), "COMMENT");
+        let normalized = rendered.replace(&state.session.ulid.to_string(), "SESSION");
+        #[rustfmt::skip]
         wince::snapshot_str!(
             normalized,
             "# Review SESSION\n",
@@ -1332,7 +1329,7 @@ new file mode 100644
             "\n",
             "### f.txt\n",
             "\n",
-            "- COMMENT line 5 (after) by wez (human)\n",
+            "- #1 line 5 (after) by wez (human)\n",
             "  why delta?\n",
             "\n",
             "  ```\n",
@@ -1425,7 +1422,7 @@ new file mode 100644
             "@@ -1,3 +1,3 @@\n",
             "   1    1   alpha\n",
             "   2      - beta\n",
-            "┌ wez (human)  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse ┐\n",
+            "┌ #1 wez (human)  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse ┐\n",
             "│why uppercase?                                                                │\n",
             "└──────────┬───────────────────────────────────────────────────────────────────┘\n",
             "        2 +└BETA\n",
@@ -1525,11 +1522,11 @@ new file mode 100644
             "@@ -1,3 +1,3 @@\n",
             "   1      - alpha\n",
             "   2      - beta\n",
-            "┌ wez (human)  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse ┐\n",
+            "┌ #1 wez (human)  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse ┐\n",
             "│why line 1?                                                                   │\n",
             "└──────────┬───────────────────────────────────────────────────────────────────┘\n",
             "        1 +└ALPHA\n",
-            "┌ wez (human)  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse ┐\n",
+            "┌ #2 wez (human)  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse ┐\n",
             "│why line 2?                                                                   │\n",
             "└──────────┬───────────────────────────────────────────────────────────────────┘\n",
             "        2 +└BETA\n",

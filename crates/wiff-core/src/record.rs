@@ -44,6 +44,65 @@ impl std::fmt::Display for Seq {
     }
 }
 
+/// A comment's short, human-friendly handle within one review: its 1-based
+/// position among the review's comments in the order they were created. Stable
+/// for a committed comment because the log is append-only and withdrawals are
+/// tombstones. It is scoped to a single review, not a cross-session identity;
+/// the [`Ulid`] remains that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CommentNumber(pub u32);
+
+impl std::fmt::Display for CommentNumber {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "#{}", self.0)
+    }
+}
+
+/// A comment named on the command line: either its full [`Ulid`] or its
+/// review-scoped [`CommentNumber`]. Parse it via `FromStr`, which reads a `#N`
+/// or bare-decimal number and a 26-character ULID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommentRef {
+    /// A full, cross-session ULID.
+    Ulid(Ulid),
+    /// A review-scoped number.
+    Number(CommentNumber),
+}
+
+impl std::str::FromStr for CommentRef {
+    type Err = String;
+
+    fn from_str(text: &str) -> std::result::Result<Self, Self::Err> {
+        let text = text.trim();
+        if let Some(digits) = text.strip_prefix('#') {
+            return parse_comment_number(digits)
+                .map(CommentRef::Number)
+                .ok_or_else(|| format!("{text} is not a valid comment number"));
+        }
+        if let Ok(id) = Ulid::from_string(text) {
+            return Ok(CommentRef::Ulid(id));
+        }
+        parse_comment_number(text)
+            .map(CommentRef::Number)
+            .ok_or_else(|| format!("{text} is not a comment number or ULID"))
+    }
+}
+
+/// Read a comment number in its canonical decimal form, the grammar
+/// [`CommentNumber`] displays: at least one ASCII digit, no sign, no leading
+/// zero. Numbering is 1-based, so a leading zero (including a lone `0`) is
+/// rejected, matching what `Display` can emit.
+fn parse_comment_number(digits: &str) -> Option<CommentNumber> {
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    if digits.starts_with('0') {
+        return None;
+    }
+    digits.parse::<u32>().ok().map(CommentNumber)
+}
+
 /// The number of a captured diff version, matching its sideband `vN.diff`. `v0`
 /// is the first capture; each refresh increments it. A distinct type so a
 /// version number is never confused with a sequence number or a raw count.
@@ -502,6 +561,59 @@ pub struct CommentReanchor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_comment_reference_reads_a_number_with_or_without_a_hash_and_a_ulid() {
+        let ulid = "00000000000000000000000042";
+        let parsed: Vec<std::result::Result<CommentRef, String>> =
+            ["3", "#3", " #3 ", ulid, "#nope", "not-a-ulid"]
+                .into_iter()
+                .map(str::parse)
+                .collect();
+        wince::assert_eq!(
+            parsed,
+            vec![
+                Ok(CommentRef::Number(CommentNumber(3))),
+                Ok(CommentRef::Number(CommentNumber(3))),
+                Ok(CommentRef::Number(CommentNumber(3))),
+                Ok(CommentRef::Ulid(
+                    Ulid::from_string(ulid).expect("a valid ULID")
+                )),
+                Err("#nope is not a valid comment number".to_string()),
+                Err("not-a-ulid is not a comment number or ULID".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_comment_number_admits_only_its_canonical_decimal_form() {
+        // A sign, a leading zero, or an inner space is not how a number ever
+        // renders, so none of these read as a number. A lone 0 is rejected too:
+        // numbering is 1-based, so #0 is not a value Display ever emits.
+        let parsed: Vec<std::result::Result<CommentRef, String>> =
+            ["+3", "-3", "0003", "3 5", "0", "#+3", "#03", "#0"]
+                .into_iter()
+                .map(str::parse)
+                .collect();
+        wince::assert_eq!(
+            parsed,
+            vec![
+                Err("+3 is not a comment number or ULID".to_string()),
+                Err("-3 is not a comment number or ULID".to_string()),
+                Err("0003 is not a comment number or ULID".to_string()),
+                Err("3 5 is not a comment number or ULID".to_string()),
+                Err("0 is not a comment number or ULID".to_string()),
+                Err("#+3 is not a valid comment number".to_string()),
+                Err("#03 is not a valid comment number".to_string()),
+                Err("#0 is not a valid comment number".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_comment_number_displays_with_a_leading_hash() {
+        wince::assert_eq!(CommentNumber(7).to_string(), "#7".to_string());
+    }
 
     #[test]
     fn a_revision_source_round_trips_through_json() {

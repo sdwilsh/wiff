@@ -177,6 +177,20 @@ A session accretes diff versions over time. Comments are **not** duplicated per
 version: each comment moves forward onto the latest version, or becomes
 outdated.
 
+### Comment numbers
+
+Every comment keeps a full ULID as its durable, cross-session identity, but a
+ULID is too long to show or type. Alongside it each comment has a short,
+review-scoped **number**: its 1-based position among the review's comments in
+the order they were created. The fold assigns it from the log, so the TUI, the
+CLI, and the rendered output all derive the same number without coordinating.
+It is stable for a committed comment because the log is append-only and
+withdrawals are tombstones, so create-order never shifts; a draft has no number
+until it is committed. The number is a display and input convenience scoped to
+one review, never stored as identity or used across sessions. The TUI and the
+rendered output lead each comment with it, and the comment CLI accepts either
+the number or the ULID.
+
 ### Anchoring
 
 A comment target is one of:
@@ -262,7 +276,9 @@ an explicit subcommand, so behavior is unambiguous. Subcommands (v0):
   `wiff comment rm`. Resolve, verdict, and rm take the same author flags as
   `add`, so who resolved, judged, or withdrew a comment is recorded alongside
   the change. `verdict` sets or clears an approve/request-changes verdict on
-  the caller's own comment.
+  the caller's own comment. Each names its comment by either its ULID or its
+  review-scoped number (see Comment numbers), and `add --reply-to` accepts
+  either form too.
 - `wiff render`: emit the review state for consumption. `--format markdown`
   (default) or `--format json`. The format argument is designed to admit more
   formats later, so it is a value-taking option rather than a boolean flag.
@@ -285,8 +301,9 @@ through the append + lock path.
 
 - `wiff render --format {markdown,json}` produces the review state for an
   agent prompt (markdown) or programmatic use (json). Markdown groups comments
-  by file, leading each comment with its id (so it can be resolved or withdrawn
-  straight from the render) and showing author and kind, the target location,
+  by file, leading each comment with its number (so it can be resolved or
+  withdrawn straight from the render) and showing author and kind, the target
+  location,
   resolved/outdated state (naming who resolved it), any verdict the comment
   holds, the body, and a fenced code block of the surrounding context. When
   the review has a description, markdown prints it under a `## Description`

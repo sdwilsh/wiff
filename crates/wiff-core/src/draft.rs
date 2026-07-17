@@ -506,6 +506,7 @@ mod tests {
             confidence: None,
             origin: None,
             synced_marker: None,
+            number: None,
             created_seq: Seq(3),
             updated_seq: Seq(3),
         }
@@ -518,6 +519,7 @@ mod tests {
         CommentState {
             author: author.clone(),
             updated_by: author,
+            number: None,
             created_seq: Seq(seq),
             updated_seq: Seq(seq),
             ..committed_comment(id, body, false)

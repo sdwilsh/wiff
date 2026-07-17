@@ -783,6 +783,7 @@ mod tests {
             confidence: None,
             origin: None,
             synced_marker: None,
+            number: Some(wiff_core::record::CommentNumber(1)),
             created_seq: Seq(0),
             updated_seq: Seq(0),
         };
@@ -865,6 +866,7 @@ mod tests {
             confidence: None,
             origin: None,
             synced_marker: None,
+            number: Some(wiff_core::record::CommentNumber(1)),
             created_seq: Seq(0),
             updated_seq: Seq(0),
         };
@@ -889,7 +891,7 @@ mod tests {
             screen(60, 9, app),
             "@@ -1,2 +1,2 @@                                             \n",
             "   1   let x = 1;            │   1   let x = 1;             \n",
-            "                             │┌ wez (human)  press e to ed ┐\n",
+            "                             │┌ #1 wez (human)  press e to ┐\n",
             "                             ││why 2?                      │\n",
             "                             │└─────┬──────────────────────┘\n",
             "                             │┌ reply  ctrl-d submit  esc c┐\n",
