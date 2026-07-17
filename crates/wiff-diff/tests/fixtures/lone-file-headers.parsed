@@ -1,0 +1,12 @@
+file[0]: file1.rs -> file1.rs (Modified)
+  @@ -1,1 +1,1 @@
+    - old=1 new=. |old1
+    + old=. new=1 |new1
+file[1]: file2.rs -> file2.rs (Modified)
+  @@ -1,1 +1,1 @@
+    - old=1 new=. |old2
+    + old=. new=1 |new2
+file[2]: file3.rs -> file3.rs (Modified)
+  @@ -1,1 +1,1 @@
+    - old=1 new=. |old3
+    + old=. new=1 |new3

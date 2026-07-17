@@ -36,7 +36,7 @@ file[0]: /path/to/original -> /path/to/new (Modified)
     + old=. new=26 |This paragraph contains
     + old=. new=27 |important new additions
     + old=. new=28 |to this document.
-file[1]:  -> /path/to/another_new (Added)
+file[1]: /path/to/another_new -> /path/to/another_new (Added)
   @@ -0,0 +1,9 @@
     + old=. new=1 |This is an important
     + old=. new=2 |notice! It should
@@ -47,7 +47,7 @@ file[1]:  -> /path/to/another_new (Added)
     + old=. new=7 |This part of the
     + old=. new=8 |document has stayed the
     + old=. new=9 |same from version to
-file[2]: /path/to/existing ->  (Deleted)
+file[2]: /path/to/existing -> /path/to/existing (Deleted)
   @@ -1,9 +0,0 @@
     - old=1 new=. |This is an important
     - old=2 new=. |notice! It should

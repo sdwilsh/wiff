@@ -193,9 +193,23 @@ fn synthesize_file(
 
 #[cfg(test)]
 mod tests {
-    use super::{LineOrigin, compare_versions};
+    use super::{LineOrigin, compare_versions, synthesize_file};
     use std::collections::HashMap;
-    use wiff_diff::{Diff, LineKind, Side, parse};
+    use wiff_diff::{Diff, FileStatus, LineKind, LineNo, Side, parse};
+
+    /// Number `texts` from 1 as `synthesize_file` expects its side slices.
+    fn numbered(texts: &[&str]) -> Vec<(LineNo, String)> {
+        texts
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                (
+                    LineNo::new(i as u32 + 1).expect("line numbers start at 1"),
+                    (*t).to_string(),
+                )
+            })
+            .collect()
+    }
 
     /// Render `diff` back to a compact unified form for full-value assertions:
     /// each file's status and path, then its hunk lines with a `+`/`-`/` `
@@ -354,5 +368,44 @@ Modified b.txt -> b.txt
  -  2 +GREEN
 ";
         wince::assert_eq!(dump(&comparison.diff), expected.to_string());
+    }
+
+    /// `synthesize_file` classifies status from the before/after line counts
+    /// first and only falls through to `Renamed` when both sides have content
+    /// and the paths differ. Because `parse` now mirrors the `/dev/null` side
+    /// of an add or delete, such a file arrives with equal paths and cannot
+    /// reach that fall-through; this pins each arm so a blank-path regression
+    /// upstream would show up as a spurious rename here.
+    #[test]
+    fn synthesize_file_classifies_status_from_content_then_paths() {
+        let classify = |old: &str, new: &str, before: &[&str], after: &[&str]| {
+            synthesize_file(
+                old.to_string(),
+                new.to_string(),
+                &numbered(before),
+                &numbered(after),
+            )
+            .map(|file| file.status)
+        };
+        // An add and a delete keep their status even though the mirrored paths
+        // are equal on both sides.
+        wince::assert_eq!(
+            classify("f.txt", "f.txt", &[], &["hello"]),
+            Some(FileStatus::Added)
+        );
+        wince::assert_eq!(
+            classify("f.txt", "f.txt", &["bye"], &[]),
+            Some(FileStatus::Deleted)
+        );
+        // Equal paths with content on both sides is a plain edit, never a rename.
+        wince::assert_eq!(
+            classify("f.txt", "f.txt", &["old"], &["new"]),
+            Some(FileStatus::Modified)
+        );
+        // Only genuinely differing paths yield a rename.
+        wince::assert_eq!(
+            classify("old.txt", "new.txt", &["old"], &["new"]),
+            Some(FileStatus::Renamed)
+        );
     }
 }

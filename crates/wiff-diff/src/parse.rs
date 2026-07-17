@@ -75,7 +75,22 @@ struct Parser {
 
 impl Parser {
     fn feed(&mut self, line: usize, raw: &str) -> Result<(), ParseError> {
-        if let Some(rest) = raw.strip_prefix("diff --git ") {
+        // File-boundary markers (`diff --git`, `---`, `+++`) take effect only
+        // once the open hunk's declared line counts are spent. This keeps a
+        // removed `-- text` or added `++ text` (comment syntax in Lua, SQL, and
+        // the like), which reads as `--- text` / `+++ text`, inside the hunk
+        // body instead of being mistaken for a header that splits one file in
+        // two. `@@` is the exception, recognized ahead of the body because no
+        // body line begins with it: a fresh hunk header can follow a
+        // miscounted, still-unexhausted hunk. The flip side of trusting the
+        // counts is that an over-declared count swallows a genuine following
+        // header as a body line, so this assumes accurate counts, as real diffs
+        // have.
+        if raw.starts_with("@@") {
+            self.start_hunk(line, raw)?;
+        } else if self.hunk.is_some() && (self.old_remaining > 0 || self.new_remaining > 0) {
+            self.feed_hunk_line(line, raw)?;
+        } else if let Some(rest) = raw.strip_prefix("diff --git ") {
             self.start_file_from_git_header(rest);
         } else if let Some(rest) = raw.strip_prefix("--- ") {
             // In headerless formats (plain `diff -u`, svn, bzr) each file begins
@@ -93,6 +108,14 @@ impl Parser {
                 }
             }
         } else if let Some(rest) = raw.strip_prefix("+++ ") {
+            // A well-formed file pairs `+++` with a preceding `---` on the same
+            // still-empty file, so this normally continues it. But a malformed
+            // diff can present a lone `+++` block (a file whose `---` is
+            // missing); once the current file already has hunk content, that
+            // `+++` begins the next file, mirroring the `---` handling above.
+            if self.hunk.is_some() || self.current_has_hunks() {
+                self.finish_file();
+            }
             self.ensure_file();
             let path = header_path(rest);
             if let Some(file) = self.current.as_mut() {
@@ -101,8 +124,6 @@ impl Parser {
                     None => file.status = FileStatus::Deleted,
                 }
             }
-        } else if raw.starts_with("@@") {
-            self.start_hunk(line, raw)?;
         } else if self.hunk.is_some() {
             self.feed_hunk_line(line, raw)?;
         } else {
@@ -268,6 +289,7 @@ impl Parser {
     fn finish_file(&mut self) {
         self.finish_hunk();
         if let Some(mut file) = self.current.take() {
+            mirror_dev_null_path(&mut file);
             infer_status_from_hunks(&mut file);
             self.files.push(file);
         }
@@ -295,6 +317,18 @@ fn split_git_paths(rest: &str) -> (String, String) {
     // `---`/`+++` headers overwrite these.
     let joined = header_path(rest).unwrap_or_default();
     (joined.clone(), joined)
+}
+
+/// Fill an empty path from its counterpart. A `/dev/null` header names no path,
+/// so an added file leaves the before path blank and a deleted file the after
+/// path; both sides refer to the same file, so the named side supplies the name
+/// the blank side lacks.
+fn mirror_dev_null_path(file: &mut FileDiff) {
+    if file.old_path.is_empty() && !file.new_path.is_empty() {
+        file.old_path = file.new_path.clone();
+    } else if file.new_path.is_empty() && !file.old_path.is_empty() {
+        file.new_path = file.old_path.clone();
+    }
 }
 
 /// Infer a file's status from its hunk coverage when the headers did not

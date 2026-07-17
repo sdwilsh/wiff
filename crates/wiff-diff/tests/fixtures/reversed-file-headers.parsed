@@ -1,0 +1,4 @@
+file[0]: file.rs -> file.rs (Modified)
+  @@ -1,1 +1,1 @@
+    - old=1 new=. |old
+    + old=. new=1 |new

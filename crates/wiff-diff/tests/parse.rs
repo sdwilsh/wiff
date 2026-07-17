@@ -356,6 +356,281 @@ diff --git a/a.txt b/a.txt
 }
 
 #[test]
+fn hunk_body_lines_are_not_mistaken_for_file_headers() {
+    // A removed source line whose text starts with `-- ` reads as `--- ` in the
+    // diff, and an added line starting with `++ ` reads as `+++ `. Inside an
+    // open hunk these are body lines, not the `---`/`+++` file headers, so they
+    // must stay in the one file rather than splitting it.
+    let input = "\
+diff --git a/m.lua b/m.lua
+--- a/m.lua
++++ b/m.lua
+@@ -1,4 +1,4 @@
+ local x = 1
+--- removed comment
+-keep = false
++keep = true
+++ added banner
+ local z = 9
+";
+    let expected = Diff {
+        files: vec![FileDiff {
+            old_path: "m.lua".to_string(),
+            new_path: "m.lua".to_string(),
+            status: FileStatus::Modified,
+            hunks: vec![Hunk {
+                old_start: 1,
+                old_len: 4,
+                new_start: 1,
+                new_len: 4,
+                section: None,
+                lines: vec![
+                    line(LineKind::Context, "local x = 1", Some(1), Some(1)),
+                    line(LineKind::Removed, "-- removed comment", Some(2), None),
+                    line(LineKind::Removed, "keep = false", Some(3), None),
+                    line(LineKind::Added, "keep = true", None, Some(2)),
+                    line(LineKind::Added, "+ added banner", None, Some(3)),
+                    line(LineKind::Context, "local z = 9", Some(4), Some(4)),
+                ],
+            }],
+        }],
+    };
+    wince::assert_eq!(parse(input).unwrap(), expected);
+}
+
+#[test]
+fn plain_unified_diff_detects_file_boundary_after_comment_like_line() {
+    // Without any `diff --git` line, files are delimited only by `---`/`+++`
+    // headers and the hunk line counts. A removed `-- comment` reads as a
+    // `--- comment` header, so the parser must lean on the counts to keep it
+    // in the first file's hunk and still recognize the genuine `--- b/...`
+    // header that opens the second file.
+    let input = "\
+--- a/first.lua
++++ b/first.lua
+@@ -1,2 +1,1 @@
+--- drop this comment
+ keep me
+--- a/second.lua
++++ b/second.lua
+@@ -1 +1 @@
+-old
++new
+";
+    let expected = Diff {
+        files: vec![
+            FileDiff {
+                old_path: "first.lua".to_string(),
+                new_path: "first.lua".to_string(),
+                status: FileStatus::Modified,
+                hunks: vec![Hunk {
+                    old_start: 1,
+                    old_len: 2,
+                    new_start: 1,
+                    new_len: 1,
+                    section: None,
+                    lines: vec![
+                        line(LineKind::Removed, "-- drop this comment", Some(1), None),
+                        line(LineKind::Context, "keep me", Some(2), Some(1)),
+                    ],
+                }],
+            },
+            FileDiff {
+                old_path: "second.lua".to_string(),
+                new_path: "second.lua".to_string(),
+                status: FileStatus::Modified,
+                hunks: vec![Hunk {
+                    old_start: 1,
+                    old_len: 1,
+                    new_start: 1,
+                    new_len: 1,
+                    section: None,
+                    lines: vec![
+                        line(LineKind::Removed, "old", Some(1), None),
+                        line(LineKind::Added, "new", None, Some(1)),
+                    ],
+                }],
+            },
+        ],
+    };
+    wince::assert_eq!(parse(input).unwrap(), expected);
+}
+
+#[test]
+fn a_lone_plus_header_after_a_hunk_starts_the_next_file() {
+    // A malformed plain diff can present blocks with only one of the two file
+    // headers: here the middle file has only `---` and the last only `+++`.
+    // Once a file already holds hunk content, a `+++` opens the next file just
+    // as a `---` would, rather than overwriting the current file's after-path
+    // and folding both hunks into one file.
+    let input = "\
+--- a/first.rs
++++ b/first.rs
+@@ -1 +1 @@
+-old1
++new1
+--- a/second.rs
+@@ -1 +1 @@
+-old2
++new2
++++ b/third.rs
+@@ -1 +1 @@
+-old3
++new3
+";
+    let expected = Diff {
+        files: vec![
+            FileDiff {
+                old_path: "first.rs".to_string(),
+                new_path: "first.rs".to_string(),
+                status: FileStatus::Modified,
+                hunks: vec![Hunk {
+                    old_start: 1,
+                    old_len: 1,
+                    new_start: 1,
+                    new_len: 1,
+                    section: None,
+                    lines: vec![
+                        line(LineKind::Removed, "old1", Some(1), None),
+                        line(LineKind::Added, "new1", None, Some(1)),
+                    ],
+                }],
+            },
+            FileDiff {
+                old_path: "second.rs".to_string(),
+                new_path: "second.rs".to_string(),
+                status: FileStatus::Modified,
+                hunks: vec![Hunk {
+                    old_start: 1,
+                    old_len: 1,
+                    new_start: 1,
+                    new_len: 1,
+                    section: None,
+                    lines: vec![
+                        line(LineKind::Removed, "old2", Some(1), None),
+                        line(LineKind::Added, "new2", None, Some(1)),
+                    ],
+                }],
+            },
+            FileDiff {
+                old_path: "third.rs".to_string(),
+                new_path: "third.rs".to_string(),
+                status: FileStatus::Modified,
+                hunks: vec![Hunk {
+                    old_start: 1,
+                    old_len: 1,
+                    new_start: 1,
+                    new_len: 1,
+                    section: None,
+                    lines: vec![
+                        line(LineKind::Removed, "old3", Some(1), None),
+                        line(LineKind::Added, "new3", None, Some(1)),
+                    ],
+                }],
+            },
+        ],
+    };
+    wince::assert_eq!(parse(input).unwrap(), expected);
+}
+
+#[test]
+fn dev_null_headers_populate_both_paths() {
+    // A git add names the file only on the `+++` side (its `---` is `/dev/null`)
+    // and a delete only on the `---` side. Both paths still name the file; the
+    // add/delete is told by `status`, so neither path is left blank.
+    let input = "\
+diff --git a/added.txt b/added.txt
+new file mode 100644
+--- /dev/null
++++ b/added.txt
+@@ -0,0 +1,1 @@
++hello
+diff --git a/gone.txt b/gone.txt
+deleted file mode 100644
+--- a/gone.txt
++++ /dev/null
+@@ -1,1 +0,0 @@
+-goodbye
+";
+    let expected = Diff {
+        files: vec![
+            FileDiff {
+                old_path: "added.txt".to_string(),
+                new_path: "added.txt".to_string(),
+                status: FileStatus::Added,
+                hunks: vec![Hunk {
+                    old_start: 0,
+                    old_len: 0,
+                    new_start: 1,
+                    new_len: 1,
+                    section: None,
+                    lines: vec![line(LineKind::Added, "hello", None, Some(1))],
+                }],
+            },
+            FileDiff {
+                old_path: "gone.txt".to_string(),
+                new_path: "gone.txt".to_string(),
+                status: FileStatus::Deleted,
+                hunks: vec![Hunk {
+                    old_start: 1,
+                    old_len: 1,
+                    new_start: 0,
+                    new_len: 0,
+                    section: None,
+                    lines: vec![line(LineKind::Removed, "goodbye", Some(1), None)],
+                }],
+            },
+        ],
+    };
+    wince::assert_eq!(parse(input).unwrap(), expected);
+}
+
+#[test]
+fn a_fresh_hunk_header_ends_an_over_declared_hunk() {
+    // The first hunk declares five lines each side but supplies only one before
+    // its counts run out. Recognizing `@@` ahead of the body is what lets the
+    // second `@@` open a new hunk here rather than being consumed as content.
+    let input = "\
+--- a/f.txt
++++ b/f.txt
+@@ -1,5 +1,5 @@
+ context
+@@ -10,1 +10,1 @@
+-old
++new
+";
+    let expected = Diff {
+        files: vec![FileDiff {
+            old_path: "f.txt".to_string(),
+            new_path: "f.txt".to_string(),
+            status: FileStatus::Modified,
+            hunks: vec![
+                Hunk {
+                    old_start: 1,
+                    old_len: 5,
+                    new_start: 1,
+                    new_len: 5,
+                    section: None,
+                    lines: vec![line(LineKind::Context, "context", Some(1), Some(1))],
+                },
+                Hunk {
+                    old_start: 10,
+                    old_len: 1,
+                    new_start: 10,
+                    new_len: 1,
+                    section: None,
+                    lines: vec![
+                        line(LineKind::Removed, "old", Some(10), None),
+                        line(LineKind::Added, "new", None, Some(10)),
+                    ],
+                },
+            ],
+        }],
+    };
+    wince::assert_eq!(parse(input).unwrap(), expected);
+}
+
+#[test]
 fn empty_input_yields_no_files() {
     wince::assert_eq!(parse("").unwrap(), Diff { files: vec![] });
 }

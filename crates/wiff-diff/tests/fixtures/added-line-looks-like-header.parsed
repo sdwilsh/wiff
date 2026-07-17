@@ -1,0 +1,9 @@
+file[0]: file1.rs -> file1.rs (Modified)
+  @@ -1,2 +1,2 @@
+      old=1 new=1 |line1
+    - old=2 new=. |old
+    + old=. new=2 |++ foo
+file[1]: file2.rs -> file2.rs (Modified)
+  @@ -1,1 +1,1 @@
+    - old=1 new=. |a
+    + old=. new=1 |b

@@ -109,9 +109,12 @@ pub struct Hunk {
 /// The changes to a single file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileDiff {
-    /// The path on the before side (equal to `new_path` for a plain edit).
+    /// The path on the before side. Both paths always name the file, even for
+    /// an add or delete (where the diff names only one side): whether the file
+    /// exists on a side is told by `status`, not by a blank path. Equal to
+    /// `new_path` except for a rename.
     pub old_path: String,
-    /// The path on the after side.
+    /// The path on the after side. See `old_path` for the shared invariant.
     pub new_path: String,
     /// How the file changed.
     pub status: FileStatus,
