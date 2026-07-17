@@ -93,7 +93,7 @@ pub struct RailCell {
 /// The character column the anchor rail for a comment on `side` occupies.
 pub(crate) fn rail_column(mode: LayoutMode, side: Side, width: usize) -> usize {
     match mode {
-        LayoutMode::Unified => RAIL_COLUMN,
+        LayoutMode::Unified | LayoutMode::OnlyAfter => RAIL_COLUMN,
         LayoutMode::SideBySide => match side {
             Side::Before => COLUMN_GUTTER_WIDTH - 1,
             Side::After => ColumnGeometry::split(width).left + 1 + COLUMN_GUTTER_WIDTH - 1,
@@ -201,14 +201,17 @@ pub enum LayoutMode {
     Unified,
     /// Two columns, before on the left and after on the right.
     SideBySide,
+    /// One column of the after side alone: context and added lines, with removed
+    /// lines dropped so the column reads as the resulting file.
+    OnlyAfter,
 }
 
 /// The default width, in columns, at or above which auto mode chooses the
 /// side-by-side layout.
 pub const DEFAULT_SIDE_BY_SIDE_MIN_WIDTH: usize = 130;
 
-/// The diff layout a reviewer selects: always one column, always two, or two
-/// only once the viewport reaches a configured width.
+/// The diff layout a reviewer selects: always one column, always two, the after
+/// side alone, or two only once the viewport reaches a configured width.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DiffMode {
@@ -219,6 +222,8 @@ pub enum DiffMode {
     Unified,
     /// Always two columns.
     SideBySide,
+    /// Always the after side alone in one column.
+    OnlyAfter,
 }
 
 impl DiffMode {
@@ -228,6 +233,7 @@ impl DiffMode {
         match self {
             DiffMode::Unified => LayoutMode::Unified,
             DiffMode::SideBySide => LayoutMode::SideBySide,
+            DiffMode::OnlyAfter => LayoutMode::OnlyAfter,
             DiffMode::Auto if width >= min_width => LayoutMode::SideBySide,
             DiffMode::Auto => LayoutMode::Unified,
         }
@@ -954,6 +960,15 @@ impl DiffView {
                 LayoutMode::Unified => self.emit_hunk_unified(
                     doc,
                     &emission,
+                    false,
+                    &mut line_row,
+                    &mut line_end,
+                    &mut first_row,
+                ),
+                LayoutMode::OnlyAfter => self.emit_hunk_unified(
+                    doc,
+                    &emission,
+                    true,
                     &mut line_row,
                     &mut line_end,
                     &mut first_row,
@@ -981,11 +996,15 @@ impl DiffView {
     }
 
     /// Emit one hunk's content rows in the unified layout: each diff line becomes
-    /// its own display rows, with any line comments woven in above it.
+    /// its own display rows, with any line comments woven in above it. With
+    /// `only_after`, removed lines contribute no content row, leaving the after
+    /// side alone; a comment anchored to a removed line still opens, at the point
+    /// the removal falls, though without a line to trace its rail down.
     fn emit_hunk_unified(
         &self,
         doc: &mut Document,
         e: &HunkEmission,
+        only_after: bool,
         line_row: &mut [usize],
         line_end: &mut [usize],
         first_row: &mut HashMap<(Side, u32), usize>,
@@ -1025,6 +1044,10 @@ impl DiffView {
                 }
             }
             line_row[line_index] = doc.rows.len();
+            if only_after && line.kind == LineKind::Removed {
+                line_end[line_index] = doc.rows.len();
+                continue;
+            }
             // Remember the first display row of each content line, keyed by side
             // and number, so the rail post-pass can walk a comment's covered
             // span in document order.
@@ -2539,6 +2562,42 @@ mod tests {
             "<#7d828c|-|->   1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;<-|-|->    <#7d828c|-|->│<#7d828c|-|->   1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;<-|-|->     \n",
             "<#91959d|#463943|->   2 - <#bf9fb9|#463943|->let<#c0c5ce|#463943|-> y <#c0c5ce|#463943|->=<#c0c5ce|#463943|-> <#e3b7a9|#66444e|->2<#c0c5ce|#66444e|->;<-|#463943|->    <#7d828c|-|->│<#9ea1a9|#414a4a|->   2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#f3e1db|#5b695b|->3<#e3e5e9|#5b695b|->;<-|#414a4a|->     \n",
             "<-|-|->                     <#7d828c|-|->│<#9ea1a9|#414a4a|->   3 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> z <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->4<#c0c5ce|#414a4a|->;<-|#414a4a|->     \n",
+        );
+    }
+
+    #[test]
+    fn only_after_drops_removed_lines_and_keeps_the_after_column() {
+        // The removed line contributes no row; the context and added lines show
+        // in one column with the ordinary two-number gutter, so the column reads
+        // as the resulting file.
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[
+                    (LineKind::Context, "let x = 1;", 1),
+                    (LineKind::Removed, "let y = 2;", 2),
+                    (LineKind::Added, "let y = 3;", 2),
+                    (LineKind::Added, "let z = 4;", 3),
+                ],
+            )],
+        };
+        let view = DiffView::new(theme()).unwrap();
+        let layout = ViewLayout {
+            width: 40,
+            wrap_content: false,
+            mode: super::LayoutMode::OnlyAfter,
+        };
+
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&view.render_review(&diff, &[], &[], layout).lines),
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,4 +1,4 @@\n",
+            "<#7d828c|-|->   1    1   <#b48ead|-|->let<#c0c5ce|-|-> x <#c0c5ce|-|->=<#c0c5ce|-|-> <#d08770|-|->1<#c0c5ce|-|->;\n",
+            "<#9ea1a9|#414a4a|->        2 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#f3e1db|#5b695b|->3<#e3e5e9|#5b695b|->;\n",
+            "<#9ea1a9|#414a4a|->        3 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> z <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->4<#c0c5ce|#414a4a|->;\n",
         );
     }
 

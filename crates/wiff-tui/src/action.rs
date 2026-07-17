@@ -174,6 +174,8 @@ declare_actions! {
         DiffModeUnified,
         /// Diff layout: side by side
         DiffModeSideBySide,
+        /// Diff layout: after side only
+        DiffModeOnlyAfter,
         /// Choose a color theme
         PickTheme,
     },
@@ -311,6 +313,7 @@ mod tests {
             "  diff_mode_auto = Diff layout: auto\n",
             "  diff_mode_unified = Diff layout: unified\n",
             "  diff_mode_side_by_side = Diff layout: side by side\n",
+            "  diff_mode_only_after = Diff layout: after side only\n",
             "  pick_theme = Choose a color theme\n",
             "Jump to\n",
             "  pick_file = Jump to a file\n",
