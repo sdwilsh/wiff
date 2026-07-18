@@ -4439,14 +4439,36 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump_picker(&mut app),
+            "<#c0c5ce|#2b303b|->  1337                                  \n",
+            "<#c0c5ce|#2b303b|->  Catppuccin Frappe                     \n",
+            "<#c0c5ce|#2b303b|->  Catppuccin Latte                      \n",
+            "<#c0c5ce|#2b303b|->  Catppuccin Macchiato                  \n",
+            "<#c0c5ce|#2b303b|->  Catppuccin Mocha                      \n",
+            "<#c0c5ce|#2b303b|->  Coldark-Cold                          \n",
+            "<#c0c5ce|#2b303b|->  Coldark-Dark                          \n",
+            "<#c0c5ce|#2b303b|->  DarkNeon                              \n",
+            "<#c0c5ce|#2b303b|->  Dracula                               \n",
+            "<#c0c5ce|#2b303b|->  GitHub                                \n",
             "<#c0c5ce|#2b303b|->  InspiredGitHub                        \n",
+            "<#c0c5ce|#2b303b|->  Monokai Extended                      \n",
+            "<#c0c5ce|#2b303b|->  Monokai Extended Bright               \n",
+            "<#c0c5ce|#2b303b|->  Monokai Extended Light                \n",
+            "<#c0c5ce|#2b303b|->  Monokai Extended Origin               \n",
+            "<#c0c5ce|#2b303b|->  Nord                                  \n",
+            "<#c0c5ce|#2b303b|->  OneHalfDark                           \n",
+            "<#c0c5ce|#2b303b|->  OneHalfLight                          \n",
             "<#c0c5ce|#2b303b|->  Solarized (dark)                      \n",
             "<#c0c5ce|#2b303b|->  Solarized (light)                     \n",
+            "<#c0c5ce|#2b303b|->  Sublime Snazzy                        \n",
+            "<#c0c5ce|#2b303b|->  TwoDark                               \n",
             "<#c0c5ce|#2b303b|->  base16-eighties.dark                  \n",
             "<#c0c5ce|#2b303b|->  base16-mocha.dark                     \n",
             "<#c0c5ce|#65737e|->> base16-ocean.dark                     \n",
             "<#c0c5ce|#2b303b|->  base16-ocean.light                    \n",
+            "<#c0c5ce|#2b303b|->  gruvbox-dark                          \n",
+            "<#c0c5ce|#2b303b|->  gruvbox-light                         \n",
             "<#c0c5ce|#2b303b|->  wez                                   \n",
+            "<#c0c5ce|#2b303b|->  zenburn                               \n",
             "<-|#2b303b|->                                        \n",
             "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
         );
@@ -4459,7 +4481,16 @@ mod tests {
         // re-renders with it.
         let mut app = App::reviewing(commented_review(), 8, &theme());
         app.update(Action::PickTheme);
+        // Step from the top of the list down to the light default and choose it.
         app.picker_nav(Action::Top);
+        let names = wiff_diff::theme_names();
+        let steps = names
+            .iter()
+            .position(|name| name == wiff_diff::highlight::DEFAULT_LIGHT_THEME)
+            .expect("light theme is listed");
+        for _ in 0..steps {
+            app.picker_nav(Action::LineDown);
+        }
         app.picker_activate();
         wince::assert_eq!(app.picking(), false);
         let light = Theme::light();

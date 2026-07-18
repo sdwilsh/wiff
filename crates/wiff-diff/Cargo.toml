@@ -13,6 +13,7 @@ serde = { workspace = true }
 similar.workspace = true
 syntect.workspace = true
 thiserror.workspace = true
+two-face.workspace = true
 
 [dev-dependencies]
 wince.workspace = true

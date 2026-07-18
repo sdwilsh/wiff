@@ -8,12 +8,13 @@
 //! syntect dependency and the output is straightforward to assert.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use syntect::highlighting::{
     FontStyle, HighlightIterator, HighlightState, Highlighter as ThemeHighlighter, Theme, ThemeSet,
 };
 use syntect::parsing::{ParseState, ScopeStack, ScopeStackOp, SyntaxReference, SyntaxSet};
+use two_face::theme::LazyThemeSet;
 
 use crate::line::LineNo;
 use crate::model::{FileDiff, Side};
@@ -29,14 +30,43 @@ pub const DEFAULT_LIGHT_THEME: &str = "InspiredGitHub";
 /// colorscheme. It is the default dark theme, named by [`DEFAULT_DARK_THEME`].
 const WEZ_THEME: &str = include_str!("../assets/wez.tmTheme");
 
-/// The syntect themes wiff can choose between: syntect's own defaults plus the
-/// bundled [`WEZ_THEME`], keyed by [`DEFAULT_DARK_THEME`].
-fn theme_set() -> ThemeSet {
-    let mut themes = ThemeSet::load_defaults();
-    let wez = ThemeSet::load_from_reader(&mut std::io::Cursor::new(WEZ_THEME))
-        .expect("bundled wez theme parses");
-    themes.themes.insert(DEFAULT_DARK_THEME.to_string(), wez);
-    themes
+/// The newline-aware syntaxes, bat's expanded grammar collection by way of
+/// two-face, built once and shared. It reaches languages syntect's own defaults
+/// omit, such as TOML and TypeScript.
+static SYNTAXES: LazyLock<Arc<SyntaxSet>> =
+    LazyLock::new(|| Arc::new(two_face::syntax::extra_newlines()));
+
+/// The selectable syntax themes, bat's curated collection by way of two-face.
+/// Each theme is decompressed on first use, so listing the names or reading one
+/// theme does not pay for the whole collection. The bundled wez theme is kept
+/// separately in [`WEZ`] and folded in by [`theme`].
+static THEMES: LazyLock<LazyThemeSet> =
+    LazyLock::new(|| LazyThemeSet::from(two_face::theme::extra()));
+
+/// The bundled wez theme, parsed once from [`WEZ_THEME`].
+static WEZ: LazyLock<Theme> = LazyLock::new(|| {
+    ThemeSet::load_from_reader(&mut std::io::Cursor::new(WEZ_THEME))
+        .expect("bundled wez theme parses")
+});
+
+/// The built-in theme `name`, the bundled wez palette or one of bat's themes,
+/// or `None` when no such theme is bundled or it is not a true-color theme.
+fn theme(name: &str) -> Option<Theme> {
+    if name == DEFAULT_DARK_THEME {
+        return Some(WEZ.clone());
+    }
+    THEMES
+        .get(name)
+        .filter(|theme| is_truecolor(theme))
+        .cloned()
+}
+
+/// Whether `theme` is built for true color rather than a terminal's 16-color
+/// ANSI palette. two-face bundles a few ANSI themes whose settings hold palette
+/// indices in place of RGB, marked by a non-opaque background; wiff derives its
+/// whole interface from RGB and cannot render those, so it leaves them out.
+fn is_truecolor(theme: &Theme) -> bool {
+    theme.settings.background.is_none_or(|c| c.a == 255)
 }
 
 /// The chrome-relevant colors of a syntax theme, taken from its editor settings
@@ -64,7 +94,12 @@ pub struct ThemeChrome {
 /// The names of the built-in syntax themes, sorted, for listing the choices a
 /// reviewer can switch between.
 pub fn theme_names() -> Vec<String> {
-    let mut names: Vec<String> = theme_set().themes.into_keys().collect();
+    let mut names: Vec<String> = THEMES
+        .theme_names()
+        .filter(|name| THEMES.get(name).is_some_and(is_truecolor))
+        .map(String::from)
+        .collect();
+    names.push(DEFAULT_DARK_THEME.to_string());
     names.sort();
     names
 }
@@ -72,8 +107,8 @@ pub fn theme_names() -> Vec<String> {
 /// The chrome colors of the built-in theme `name`, or `None` when no such theme
 /// is bundled.
 pub fn theme_chrome(name: &str) -> Option<ThemeChrome> {
-    let themes = theme_set();
-    let settings = &themes.themes.get(name)?.settings;
+    let theme = theme(name)?;
+    let settings = &theme.settings;
     Some(ThemeChrome {
         background: settings.background.map(rgb_of),
         foreground: settings.foreground.map(rgb_of),
@@ -98,9 +133,9 @@ fn rgb_of(c: syntect::highlighting::Color) -> Rgb {
 /// extension is unknown.
 ///
 /// This is the single place the extension-to-language mapping lives so the diff
-/// and markdown renderers agree. syntect cannot supply these tokens: its
-/// default set lacks some languages entirely (TOML, TypeScript) and names
-/// others in ways no fence understands ("Bourne Again Shell (bash)").
+/// and markdown renderers agree. The syntaxes name some languages in ways no
+/// markdown fence understands ("Bourne Again Shell (bash)"), so the fence token
+/// is taken from this table rather than from the matched syntax.
 pub fn fence_language(path: &str) -> Option<&'static str> {
     const LANG_BY_EXT: &[(&str, &str)] = &[
         ("c", "c"),
@@ -219,32 +254,22 @@ impl Parser {
 impl Highlighter {
     /// Build a highlighter using the named built-in theme.
     pub fn with_theme(name: &str) -> Result<Self, HighlightError> {
-        let mut themes = theme_set();
-        let theme = themes
-            .themes
-            .remove(name)
-            .ok_or_else(|| HighlightError::UnknownTheme {
-                name: name.to_string(),
-            })?;
+        let theme = theme(name).ok_or_else(|| HighlightError::UnknownTheme {
+            name: name.to_string(),
+        })?;
         Ok(Self {
-            syntaxes: Arc::new(SyntaxSet::load_defaults_newlines()),
+            syntaxes: SYNTAXES.clone(),
             theme,
         })
     }
 
     /// Recolor to the named built-in theme, keeping the loaded syntaxes so a
     /// caller can recolor a cached parse instead of highlighting the diff
-    /// afresh. Looking the theme up still builds the default theme set, so this
-    /// is not free end to end; what it saves is the syntax parse, not the theme
-    /// load. On an unknown theme the highlighter is left unchanged.
+    /// afresh. On an unknown theme the highlighter is left unchanged.
     pub fn set_theme(&mut self, name: &str) -> Result<(), HighlightError> {
-        let mut themes = theme_set();
-        self.theme = themes
-            .themes
-            .remove(name)
-            .ok_or_else(|| HighlightError::UnknownTheme {
-                name: name.to_string(),
-            })?;
+        self.theme = theme(name).ok_or_else(|| HighlightError::UnknownTheme {
+            name: name.to_string(),
+        })?;
         Ok(())
     }
 

@@ -33,6 +33,7 @@ tokio = { version = "1", features = ["fs", "io-std", "io-util", "macros", "proce
 toml = "0.8"
 toml_edit = "0.22"
 tui-textarea = "0.7"
+two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
 ulid = { version = "1", features = ["serde"] }
 wiff-config = { path = "crates/wiff-config" }
 wiff-core = { path = "crates/wiff-core" }
