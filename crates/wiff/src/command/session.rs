@@ -3,12 +3,12 @@
 use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
 use ulid::Ulid;
-use wiff_core::ProjectIdentity;
 use wiff_core::record::SourceKind;
 use wiff_core::review::ReviewState;
 use wiff_core::session::{
     active_session, data_dir, list_projects, list_sessions, remove_session, session_file,
 };
+use wiff_core::{ProjectIdentity, ScmType};
 
 /// Arguments for `wiff session`.
 #[derive(Debug, Args)]
@@ -51,17 +51,24 @@ impl SessionListArgs {
     /// Print a summary of the matching sessions.
     fn run(self) -> anyhow::Result<()> {
         let base = data_dir()?;
-        let projects = if self.all {
-            list_projects(&base)?
+        let (projects, identity) = if self.all {
+            (list_projects(&base)?, None)
         } else {
             let cwd =
                 std::env::current_dir().context("could not determine the current directory")?;
             let identity = ProjectIdentity::for_dir_or_forced(&cwd, self.project.as_deref())?;
-            vec![identity.canonical]
+            (vec![identity.canonical.clone()], Some(identity))
         };
         let mut groups = Vec::new();
         for project in projects {
-            let rows = session_rows(&base, &project)?;
+            // The active marker follows the same branch-aware discovery the
+            // acting commands use, but only for the checked-out repository; a
+            // cross-project listing has no single repo context.
+            let (root, scm) = match &identity {
+                Some(id) if id.canonical == project => (id.repo_root.as_deref(), id.scm),
+                _ => (None, None),
+            };
+            let rows = session_rows(&base, &project, root, scm)?;
             if !rows.is_empty() {
                 groups.push((project, rows));
             }
@@ -115,8 +122,13 @@ struct SessionRow {
 }
 
 /// Summarize a project's sessions, most recent first, marking the active one.
-fn session_rows(base: &std::path::Path, project: &str) -> anyhow::Result<Vec<SessionRow>> {
-    let active = active_session(base, project).ok();
+fn session_rows(
+    base: &std::path::Path,
+    project: &str,
+    repo_root: Option<&std::path::Path>,
+    scm: Option<ScmType>,
+) -> anyhow::Result<Vec<SessionRow>> {
+    let active = active_session(base, project, repo_root, scm).ok();
     let mut rows = Vec::new();
     for path in list_sessions(base, project)? {
         let state = ReviewState::load(&path)?;
@@ -177,6 +189,7 @@ mod tests {
             scm: ScmType::Git,
             base: BaseRuleset::new("ref(name(deadbeef))"),
             tip: TipRule::Worktree,
+            branch_hint: None,
         })
     }
 

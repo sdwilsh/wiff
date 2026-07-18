@@ -285,15 +285,43 @@ impl GitRepo {
                 GitEnv::default(),
             )
             .await?;
-        if !output.status.success() {
-            return Ok(None);
-        }
-        let text = String::from_utf8(output.stdout).map_err(|source| {
-            Error::Source(format!("git rev-parse was not valid UTF-8: {source}"))
-        })?;
-        let name = text.trim();
-        Ok(name.starts_with("refs/").then(|| name.to_string()))
+        ref_name_from_symbolic(output.status.success(), &output.stdout)
     }
+}
+
+/// Interpret the output of `rev-parse --symbolic-full-name <spec>`: the full ref
+/// name when git named one under `refs/`, or `None` for a bare revision, a
+/// detached head (git echoes the literal `HEAD`), or an unresolvable spec (git
+/// exits nonzero). Shared by the async [`GitRepo::symbolic_ref`] and the sync
+/// [`current_branch`] so the two read git's answer the same way.
+fn ref_name_from_symbolic(success: bool, stdout: &[u8]) -> Result<Option<String>> {
+    if !success {
+        return Ok(None);
+    }
+    let text = std::str::from_utf8(stdout)
+        .map_err(|source| Error::Source(format!("git rev-parse was not valid UTF-8: {source}")))?;
+    let name = text.trim();
+    Ok(name.starts_with("refs/").then(|| name.to_string()))
+}
+
+/// The full ref name the git repository at `repo_root` currently has checked out
+/// (`refs/heads/...`), or `None` for a detached head or any failure to reach
+/// git. The sync counterpart to [`GitRepo::symbolic_ref`] for the discovery path,
+/// which runs outside an async context; both run the same
+/// `rev-parse --symbolic-full-name HEAD` and share [`ref_name_from_symbolic`].
+/// The child inherits no stdin and runs against `-C repo_root`, matching the
+/// process policy of [`GitRepo::spawn`].
+pub fn current_branch(repo_root: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["rev-parse", "--symbolic-full-name", "HEAD"])
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    ref_name_from_symbolic(output.status.success(), &output.stdout)
+        .ok()
+        .flatten()
 }
 
 #[async_trait]
@@ -536,12 +564,17 @@ impl DiffSource for GitSource {
                 Some(tip.clone()),
             ),
         };
+        let branch_hint = match &self.tip {
+            TipRule::Worktree | TipRule::Index => self.repo.symbolic_ref("HEAD").await?,
+            _ => None,
+        };
         Ok(CapturedDiff {
             text,
             source: SourceKind::Scm(ScmSource {
                 scm: ScmType::Git,
                 base: self.base.clone(),
                 tip: self.tip.clone(),
+                branch_hint,
             }),
             base_revision: Some(base),
             base_tip_relative: resolved.tip_relative,
@@ -663,6 +696,7 @@ index HASHES
                 tip: TipRule::Ref {
                     name: "HEAD".to_string()
                 },
+                branch_hint: None,
             })
         );
         wince::assert_eq!(captured.base_revision, Some(empty_tree));
@@ -700,6 +734,7 @@ index HASHES
                 tip: TipRule::Ref {
                     name: "refs/heads/main".to_string()
                 },
+                branch_hint: None,
             })
         );
         wince::assert_eq!(captured.head_revision, Some(first.clone()));
@@ -736,6 +771,7 @@ index HASHES
                 tip: TipRule::Pinned {
                     revision: first.clone()
                 },
+                branch_hint: None,
             })
         );
         wince::assert_eq!(captured.head_revision, Some(first.clone()));
@@ -781,6 +817,7 @@ index HASHES
                 tip: TipRule::Pinned {
                     revision: first.clone()
                 },
+                branch_hint: None,
             })
         );
         wince::assert_eq!(captured.head_revision, Some(first));
@@ -878,6 +915,7 @@ index HASHES
                 tip: TipRule::Ref {
                     name: "HEAD".to_string()
                 },
+                branch_hint: None,
             })
         );
         wince::assert_eq!(captured.base_revision, Some(first_parent));
@@ -917,7 +955,7 @@ index HASHES
     async fn a_worktree_source_captures_untracked_files_with_a_read_only_git() {
         let repo = tempfile::tempdir().expect("tempdir");
         let home = tempfile::tempdir().expect("home");
-        git(repo.path(), home.path(), &["init", "-q"]);
+        git(repo.path(), home.path(), &["init", "-q", "-b", "main"]);
         std::fs::write(repo.path().join("tracked.txt"), "one\n").expect("write");
         git(repo.path(), home.path(), &["add", "tracked.txt"]);
         git(
@@ -968,6 +1006,8 @@ index HASHES
                 scm: ScmType::Git,
                 base,
                 tip: TipRule::Worktree,
+                // The worktree sits on main, recorded as the discovery hint.
+                branch_hint: Some("refs/heads/main".to_string()),
             })
         );
         wince::assert_eq!(captured.base_revision, Some(head));

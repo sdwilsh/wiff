@@ -78,6 +78,7 @@ fn header() -> SessionHeader {
             scm: ScmType::Git,
             base: BaseRuleset::new("ref(name(deadbeef))"),
             tip: TipRule::Worktree,
+            branch_hint: None,
         }),
     }
 }

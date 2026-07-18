@@ -23,6 +23,7 @@ fn header(ulid: Ulid) -> RecordBody {
             scm: ScmType::Git,
             base: BaseRuleset::new("ref(name(deadbeef))"),
             tip: TipRule::Worktree,
+            branch_hint: None,
         }),
     })
 }
@@ -211,10 +212,246 @@ fn discovery_lists_projects_sessions_and_the_active_one() {
         sessions,
         vec![second.path().to_path_buf(), first.path().to_path_buf()]
     );
+    // With no repository context, discovery falls back to the most recent
+    // session, which the max(ULID, mtime) recency orders first.
     wince::assert_eq!(
-        active_session(base.path(), "demo").unwrap(),
+        active_session(base.path(), "demo", None, None).unwrap(),
         second.path().to_path_buf()
     );
+}
+
+/// Build a session header with `source`, for the discovery tests.
+fn scm_header(source: SourceKind) -> impl FnOnce(Ulid) -> RecordBody {
+    move |ulid| {
+        RecordBody::Session(SessionHeader {
+            ulid,
+            version: wiff_core::record::FORMAT_VERSION,
+            project: "demo".to_string(),
+            repo_root: Some("/repos/demo".to_string()),
+            cwd: "/repos/demo".to_string(),
+            source,
+        })
+    }
+}
+
+fn ref_source(name: &str) -> SourceKind {
+    SourceKind::Scm(ScmSource {
+        scm: ScmType::Git,
+        base: BaseRuleset::new("parent(@)"),
+        tip: TipRule::Ref {
+            name: name.to_string(),
+        },
+        branch_hint: None,
+    })
+}
+
+fn worktree_source_on(branch: &str) -> SourceKind {
+    SourceKind::Scm(ScmSource {
+        scm: ScmType::Git,
+        base: BaseRuleset::new("ref(name(deadbeef))"),
+        tip: TipRule::Worktree,
+        branch_hint: Some(branch.to_string()),
+    })
+}
+
+/// A fresh git repository checked out on `branch`, so discovery has a real
+/// `rev-parse --symbolic-full-name HEAD` to read. The git environment is
+/// cleared and pointed at an empty HOME so ambient config or `GIT_*` variables
+/// cannot perturb the result.
+fn git_repo_on_branch(branch: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .env_clear()
+            .env("HOME", home.path())
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .args(["-c", "user.name=t", "-c", "user.email=t@e"])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    run(&["init", "-q", "-b", branch]);
+    std::fs::write(dir.path().join("f.txt"), "x\n").unwrap();
+    run(&["add", "f.txt"]);
+    run(&["commit", "-q", "-m", "first"]);
+    dir
+}
+
+#[test]
+fn discovery_prefers_the_session_for_the_checked_out_branch() {
+    let base = tempfile::tempdir().unwrap();
+    let repo = git_repo_on_branch("topic");
+
+    // The session for the checked-out branch is created first (older); a session
+    // on another branch is created after it and is the most recent.
+    let (matching, lock) = SessionLog::create(
+        base.path(),
+        "demo",
+        scm_header(ref_source("refs/heads/topic")),
+    )
+    .unwrap();
+    drop(lock);
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    let (_newer, lock) = SessionLog::create(
+        base.path(),
+        "demo",
+        scm_header(ref_source("refs/heads/other")),
+    )
+    .unwrap();
+    drop(lock);
+
+    // Branch match wins over recency: the older matching session is chosen, not
+    // the newer one on another branch.
+    wince::assert_eq!(
+        active_session(base.path(), "demo", Some(repo.path()), Some(ScmType::Git)).unwrap(),
+        matching.path().to_path_buf()
+    );
+}
+
+#[test]
+fn discovery_matches_a_working_copy_session_by_its_branch_hint() {
+    let base = tempfile::tempdir().unwrap();
+    let repo = git_repo_on_branch("topic");
+
+    let (matching, lock) = SessionLog::create(
+        base.path(),
+        "demo",
+        scm_header(worktree_source_on("refs/heads/topic")),
+    )
+    .unwrap();
+    drop(lock);
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    let (_newer, lock) = SessionLog::create(
+        base.path(),
+        "demo",
+        scm_header(worktree_source_on("refs/heads/other")),
+    )
+    .unwrap();
+    drop(lock);
+
+    wince::assert_eq!(
+        active_session(base.path(), "demo", Some(repo.path()), Some(ScmType::Git)).unwrap(),
+        matching.path().to_path_buf()
+    );
+}
+
+#[test]
+fn discovery_falls_back_to_the_most_recent_when_no_session_names_the_branch() {
+    let base = tempfile::tempdir().unwrap();
+    let repo = git_repo_on_branch("topic");
+
+    let (_older, lock) = SessionLog::create(
+        base.path(),
+        "demo",
+        scm_header(ref_source("refs/heads/main")),
+    )
+    .unwrap();
+    drop(lock);
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    let (newer, lock) = SessionLog::create(
+        base.path(),
+        "demo",
+        scm_header(ref_source("refs/heads/other")),
+    )
+    .unwrap();
+    drop(lock);
+
+    // No session names `topic`, so discovery falls back to the most recent.
+    wince::assert_eq!(
+        active_session(base.path(), "demo", Some(repo.path()), Some(ScmType::Git)).unwrap(),
+        newer.path().to_path_buf()
+    );
+}
+
+#[test]
+fn discovery_skips_a_corrupt_session_to_reach_the_branch_match() {
+    let base = tempfile::tempdir().unwrap();
+    let repo = git_repo_on_branch("topic");
+
+    // A healthy session on the checked-out branch, and a newer, unrelated
+    // session whose header line is committed (newline-terminated) but not a
+    // valid record.
+    let (matching, lock) = SessionLog::create(
+        base.path(),
+        "demo",
+        scm_header(ref_source("refs/heads/topic")),
+    )
+    .unwrap();
+    drop(lock);
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    let (corrupt, lock) = SessionLog::create(
+        base.path(),
+        "demo",
+        scm_header(ref_source("refs/heads/other")),
+    )
+    .unwrap();
+    let corrupt_path = corrupt.path().to_path_buf();
+    drop(lock);
+    std::fs::write(&corrupt_path, "{\"not\":\"a record\"}\n").unwrap();
+
+    // The corrupt session is the most recent, so the scan reaches it first, but
+    // skips it rather than aborting and still finds the healthy branch match.
+    wince::assert_eq!(
+        active_session(base.path(), "demo", Some(repo.path()), Some(ScmType::Git)).unwrap(),
+        matching.path().to_path_buf()
+    );
+}
+
+#[test]
+fn discovery_surfaces_a_corrupt_most_recent_when_no_session_names_the_branch() {
+    let base = tempfile::tempdir().unwrap();
+    let repo = git_repo_on_branch("topic");
+
+    // No session names the checked-out branch, so discovery falls back to the
+    // most recent, whose header is corrupt: the caller is about to be pointed at
+    // it, so the damage is reported rather than returned silently.
+    let (_older, lock) = SessionLog::create(
+        base.path(),
+        "demo",
+        scm_header(ref_source("refs/heads/main")),
+    )
+    .unwrap();
+    drop(lock);
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    let (corrupt, lock) = SessionLog::create(
+        base.path(),
+        "demo",
+        scm_header(ref_source("refs/heads/other")),
+    )
+    .unwrap();
+    let corrupt_path = corrupt.path().to_path_buf();
+    drop(lock);
+    std::fs::write(&corrupt_path, "{\"not\":\"a record\"}\n").unwrap();
+
+    let error =
+        active_session(base.path(), "demo", Some(repo.path()), Some(ScmType::Git)).unwrap_err();
+    wince::assert_eq!(
+        error.to_string(),
+        format!(
+            "could not decode session record: {}",
+            decode_error(&corrupt_path)
+        )
+    );
+}
+
+/// The serde error text `active_session` reports for the corrupt header, read
+/// back the same way so the assertion does not hard-code serde's wording.
+fn decode_error(path: &std::path::Path) -> String {
+    let line = std::fs::read_to_string(path).unwrap();
+    let line = line.strip_suffix('\n').unwrap();
+    serde_json::from_str::<wiff_core::record::Record>(line)
+        .unwrap_err()
+        .to_string()
 }
 
 #[test]

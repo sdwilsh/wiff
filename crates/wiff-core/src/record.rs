@@ -274,6 +274,12 @@ pub struct ScmSource {
     pub base: BaseRuleset,
     /// How the tip of the reviewed range is resolved.
     pub tip: TipRule,
+    /// The full ref name (e.g. `refs/heads/topic`) the session was created on.
+    /// Present for a [`Worktree`](TipRule::Worktree) or [`Index`](TipRule::Index)
+    /// tip, which names no branch of its own; `None` on a detached head, or for a
+    /// tip that already names a ref.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_hint: Option<String>,
 }
 
 /// How refresh re-resolves the tip of a reviewed range.
@@ -747,6 +753,7 @@ mod tests {
             tip: TipRule::Ref {
                 name: "HEAD".to_string(),
             },
+            branch_hint: None,
         });
         let json = serde_json::to_string(&source).expect("serialize");
         wince::assert_eq!(
@@ -758,6 +765,24 @@ mod tests {
         wince::assert_eq!(back, source);
         wince::assert_eq!(source.regenerable(), true);
         wince::assert_eq!(source.describe(), "git revision".to_string());
+    }
+
+    #[test]
+    fn a_worktree_source_serializes_its_branch_hint() {
+        let source = SourceKind::Scm(ScmSource {
+            scm: ScmType::Git,
+            base: BaseRuleset::new("ref(name(deadbeef))"),
+            tip: TipRule::Worktree,
+            branch_hint: Some("refs/heads/topic".to_string()),
+        });
+        let json = serde_json::to_string(&source).expect("serialize");
+        wince::assert_eq!(
+            json,
+            r#"{"kind":"scm","scm":"git","base":"ref(name(deadbeef))","tip":{"rule":"worktree"},"branch_hint":"refs/heads/topic"}"#
+                .to_string()
+        );
+        let back: SourceKind = serde_json::from_str(&json).expect("deserialize");
+        wince::assert_eq!(back, source);
     }
 
     #[test]

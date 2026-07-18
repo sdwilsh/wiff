@@ -7,16 +7,19 @@
 //! [`SessionLock`] guard; requiring the guard to [`append`](SessionLog::append)
 //! makes "no append without the lock" a compile-time invariant.
 
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nix::fcntl::{Flock, FlockArg};
 use time::OffsetDateTime;
 use ulid::Ulid;
 
 use crate::error::{Error, Result};
-use crate::record::{Record, RecordBody, Seq, VersionNumber};
+use crate::identity::ScmType;
+use crate::record::{
+    Record, RecordBody, ScmSource, Seq, SessionHeader, SourceKind, TipRule, VersionNumber,
+};
 
 /// The environment variable that overrides the base data directory.
 pub const DATA_DIR_ENV: &str = "WIFF_DATA_DIR";
@@ -426,7 +429,11 @@ pub fn list_projects(base: &Path) -> Result<Vec<String>> {
     Ok(projects)
 }
 
-/// List a project's session files, most recently modified first.
+/// List a project's session files, most recent first. Recency is the later of
+/// the session's creation time (decoded from the ULID file name) and the file's
+/// modification time; a session created earlier but written to more recently
+/// still sorts ahead. Equal recencies break on the file name, whose ULID is
+/// monotonic, so the order is total and deterministic.
 pub fn list_sessions(base: &Path, project: &str) -> Result<Vec<PathBuf>> {
     let dir = sessions_root(base).join(project);
     let entries = match std::fs::read_dir(&dir) {
@@ -443,11 +450,21 @@ pub fn list_sessions(base: &Path, project: &str) -> Result<Vec<PathBuf>> {
                 .metadata()
                 .and_then(|meta| meta.modified())
                 .map_err(|source| Error::io(&path, source))?;
-            sessions.push((modified, path));
+            sessions.push((recency(&path, modified), path));
         }
     }
-    sessions.sort_by(|a, b| b.0.cmp(&a.0));
+    sessions.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
     Ok(sessions.into_iter().map(|(_, path)| path).collect())
+}
+
+/// The recency of a session file: the later of its creation time (the timestamp
+/// embedded in the ULID file name) and its last modification. A ULID whose name
+/// cannot be decoded contributes only its modification time.
+fn recency(path: &Path, modified: SystemTime) -> SystemTime {
+    match ulid_from_path(path) {
+        Ok(ulid) => modified.max(UNIX_EPOCH + Duration::from_millis(ulid.timestamp_ms())),
+        Err(_) => modified,
+    }
 }
 
 /// The path a session with `ulid` would occupy under `project`. The file need
@@ -458,12 +475,91 @@ pub fn session_file(base: &Path, project: &str, ulid: Ulid) -> PathBuf {
         .join(format!("{ulid}.jsonl"))
 }
 
-/// The active session for a project: its most recently modified session file.
-pub fn active_session(base: &Path, project: &str) -> Result<PathBuf> {
-    list_sessions(base, project)?
-        .into_iter()
-        .next()
-        .ok_or_else(|| Error::NoSession(project.to_string()))
+/// The session to act on in the current repository: the most recent session
+/// whose tip (or, for a working-copy session, its branch hint) names the
+/// checked-out branch, falling back to the most recent session of any kind when
+/// none matches or the branch is unknown. With no repository context, or a
+/// single session, this is simply the most recent session.
+pub fn active_session(
+    base: &Path,
+    project: &str,
+    repo_root: Option<&Path>,
+    scm: Option<ScmType>,
+) -> Result<PathBuf> {
+    let sessions = list_sessions(base, project)?;
+    let most_recent = sessions
+        .first()
+        .cloned()
+        .ok_or_else(|| Error::NoSession(project.to_string()))?;
+    // With only one candidate there is no branch to disambiguate, so skip the
+    // scm probe the common single-session project would otherwise pay.
+    if sessions.len() == 1 {
+        return Ok(most_recent);
+    }
+    let current = match (repo_root, scm) {
+        (Some(root), Some(scm)) => crate::source::current_branch(root, scm),
+        _ => None,
+    };
+    let Some(current) = current else {
+        return Ok(most_recent);
+    };
+    for path in &sessions {
+        // A header we cannot read here (an in-flight create, or a damaged file)
+        // is skipped rather than aborting the scan: an unrelated broken session
+        // must not hide the healthy session for the checked-out branch.
+        if let Ok(Some(header)) = read_header(path)
+            && let SourceKind::Scm(source) = &header.source
+            && source_names_branch(source, &current)
+        {
+            return Ok(path.clone());
+        }
+    }
+    // No session names the branch, so the most recent is the answer. A damaged
+    // header on that particular file is reported here, since the caller is about
+    // to be pointed at it; a corrupt header elsewhere was already skipped above.
+    read_header(&most_recent)?;
+    Ok(most_recent)
+}
+
+/// Whether an scm source is the review of `branch` (a full ref name such as
+/// `refs/heads/topic`): a ref tip that names it, or a working-copy tip created
+/// on it. A `--change <branch>` session, whose committed ref tip holds the
+/// branch's full name, therefore matches too. A pinned or change-id tip names no
+/// branch and never matches here.
+fn source_names_branch(source: &ScmSource, branch: &str) -> bool {
+    match &source.tip {
+        TipRule::Ref { name } => name == branch,
+        TipRule::Worktree | TipRule::Index => source.branch_hint.as_deref() == Some(branch),
+        TipRule::ChangeId { .. } | TipRule::Pinned { .. } => false,
+    }
+}
+
+/// Read a session's header, the first record of its file, reading only the first
+/// line rather than the whole log. Returns `None` when the first line has no
+/// terminator yet: a create still in flight, or an empty or truncated file.
+/// Errors on an unreadable or corrupt file, or a first record that is not a
+/// session header.
+fn read_header(path: &Path) -> Result<Option<SessionHeader>> {
+    let file = std::fs::File::open(path).map_err(|source| Error::io(path, source))?;
+    let mut first = String::new();
+    BufReader::new(file)
+        .read_line(&mut first)
+        .map_err(|source| Error::io(path, source))?;
+    // A committed header ends in a newline. A line without one is not yet
+    // readable: a create still in flight, or an empty or truncated file.
+    let Some(line) = first.strip_suffix('\n') else {
+        return Ok(None);
+    };
+    match serde_json::from_str::<Record>(line).map_err(Error::Decode)? {
+        Record {
+            body: RecordBody::Session(header),
+            ..
+        } => Ok(Some(header)),
+        _ => Err(Error::NotASession {
+            path: path.to_path_buf(),
+            reason: "first record is not a session header".to_string(),
+        }),
+    }
 }
 
 /// Remove a session: its `.jsonl` file and its `.d/` sideband directory.

@@ -11,12 +11,26 @@
 
 pub mod git;
 
+use std::path::Path;
+
 use async_trait::async_trait;
 
 use crate::error::Result;
+use crate::identity::ScmType;
 use crate::record::{RevisionId, SourceKind};
 
 pub use git::{GitRepo, GitSource};
+
+/// The branch the repository at `repo_root` currently has checked out, as a full
+/// ref name (`refs/heads/...`), or `None` when the head is detached, the scm has
+/// no such notion, or git cannot be reached. Session discovery uses this to
+/// prefer the session that reviews the current branch.
+pub fn current_branch(repo_root: &Path, scm: ScmType) -> Option<String> {
+    match scm {
+        ScmType::Git => git::current_branch(repo_root),
+        ScmType::Jujutsu | ScmType::Sapling | ScmType::Mercurial => None,
+    }
+}
 
 /// A diff captured from a source, ready to record as a review's next version.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -77,6 +77,7 @@ fn scm_capture(text: &str, base: &str, tip_relative: bool) -> CapturedDiff {
                 "merge-base(upstream)"
             }),
             tip: TipRule::Worktree,
+            branch_hint: None,
         }),
         base_revision: Some(RevisionId(base.to_string())),
         base_tip_relative: tip_relative,

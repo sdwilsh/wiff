@@ -80,7 +80,12 @@ fn resolve_session(session: Option<&str>, project: Option<&str>) -> anyhow::Resu
                 .with_context(|| format!("{session} is not a valid session ULID"))?;
             Ok(session_file(&base, &identity.canonical, ulid))
         }
-        None => Ok(active_session(&base, &identity.canonical)?),
+        None => Ok(active_session(
+            &base,
+            &identity.canonical,
+            identity.repo_root.as_deref(),
+            identity.scm,
+        )?),
     }
 }
 
@@ -184,7 +189,12 @@ async fn pinned_or(base: Option<BaseRuleset>, root: &Path) -> anyhow::Result<Bas
 /// regenerated. Both `wiff refresh` and the in-TUI refresh flow through here, so
 /// the mapping from a recorded source back to a live capture lives in one place.
 pub(crate) async fn recapture_diff(header: &SessionHeader) -> anyhow::Result<Option<CapturedDiff>> {
-    let ScmSource { scm, base, tip } = match &header.source {
+    let ScmSource {
+        scm,
+        base,
+        tip,
+        branch_hint: _,
+    } = match &header.source {
         SourceKind::Scm(scm_source) => scm_source.clone(),
         SourceKind::Stdin => return Ok(None),
         SourceKind::Forge => bail!("a forge session cannot yet be recaptured"),
