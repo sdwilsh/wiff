@@ -20,6 +20,12 @@ use crate::record::{Anchor, CommentTarget, Confidence};
 /// snippet as the same code rather than declaring the comment outdated.
 const FUZZY_THRESHOLD: f32 = 0.6;
 
+/// How much the surrounding context sways the fuzzy ranking relative to the
+/// snippet's own similarity. The snippet dominates; context tips the choice
+/// between windows of comparable snippet similarity, including toward an edited
+/// copy over a stale but identical one elsewhere.
+const CONTEXT_WEIGHT: f32 = 0.3;
+
 /// Where a comment ends up after a refresh, and how confidently it got there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RebaseOutcome {
@@ -158,53 +164,108 @@ fn offset_map(
     })
 }
 
-/// Search the new side for the anchor's captured snippet, accepting the most
-/// similar window at or above [`FUZZY_THRESHOLD`] as an approximate relocation.
+/// Search the new side for the anchor's snippet, returning the best-matching
+/// position as an approximate relocation. A window qualifies only when its
+/// snippet similarity clears [`FUZZY_THRESHOLD`]; qualifiers are then ranked by a
+/// blend of that similarity with how well the captured context flanks the
+/// candidate, which distinguishes an edited or repeated snippet from a stale
+/// lookalike elsewhere.
 fn fuzzy_find(
     new_lines: &[(LineNo, String)],
     anchor: &Anchor,
     file: &str,
     side: Side,
 ) -> Option<RebaseOutcome> {
-    let needle: Vec<&str> = anchor.snippet.iter().map(String::as_str).collect();
-    if needle.is_empty() || new_lines.len() < needle.len() {
+    let snippet: Vec<&str> = anchor.snippet.iter().map(String::as_str).collect();
+    if snippet.is_empty() || new_lines.len() < snippet.len() {
         return None;
     }
+    let before: Vec<&str> = anchor.context_before.iter().map(String::as_str).collect();
+    let after: Vec<&str> = anchor.context_after.iter().map(String::as_str).collect();
     let new_texts: Vec<&str> = new_lines.iter().map(|(_, t)| t.as_str()).collect();
 
-    // Slide a needle-sized window across the new side and keep the most similar
-    // one. The window slice cannot go out of bounds: the guard above guarantees
-    // `needle.len() <= new_texts.len()`, so the upper bound never underflows.
+    // Slide a snippet-sized window across the new side. A window whose snippet
+    // similarity clears the threshold is a candidate, scored by blending that
+    // similarity with its surrounding context; the highest score wins, and a tie
+    // keeps the earliest. The window slice cannot go out of bounds: the guard
+    // above guarantees `snippet.len() <= new_texts.len()`, so the upper bound
+    // never underflows.
     let mut best: Option<Match> = None;
-    for offset in 0..=new_texts.len() - needle.len() {
-        let window = &new_texts[offset..offset + needle.len()];
+    for offset in 0..=new_texts.len() - snippet.len() {
+        let window = &new_texts[offset..offset + snippet.len()];
         // similar's ratio is 0.0 (nothing in common) to 1.0 (identical).
-        let ratio = TextDiff::from_slices(&needle, window).ratio();
-        if best.is_none_or(|best| ratio > best.ratio) {
-            best = Some(Match { ratio, offset });
+        let snippet_ratio = TextDiff::from_slices(&snippet, window).ratio();
+        if snippet_ratio < FUZZY_THRESHOLD {
+            continue;
+        }
+        // Absent context leaves the snippet score to stand alone rather than
+        // penalizing a candidate for having no room beside it at a file edge.
+        let score = match surrounding_ratio(&before, &after, &new_texts, offset, snippet.len()) {
+            Some(context) => snippet_ratio * (1.0 - CONTEXT_WEIGHT) + context * CONTEXT_WEIGHT,
+            None => snippet_ratio,
+        };
+        if best.is_none_or(|best| score > best.score) {
+            best = Some(Match { score, offset });
         }
     }
     let best = best?;
-    if best.ratio < FUZZY_THRESHOLD {
-        return None;
-    }
     Some(RebaseOutcome {
         target: CommentTarget::Lines {
             file: file.to_string(),
             side,
             start_line: new_lines[best.offset].0,
-            end_line: new_lines[best.offset + needle.len() - 1].0,
+            end_line: new_lines[best.offset + snippet.len() - 1].0,
         },
         confidence: Confidence::Approximate,
     })
 }
 
-/// The best window found by the fuzzy fallback: where it starts on the new side
-/// and how closely it matches the captured snippet.
-#[derive(Debug, Clone, Copy)]
+/// Similarity of the captured context to the lines flanking a candidate snippet
+/// at `offset`, weighted by how many context lines were actually available on
+/// each side. Only the captured lines nearest the snippet are compared, so a
+/// candidate against a file edge is scored on the context that fits rather than
+/// against absent lines. Returns `None` when no context fits at all.
+fn surrounding_ratio(
+    before: &[&str],
+    after: &[&str],
+    new_texts: &[&str],
+    offset: usize,
+    snippet_len: usize,
+) -> Option<f32> {
+    // Keep the captured lines nearest the snippet: the last of `before` and the
+    // first of `after`, as many as the new side leaves room for beside `offset`.
+    let before_avail = before.len().min(offset);
+    let before_window = &new_texts[offset - before_avail..offset];
+    let before_near = &before[before.len() - before_avail..];
+
+    let after_start = offset + snippet_len;
+    let after_avail = after.len().min(new_texts.len() - after_start);
+    let after_window = &new_texts[after_start..after_start + after_avail];
+    let after_near = &after[..after_avail];
+
+    let compared = before_avail + after_avail;
+    if compared == 0 {
+        return None;
+    }
+    let before_score = if before_avail == 0 {
+        0.0
+    } else {
+        TextDiff::from_slices(before_near, before_window).ratio() * before_avail as f32
+    };
+    let after_score = if after_avail == 0 {
+        0.0
+    } else {
+        TextDiff::from_slices(after_near, after_window).ratio() * after_avail as f32
+    };
+    Some((before_score + after_score) / compared as f32)
+}
+
+/// The best candidate found by the fuzzy fallback: its blended score and where
+/// its snippet sits on the new side.
+#[derive(Debug, Copy, Clone)]
 struct Match {
-    /// similarity of the window to the snippet, 0.0 to 1.0.
-    ratio: f32,
+    /// snippet similarity blended with surrounding context, 0.0 to 1.0.
+    score: f32,
     /// index of the window's first line in the new side.
     offset: usize,
 }
@@ -215,5 +276,144 @@ fn outdated(target: CommentTarget) -> RebaseOutcome {
     RebaseOutcome {
         target,
         confidence: Confidence::Outdated,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::record::Anchor;
+
+    /// Number `texts` from line 1, as the fuzzy matcher sees a reconstructed side.
+    fn numbered(texts: &[&str]) -> Vec<(LineNo, String)> {
+        texts
+            .iter()
+            .enumerate()
+            .map(|(index, text)| {
+                (
+                    LineNo::new(index as u32 + 1).expect("nonzero"),
+                    text.to_string(),
+                )
+            })
+            .collect()
+    }
+
+    fn after_target(start: u32, end: u32) -> CommentTarget {
+        CommentTarget::Lines {
+            file: "f.rs".to_string(),
+            side: Side::After,
+            start_line: LineNo::new(start).expect("nonzero"),
+            end_line: LineNo::new(end).expect("nonzero"),
+        }
+    }
+
+    #[test]
+    fn leading_context_selects_the_matching_duplicate_snippet() {
+        // A lone `}` appears twice; the captured context names the block the
+        // comment sat in, so the second brace must win over the identical first.
+        let new_lines = numbered(&[
+            "fn b() {",
+            "    step_two();",
+            "}",
+            "fn a() {",
+            "    step_one();",
+            "}",
+        ]);
+        let anchor = Anchor {
+            snippet: vec!["}".to_string()],
+            context_before: vec!["fn a() {".to_string(), "    step_one();".to_string()],
+            context_after: vec![],
+        };
+        wince::assert_eq!(
+            fuzzy_find(&new_lines, &anchor, "f.rs", Side::After),
+            Some(RebaseOutcome {
+                target: after_target(6, 6),
+                confidence: Confidence::Approximate,
+            })
+        );
+    }
+
+    #[test]
+    fn trailing_context_selects_the_matching_duplicate_snippet() {
+        // `let x;` appears twice, distinguished only by the line that follows.
+        let new_lines = numbered(&["let x;", "use_first();", "let x;", "use_second();"]);
+        let anchor = Anchor {
+            snippet: vec!["let x;".to_string()],
+            context_before: vec![],
+            context_after: vec!["use_second();".to_string()],
+        };
+        wince::assert_eq!(
+            fuzzy_find(&new_lines, &anchor, "f.rs", Side::After),
+            Some(RebaseOutcome {
+                target: after_target(3, 3),
+                confidence: Confidence::Approximate,
+            })
+        );
+    }
+
+    #[test]
+    fn context_outweighs_a_stale_exact_duplicate_of_an_edited_snippet() {
+        // The reviewed three-line snippet was edited in one line (similarity
+        // below 1.0) and a byte-identical stale copy of the original survives
+        // elsewhere. Snippet similarity alone would pick the stale copy; the
+        // context flanking the edited copy must pull the match back to it.
+        let new_lines = numbered(&[
+            "fn other() {",
+            "let sum = a",
+            "    + b",
+            "    + c;",
+            "return other;",
+            "fn total() {",
+            "let sum = a",
+            "    + b2",
+            "    + c;",
+            "return sum;",
+        ]);
+        let anchor = Anchor {
+            snippet: vec![
+                "let sum = a".to_string(),
+                "    + b".to_string(),
+                "    + c;".to_string(),
+            ],
+            context_before: vec!["fn total() {".to_string()],
+            context_after: vec!["return sum;".to_string()],
+        };
+        wince::assert_eq!(
+            fuzzy_find(&new_lines, &anchor, "f.rs", Side::After),
+            Some(RebaseOutcome {
+                target: after_target(7, 9),
+                confidence: Confidence::Approximate,
+            })
+        );
+    }
+
+    #[test]
+    fn without_context_the_first_snippet_match_is_taken() {
+        // With no context to arbitrate, the equal matches tie and the earliest
+        // wins, preserving the pre-context behavior.
+        let new_lines = numbered(&["}", "keep", "}"]);
+        let anchor = Anchor {
+            snippet: vec!["}".to_string()],
+            context_before: vec![],
+            context_after: vec![],
+        };
+        wince::assert_eq!(
+            fuzzy_find(&new_lines, &anchor, "f.rs", Side::After),
+            Some(RebaseOutcome {
+                target: after_target(1, 1),
+                confidence: Confidence::Approximate,
+            })
+        );
+    }
+
+    #[test]
+    fn a_snippet_absent_from_the_new_side_is_not_found() {
+        let new_lines = numbered(&["alpha", "beta"]);
+        let anchor = Anchor {
+            snippet: vec!["gamma".to_string()],
+            context_before: vec![],
+            context_after: vec![],
+        };
+        wince::assert_eq!(fuzzy_find(&new_lines, &anchor, "f.rs", Side::After), None);
     }
 }
