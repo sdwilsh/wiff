@@ -1817,7 +1817,7 @@ impl App {
             ("\u{2713} ", Some(colors.muted))
         } else if matches!(
             comment.confidence,
-            Some(Confidence::Approximate | Confidence::Outdated)
+            Some(Confidence::Approximate | Confidence::Relocated | Confidence::Outdated)
         ) {
             ("! ", Some(colors.warn))
         } else {

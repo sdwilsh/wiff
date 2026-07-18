@@ -20,7 +20,7 @@ use ratatui::text::{Line, Span};
 use serde::Deserialize;
 use ulid::Ulid;
 use wiff_core::LineOrigin;
-use wiff_core::record::{Author, CommentTarget, Confidence, Disposition};
+use wiff_core::record::{Author, CommentTarget, Disposition};
 use wiff_core::review::{CommentState, threads};
 use wiff_diff::{
     Diff, DiffLine, FileDiff, FileStatus, HighlightError, HighlightedLine, Highlighter, LineKind,
@@ -2213,10 +2213,8 @@ fn badges(comment: &CommentState, pending: bool) -> Vec<(String, BadgeStyle)> {
     if comment.resolved {
         out.push((by("resolved", &comment.resolved_by), BadgeStyle::Muted));
     }
-    match comment.confidence {
-        Some(Confidence::Approximate) => out.push(("shifted".to_string(), BadgeStyle::Warn)),
-        Some(Confidence::Outdated) => out.push(("outdated".to_string(), BadgeStyle::Warn)),
-        Some(Confidence::Exact) | None => {}
+    if let Some(flag) = comment.confidence.and_then(|c| c.flag()) {
+        out.push((flag.to_string(), BadgeStyle::Warn));
     }
     match comment.disposition {
         Some(Disposition::Approve) => out.push(("approve".to_string(), BadgeStyle::Muted)),

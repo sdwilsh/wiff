@@ -30,6 +30,9 @@ pub struct RefreshOutcome {
     pub exact: usize,
     /// Comments relocated to their captured snippet elsewhere.
     pub approximate: usize,
+    /// Comments repositioned by tracing the shared base when their reviewed
+    /// content itself was gone.
+    pub relocated: usize,
     /// Comments whose reviewed code could not be located.
     pub outdated: usize,
 }
@@ -82,6 +85,7 @@ pub fn refresh_session(
         match rebased.confidence {
             Confidence::Exact => outcome.exact += 1,
             Confidence::Approximate => outcome.approximate += 1,
+            Confidence::Relocated => outcome.relocated += 1,
             Confidence::Outdated => outcome.outdated += 1,
         }
         log.append(

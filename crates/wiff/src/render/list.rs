@@ -5,7 +5,7 @@
 //! prompt, this leads each live comment with its review-scoped number on its own
 //! line, for a terse pass without bodies or snippets.
 
-use wiff_core::record::{CommentTarget, Confidence};
+use wiff_core::record::CommentTarget;
 use wiff_core::review::{CommentState, ReviewState};
 
 use super::visible_threads;
@@ -61,10 +61,8 @@ fn status(comment: &CommentState) -> String {
         return "withdrawn".to_string();
     }
     let mut parts = vec![if comment.resolved { "resolved" } else { "open" }];
-    match comment.confidence {
-        Some(Confidence::Approximate) => parts.push("shifted"),
-        Some(Confidence::Outdated) => parts.push("outdated"),
-        Some(Confidence::Exact) | None => {}
+    if let Some(flag) = comment.confidence.and_then(|c| c.flag()) {
+        parts.push(flag);
     }
     if let Some(disposition) = comment.disposition {
         parts.push(disposition.as_str());

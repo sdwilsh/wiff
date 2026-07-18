@@ -60,13 +60,14 @@ async fn recapture(header: &SessionHeader) -> anyhow::Result<String> {
 
 /// Print the captured version and the tally of rebased comments.
 fn report(outcome: &RefreshOutcome) {
-    let total = outcome.exact + outcome.approximate + outcome.outdated;
+    let total = outcome.exact + outcome.approximate + outcome.relocated + outcome.outdated;
     println!(
-        "captured v{}; rebased {total} comment{}: {} exact, {} shifted, {} outdated",
+        "captured v{}; rebased {total} comment{}: {} exact, {} shifted, {} moved, {} outdated",
         outcome.version,
         if total == 1 { "" } else { "s" },
         outcome.exact,
         outcome.approximate,
+        outcome.relocated,
         outcome.outdated,
     );
 }

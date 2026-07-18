@@ -462,9 +462,27 @@ pub enum Confidence {
     Exact,
     /// The anchored lines were found shifted or slightly altered.
     Approximate,
+    /// The reviewed content itself could not be found, but its position was
+    /// recovered by tracing the shared base across the two versions and mapping
+    /// it back onto the new side. The comment names the place the reviewed code
+    /// occupied, not that code.
+    Relocated,
     /// The anchored lines could not be confidently located; the comment is
     /// retained but flagged.
     Outdated,
+}
+
+impl Confidence {
+    /// The badge word shown for a re-anchored comment that needs a look, or
+    /// `None` when it was found exactly and warrants no flag.
+    pub fn flag(&self) -> Option<&'static str> {
+        match self {
+            Confidence::Exact => None,
+            Confidence::Approximate => Some("shifted"),
+            Confidence::Relocated => Some("moved"),
+            Confidence::Outdated => Some("outdated"),
+        }
+    }
 }
 
 /// One event in a comment's history. `id` names the comment the event applies

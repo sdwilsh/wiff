@@ -340,13 +340,14 @@ fn recapture(header: &SessionHeader) -> anyhow::Result<String> {
 /// The status-line tally of a refresh: the captured version and how its comments
 /// fared.
 fn refresh_report(outcome: &RefreshOutcome) -> String {
-    let total = outcome.exact + outcome.approximate + outcome.outdated;
+    let total = outcome.exact + outcome.approximate + outcome.relocated + outcome.outdated;
     format!(
-        "captured v{}; rebased {total} comment{}: {} exact, {} shifted, {} outdated",
+        "captured v{}; rebased {total} comment{}: {} exact, {} shifted, {} moved, {} outdated",
         outcome.version,
         if total == 1 { "" } else { "s" },
         outcome.exact,
         outcome.approximate,
+        outcome.relocated,
         outcome.outdated,
     )
 }
@@ -545,11 +546,12 @@ mod tests {
             version: VersionNumber(3),
             exact: 2,
             approximate: 1,
+            relocated: 1,
             outdated: 0,
         });
         wince::assert_eq!(
             report,
-            "captured v3; rebased 3 comments: 2 exact, 1 shifted, 0 outdated".to_string()
+            "captured v3; rebased 4 comments: 2 exact, 1 shifted, 1 moved, 0 outdated".to_string()
         );
     }
 
@@ -705,7 +707,7 @@ mod tests {
             "└──────────┬───────────────────────────────────────────────────────────────────┘\n",
             "        5 +└delta\n",
             "---\n",
-            "captured v1; rebased 1 comment: 1 exact, 0 shifted, 0 outdated\n",
+            "captured v1; rebased 1 comment: 1 exact, 0 shifted, 0 moved, 0 outdated\n",
         );
     }
 

@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use ulid::Ulid;
-use wiff_core::record::{Anchor, CommentTarget, Confidence};
+use wiff_core::record::{Anchor, CommentTarget};
 use wiff_core::review::{CommentState, ReviewState};
 
 use super::visible_threads;
@@ -244,10 +244,8 @@ fn flags(comment: &CommentState) -> String {
             None => "resolved".to_string(),
         });
     }
-    match comment.confidence {
-        Some(Confidence::Approximate) => flags.push("shifted".to_string()),
-        Some(Confidence::Outdated) => flags.push("outdated".to_string()),
-        Some(Confidence::Exact) | None => {}
+    if let Some(flag) = comment.confidence.and_then(|c| c.flag()) {
+        flags.push(flag.to_string());
     }
     if let Some(disposition) = comment.disposition {
         flags.push(disposition.as_str().to_string());

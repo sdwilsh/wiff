@@ -171,6 +171,7 @@ new file mode 100644
             version: VersionNumber(1),
             exact: 1,
             approximate: 0,
+            relocated: 0,
             outdated: 0,
         })
     );
@@ -208,6 +209,7 @@ new file mode 100644
             version: VersionNumber(1),
             exact: 0,
             approximate: 0,
+            relocated: 0,
             outdated: 1,
         })
     );
@@ -246,6 +248,7 @@ new file mode 100644
             version: VersionNumber(1),
             exact: 0,
             approximate: 1,
+            relocated: 0,
             outdated: 0,
         })
     );
@@ -287,6 +290,7 @@ new file mode 100644
             version: VersionNumber(1),
             exact: 1,
             approximate: 0,
+            relocated: 0,
             outdated: 0,
         })
     );
@@ -343,6 +347,7 @@ new file mode 100644
             version: VersionNumber(1),
             exact: 1,
             approximate: 0,
+            relocated: 0,
             outdated: 0,
         })
     );
