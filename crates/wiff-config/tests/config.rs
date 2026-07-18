@@ -1,8 +1,8 @@
 #![allow(missing_docs)]
 
 use wiff_config::{Config, OnExit};
-use wiff_core::AuthorDefaults;
 use wiff_core::record::{Author, AuthorKind};
+use wiff_core::{AuthorDefaults, BaseRuleset, DEFAULT_BASE_REVISION_RULES};
 use wiff_tui::keymap::KeymapOverrides;
 use wiff_tui::{Action, Chord, Resolution};
 
@@ -66,6 +66,7 @@ quit = [\"q\", \"ctrl-c\"]
                 .into_iter()
                 .collect(),
             },
+            base_revision_rules: BaseRuleset::new(DEFAULT_BASE_REVISION_RULES),
             section: [(
                 "kotlin".to_string(),
                 vec![r"^ *(fun|class) .*$".to_string()],
@@ -123,7 +124,7 @@ fn an_unknown_field_is_rejected() {
         "  |\n",
         "1 | wibble = true\n",
         "  | ^^^^^^\n",
-        "unknown field `wibble`, expected one of `on_exit`, `display_context`, `tab_width`, `editor`, `wrap_lines`, `diff_mode`, `side_by_side_min_width`, `nudge_to_detach`, `author`, `section`, `disable_default_keymap`, `keymap`\n",
+        "unknown field `wibble`, expected one of `on_exit`, `display_context`, `tab_width`, `editor`, `wrap_lines`, `diff_mode`, `side_by_side_min_width`, `nudge_to_detach`, `author`, `base_revision_rules`, `section`, `disable_default_keymap`, `keymap`\n",
     );
 }
 

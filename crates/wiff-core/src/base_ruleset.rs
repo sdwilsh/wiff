@@ -85,6 +85,11 @@ impl std::fmt::Display for Reference {
     }
 }
 
+/// The built-in base ruleset a whole-branch review starts from when the user
+/// configures none: the fork point from the branch's upstream, falling back to
+/// the fork point from trunk.
+pub const DEFAULT_BASE_REVISION_RULES: &str = "merge-base(upstream), merge-base(trunk)";
+
 /// The base-ruleset grammar text, as the user or config wrote it, parsed with
 /// [`parse_ruleset`] when a review's base is resolved.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -441,7 +446,7 @@ mod tests {
     #[test]
     fn the_built_in_default_ruleset_parses_to_two_merge_base_rules() {
         wince::assert_eq!(
-            parse_ruleset("merge-base(upstream), merge-base(trunk)"),
+            parse_ruleset(DEFAULT_BASE_REVISION_RULES),
             Ok(Ruleset {
                 rules: vec![
                     Rule {

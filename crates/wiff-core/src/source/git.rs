@@ -264,6 +264,36 @@ impl GitRepo {
         ])
         .await
     }
+
+    /// The full ref name `spec` names (`refs/heads/...`, `refs/tags/...`), or
+    /// `None` when it does not name a ref: a bare revision, a detached `HEAD`,
+    /// or a spec that resolves to nothing at all.
+    ///
+    /// `rev-parse --symbolic-full-name` prints empty for a bare revision, the
+    /// literal `HEAD` for a detached head, and exits nonzero for an unresolvable
+    /// spec; only an answer under `refs/` is a ref whose name is worth keeping.
+    /// The full name is returned rather than the spec so a later re-resolution is
+    /// unambiguous when a tag and a branch share a short name.
+    async fn symbolic_ref(&self, spec: &str) -> Result<Option<String>> {
+        let output = self
+            .spawn(
+                &[
+                    "rev-parse".into(),
+                    "--symbolic-full-name".into(),
+                    spec.into(),
+                ],
+                GitEnv::default(),
+            )
+            .await?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        let text = String::from_utf8(output.stdout).map_err(|source| {
+            Error::Source(format!("git rev-parse was not valid UTF-8: {source}"))
+        })?;
+        let name = text.trim();
+        Ok(name.starts_with("refs/").then(|| name.to_string()))
+    }
 }
 
 #[async_trait]
@@ -378,6 +408,29 @@ impl GitSource {
             base,
             tip,
         }
+    }
+
+    /// Build a source reviewing `change` against `base`. A `change` that names a
+    /// ref is tracked as a [`Ref`](TipRule::Ref) tip under its full ref name;
+    /// anything else (a bare revision, a detached `HEAD`) is held at the commit
+    /// it resolves to as a [`Pinned`](TipRule::Pinned) tip. Errors when `change`
+    /// resolves to no commit.
+    pub async fn change(
+        repo_root: impl Into<PathBuf>,
+        base: BaseRuleset,
+        change: String,
+    ) -> Result<Self> {
+        let repo = GitRepo::new(repo_root);
+        let tip = match repo.symbolic_ref(&change).await? {
+            Some(name) => TipRule::Ref { name },
+            None => {
+                let revision = repo.resolve_commit(&change).await?.ok_or_else(|| {
+                    Error::Source(format!("'{change}' did not resolve to a commit"))
+                })?;
+                TipRule::Pinned { revision }
+            }
+        };
+        Ok(Self { repo, base, tip })
     }
 
     /// The base ruleset that pins a review at the repository's current commit, or
@@ -617,6 +670,142 @@ index HASHES
         // expected.
         wince::assert_eq!(captured.base_tip_relative, true);
         wince::assert_eq!(captured.head_revision, Some(head));
+    }
+
+    #[tokio::test]
+    async fn a_branch_change_tracks_its_newest_commit_across_a_recapture() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        git(repo.path(), home.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.path().join("f.txt"), "alpha\n").expect("write");
+        git(repo.path(), home.path(), &["add", "f.txt"]);
+        git(repo.path(), home.path(), &["commit", "-q", "-m", "first"]);
+        let first = RevisionId(git_out(repo.path(), home.path(), &["rev-parse", "HEAD"]));
+
+        // A short branch name is recorded under its full ref name, so a later
+        // re-resolution never collides with a like-named tag.
+        let source = GitSource::change(
+            repo.path(),
+            BaseRuleset::new("parent(@)"),
+            "main".to_string(),
+        )
+        .await
+        .expect("change by branch");
+        let captured = source.capture().await.expect("capture branch");
+        wince::assert_eq!(
+            captured.source,
+            SourceKind::Scm(ScmSource {
+                scm: ScmType::Git,
+                base: BaseRuleset::new("parent(@)"),
+                tip: TipRule::Ref {
+                    name: "refs/heads/main".to_string()
+                },
+            })
+        );
+        wince::assert_eq!(captured.head_revision, Some(first.clone()));
+
+        // Advancing the branch and re-capturing the same source follows the tip
+        // to the new commit, proving a Ref re-resolves rather than holding.
+        std::fs::write(repo.path().join("f.txt"), "alpha\nbeta\n").expect("write");
+        git(repo.path(), home.path(), &["commit", "-qa", "-m", "second"]);
+        let second = RevisionId(git_out(repo.path(), home.path(), &["rev-parse", "HEAD"]));
+        let recaptured = source.capture().await.expect("recapture branch");
+        wince::assert_eq!(recaptured.head_revision, Some(second));
+    }
+
+    #[tokio::test]
+    async fn a_bare_revision_change_holds_its_commit_across_a_recapture() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        git(repo.path(), home.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.path().join("f.txt"), "alpha\n").expect("write");
+        git(repo.path(), home.path(), &["add", "f.txt"]);
+        git(repo.path(), home.path(), &["commit", "-q", "-m", "first"]);
+        let first = RevisionId(git_out(repo.path(), home.path(), &["rev-parse", "HEAD"]));
+
+        // The same commit named as a bare revision is held, not tracked.
+        let source = GitSource::change(repo.path(), BaseRuleset::new("parent(@)"), first.0.clone())
+            .await
+            .expect("change by revision");
+        let captured = source.capture().await.expect("capture revision");
+        wince::assert_eq!(
+            captured.source,
+            SourceKind::Scm(ScmSource {
+                scm: ScmType::Git,
+                base: BaseRuleset::new("parent(@)"),
+                tip: TipRule::Pinned {
+                    revision: first.clone()
+                },
+            })
+        );
+        wince::assert_eq!(captured.head_revision, Some(first.clone()));
+
+        // Advancing the branch leaves the pinned tip on the commit it named.
+        std::fs::write(repo.path().join("f.txt"), "alpha\nbeta\n").expect("write");
+        git(repo.path(), home.path(), &["commit", "-qa", "-m", "second"]);
+        let recaptured = source.capture().await.expect("recapture revision");
+        wince::assert_eq!(recaptured.head_revision, Some(first));
+    }
+
+    #[tokio::test]
+    async fn a_change_of_head_while_detached_is_pinned_not_tracked() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        git(repo.path(), home.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.path().join("f.txt"), "alpha\n").expect("write");
+        git(repo.path(), home.path(), &["add", "f.txt"]);
+        git(repo.path(), home.path(), &["commit", "-q", "-m", "first"]);
+        let first = RevisionId(git_out(repo.path(), home.path(), &["rev-parse", "HEAD"]));
+
+        // A detached HEAD is not a ref: git rev-parse --symbolic-full-name HEAD
+        // echoes the literal "HEAD", which must be held as a pinned commit rather
+        // than followed like a branch.
+        git(
+            repo.path(),
+            home.path(),
+            &["checkout", "-q", first.as_str()],
+        );
+        let source = GitSource::change(
+            repo.path(),
+            BaseRuleset::new("parent(@)"),
+            "HEAD".to_string(),
+        )
+        .await
+        .expect("change by detached HEAD");
+        let captured = source.capture().await.expect("capture detached HEAD");
+        wince::assert_eq!(
+            captured.source,
+            SourceKind::Scm(ScmSource {
+                scm: ScmType::Git,
+                base: BaseRuleset::new("parent(@)"),
+                tip: TipRule::Pinned {
+                    revision: first.clone()
+                },
+            })
+        );
+        wince::assert_eq!(captured.head_revision, Some(first));
+    }
+
+    #[tokio::test]
+    async fn a_change_naming_no_commit_is_an_error() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        git(repo.path(), home.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.path().join("f.txt"), "alpha\n").expect("write");
+        git(repo.path(), home.path(), &["add", "f.txt"]);
+        git(repo.path(), home.path(), &["commit", "-q", "-m", "first"]);
+
+        let error = GitSource::change(
+            repo.path(),
+            BaseRuleset::new("parent(@)"),
+            "nope".to_string(),
+        )
+        .await
+        .expect_err("unresolved change");
+        wince::assert_eq!(
+            error.to_string(),
+            "could not capture diff: 'nope' did not resolve to a commit".to_string()
+        );
     }
 
     #[tokio::test]

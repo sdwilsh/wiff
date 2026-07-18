@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
-use wiff_core::AuthorDefaults;
+use wiff_core::{AuthorDefaults, BaseRuleset, DEFAULT_BASE_REVISION_RULES};
 use wiff_diff::DEFAULT_TAB_WIDTH;
 use wiff_tui::keymap::Keymap;
 use wiff_tui::render::{DEFAULT_DISPLAY_CONTEXT, DEFAULT_SIDE_BY_SIDE_MIN_WIDTH, DiffMode};
@@ -65,6 +65,9 @@ pub struct Config {
     pub nudge_to_detach: bool,
     /// The default author identity for annotations.
     pub author: AuthorDefaults,
+    /// The default base ruleset for a whole-branch review (`wiff new
+    /// --from-base`).
+    pub base_revision_rules: BaseRuleset,
     /// Per-language patterns recognising the enclosing-definition line shown on a
     /// fold marker, keyed by language token. A language here replaces its
     /// built-in patterns; unlisted languages keep the built-ins. Patterns follow
@@ -88,6 +91,7 @@ impl Default for Config {
             side_by_side_min_width: DEFAULT_SIDE_BY_SIDE_MIN_WIDTH,
             nudge_to_detach: true,
             author: AuthorDefaults::default(),
+            base_revision_rules: BaseRuleset::new(DEFAULT_BASE_REVISION_RULES),
             section: BTreeMap::new(),
             disable_default_keymap: false,
             keymap: KeymapOverrides::default(),

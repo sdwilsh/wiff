@@ -12,7 +12,7 @@ mod session;
 mod skill;
 
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use clap::Subcommand;
@@ -106,10 +106,10 @@ pub(crate) fn resolve_author(agent: bool, name: Option<String>) -> anyhow::Resul
 pub(crate) enum DiffSelection {
     /// The uncommitted working tree.
     Worktree,
-    /// The staged index against `HEAD`.
+    /// The staged index against its base.
     Staged,
-    /// The changes a single revision introduces.
-    Rev(String),
+    /// The changes a named branch, change, or revision introduces.
+    Change(String),
 }
 
 /// Capture `selection` from the repository at `root` using its detected `scm`.
@@ -121,9 +121,10 @@ pub(crate) async fn capture_scm_diff(
     scm: Option<ScmType>,
     root: PathBuf,
     selection: DiffSelection,
+    base: Option<BaseRuleset>,
 ) -> anyhow::Result<CapturedDiff> {
     let source = match scm {
-        Some(ScmType::Git) => git_source(root, selection).await?,
+        Some(ScmType::Git) => git_source(root, selection, base).await?,
         Some(other) => bail!(
             "{} is a {other} repository, which wiff cannot capture from yet; pipe a unified diff on stdin instead",
             root.display()
@@ -140,28 +141,42 @@ pub(crate) async fn capture_scm_diff(
     Ok(captured)
 }
 
-/// Build the git source for `selection`: a working-tree or staged review pins
-/// its base at the current commit, while a named revision reviews that revision
-/// against its first parent.
-async fn git_source(root: PathBuf, selection: DiffSelection) -> anyhow::Result<GitSource> {
+/// Build the git source for `selection`. An explicit `base` overrides the
+/// default for the selection: a working-tree or staged review otherwise pins its
+/// base at the current commit, while a named change reviews against its first
+/// parent.
+async fn git_source(
+    root: PathBuf,
+    selection: DiffSelection,
+    base: Option<BaseRuleset>,
+) -> anyhow::Result<GitSource> {
     Ok(match selection {
         DiffSelection::Worktree => {
-            let base = GitSource::pinned_base_at_head(root.clone()).await?;
+            let base = pinned_or(base, &root).await?;
             GitSource::worktree(root, base)
         }
         DiffSelection::Staged => {
-            let base = GitSource::pinned_base_at_head(root.clone()).await?;
+            let base = pinned_or(base, &root).await?;
             GitSource::index(root, base)
         }
-        // Diffing against the first parent shows a merge's net change onto the
-        // mainline (everything the merged branch brought in), rather than git
-        // show's combined diff, which for a clean merge is empty.
-        DiffSelection::Rev(rev) => GitSource::revision(
-            root,
-            BaseRuleset::new("parent(@)"),
-            TipRule::Ref { name: rev },
-        ),
+        DiffSelection::Change(change) => {
+            // The default first-parent base shows a merge's net change onto the
+            // mainline (everything the merged branch brought in), rather than
+            // git show's combined diff, which for a clean merge is empty. An
+            // explicit --base overrides this.
+            let base = base.unwrap_or_else(|| BaseRuleset::new("parent(@)"));
+            GitSource::change(root, base, change).await?
+        }
     })
+}
+
+/// The explicit `base`, or the ruleset pinning the review at the repository's
+/// current commit when none was given.
+async fn pinned_or(base: Option<BaseRuleset>, root: &Path) -> anyhow::Result<BaseRuleset> {
+    match base {
+        Some(base) => Ok(base),
+        None => Ok(GitSource::pinned_base_at_head(root.to_path_buf()).await?),
+    }
 }
 
 /// Recapture a session's diff from the source recorded in its `header`, or

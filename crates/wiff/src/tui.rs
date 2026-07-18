@@ -663,6 +663,7 @@ mod tests {
             Some(ScmType::Git),
             repo.path().to_path_buf(),
             DiffSelection::Worktree,
+            None,
         )
         .await
         .expect("capture v0");
@@ -776,6 +777,7 @@ mod tests {
             Some(ScmType::Git),
             repo.path().to_path_buf(),
             DiffSelection::Worktree,
+            None,
         )
         .await
         .expect("capture v0");
@@ -895,6 +897,7 @@ showing the latest diff (v1)
             Some(ScmType::Git),
             repo.path().to_path_buf(),
             DiffSelection::Worktree,
+            None,
         )
         .await
         .expect("capture v0");
@@ -1210,6 +1213,7 @@ new file mode 100644
             Some(ScmType::Git),
             repo.path().to_path_buf(),
             DiffSelection::Worktree,
+            None,
         )
         .await
         .expect("capture v0");
@@ -1308,6 +1312,7 @@ new file mode 100644
             Some(ScmType::Git),
             repo.path().to_path_buf(),
             DiffSelection::Worktree,
+            None,
         )
         .await
         .expect("capture v0");
@@ -1416,6 +1421,7 @@ new file mode 100644
             Some(ScmType::Git),
             repo.path().to_path_buf(),
             DiffSelection::Worktree,
+            None,
         )
         .await
         .expect("capture v0");
@@ -1515,6 +1521,7 @@ new file mode 100644
             Some(ScmType::Git),
             repo.path().to_path_buf(),
             DiffSelection::Worktree,
+            None,
         )
         .await
         .expect("capture v0");

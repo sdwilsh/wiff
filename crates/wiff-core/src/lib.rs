@@ -21,7 +21,10 @@ pub mod session;
 pub mod source;
 
 pub use base_resolve::{RevisionResolver, resolve_base};
-pub use base_ruleset::{BaseRuleset, ParseError, Reference, Rule, RuleOp, Ruleset, parse_ruleset};
+pub use base_ruleset::{
+    BaseRuleset, DEFAULT_BASE_REVISION_RULES, ParseError, Reference, Rule, RuleOp, Ruleset,
+    parse_ruleset,
+};
 pub use capture::{create_session, write_diff_version};
 pub use comment::{
     AddedComment, AnchorFailures, DraftComment, capture_draft_anchors, delete_comment,
