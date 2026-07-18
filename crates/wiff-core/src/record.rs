@@ -130,6 +130,26 @@ impl std::fmt::Display for VersionNumber {
     }
 }
 
+/// A commit that an scm resolved a rule or tip to, in that scm's own notation
+/// (a git object name, a jj commit id), read and handed back verbatim without
+/// parsing its interior.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RevisionId(pub String);
+
+impl RevisionId {
+    /// Returns the revision text as the scm named it.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for RevisionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// One line of a session log.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Record {

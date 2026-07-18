@@ -2,6 +2,7 @@
 //! schema, and project [`identity`] resolution. This crate owns persistence and
 //! discovery; diff parsing and the diff model come from `wiff-diff`.
 
+pub mod base_resolve;
 pub mod base_ruleset;
 pub mod capture;
 pub mod comment;
@@ -19,6 +20,7 @@ pub mod review;
 pub mod session;
 pub mod source;
 
+pub use base_resolve::{RevisionResolver, resolve_base};
 pub use base_ruleset::{ParseError, Reference, Rule, RuleOp, Ruleset, parse_ruleset};
 pub use capture::{create_session, write_diff_version};
 pub use comment::{
