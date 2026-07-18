@@ -3,12 +3,13 @@
 use ulid::Ulid;
 use wiff_core::record::{
     Author, AuthorKind, CommentCreate, CommentEvent, CommentEventKind, CommentTarget, RecordBody,
-    Seq, SessionHeader, SourceKind, VersionNumber,
+    ScmSource, Seq, SessionHeader, SourceKind, TipRule, VersionNumber,
 };
 use wiff_core::session::{
     LockAttempt, LockWait, SessionLog, SyncState, active_session, list_projects, list_sessions,
     read_records, remove_session,
 };
+use wiff_core::{BaseRuleset, ScmType};
 use wiff_diff::{LineNo, Side};
 
 fn header(ulid: Ulid) -> RecordBody {
@@ -18,7 +19,11 @@ fn header(ulid: Ulid) -> RecordBody {
         project: "demo".to_string(),
         repo_root: Some("/repos/demo".to_string()),
         cwd: "/repos/demo/sub".to_string(),
-        source: SourceKind::GitWorktree,
+        source: SourceKind::Scm(ScmSource {
+            scm: ScmType::Git,
+            base: BaseRuleset::new("ref(name(deadbeef))"),
+            tip: TipRule::Worktree,
+        }),
     })
 }
 

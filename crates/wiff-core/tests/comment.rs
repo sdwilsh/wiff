@@ -49,6 +49,8 @@ fn session() -> (tempfile::TempDir, SessionLog) {
     let captured = CapturedDiff {
         text: DIFF.to_string(),
         source: SourceKind::Stdin,
+        base_revision: None,
+        head_revision: None,
     };
     let log = create_session(
         base.path(),
@@ -158,6 +160,8 @@ fn adding_comments_captures_anchors_and_folds_to_current_state() {
         vec![DiffVersionRecord {
             number: VersionNumber(0),
             diff_hash: SidebandHash::of(DIFF.as_bytes()),
+            base_revision: None,
+            head_revision: None,
             files: vec![
                 FileSummary {
                     old_path: "added.txt".to_string(),

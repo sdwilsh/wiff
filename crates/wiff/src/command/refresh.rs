@@ -3,9 +3,9 @@
 
 use anyhow::bail;
 use clap::Args;
-use wiff_core::record::SessionHeader;
+use wiff_core::record::{SessionHeader, SourceKind};
 use wiff_core::review::ReviewState;
-use wiff_core::{LockWait, RefreshOutcome, SessionLog, refresh_session};
+use wiff_core::{CapturedDiff, LockWait, RefreshOutcome, SessionLog, refresh_session};
 
 use super::{read_piped_stdin, recapture_diff, resolve_author, resolve_session};
 
@@ -32,10 +32,10 @@ impl RefreshArgs {
     pub async fn run(self) -> anyhow::Result<()> {
         let path = resolve_session(self.session.as_deref(), self.project.as_deref())?;
         let state = ReviewState::load(&path)?;
-        let diff_text = recapture(&state.session).await?;
+        let captured = recapture(&state.session).await?;
         let author = resolve_author(self.agent, self.author)?;
         let mut log = SessionLog::open(&path)?;
-        match refresh_session(&mut log, &diff_text, author, LockWait::Block)? {
+        match refresh_session(&mut log, &captured, author, LockWait::Block)? {
             Some(outcome) => report(&outcome),
             None => {
                 let current = state.latest_version().map(|v| v.number.get()).unwrap_or(0);
@@ -48,12 +48,17 @@ impl RefreshArgs {
 
 /// Recapture the diff from the session's original source: rerun the SCM for a
 /// regenerable source, or read a fresh diff piped on stdin for a stdin source.
-async fn recapture(header: &SessionHeader) -> anyhow::Result<String> {
-    if let Some(text) = recapture_diff(header).await? {
-        return Ok(text);
+async fn recapture(header: &SessionHeader) -> anyhow::Result<CapturedDiff> {
+    if let Some(captured) = recapture_diff(header).await? {
+        return Ok(captured);
     }
     match read_piped_stdin().await? {
-        Some(text) => Ok(text),
+        Some(text) => Ok(CapturedDiff {
+            text,
+            source: SourceKind::Stdin,
+            base_revision: None,
+            head_revision: None,
+        }),
         None => bail!("this session's diff came from stdin; pipe the new diff on stdin"),
     }
 }

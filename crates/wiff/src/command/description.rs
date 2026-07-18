@@ -147,6 +147,8 @@ diff --git a/f.txt b/f.txt
         let captured = CapturedDiff {
             text: DIFF.to_string(),
             source: SourceKind::Stdin,
+            base_revision: None,
+            head_revision: None,
         };
         create_session(base, &identity(), Path::new("/work"), &captured, None).unwrap()
     }

@@ -19,9 +19,9 @@ use clap::Subcommand;
 use tokio::io::AsyncReadExt;
 use ulid::Ulid;
 use wiff_config::Config;
-use wiff_core::record::{Author, AuthorKind, SessionHeader, SourceKind};
+use wiff_core::record::{Author, AuthorKind, ScmSource, SessionHeader, SourceKind, TipRule};
 use wiff_core::session::{active_session, data_dir, session_file};
-use wiff_core::{CapturedDiff, DiffSource, GitSource, ProjectIdentity, ScmType};
+use wiff_core::{BaseRuleset, CapturedDiff, DiffSource, GitSource, ProjectIdentity, ScmType};
 
 use self::comment::CommentArgs;
 use self::description::DescriptionArgs;
@@ -123,11 +123,7 @@ pub(crate) async fn capture_scm_diff(
     selection: DiffSelection,
 ) -> anyhow::Result<CapturedDiff> {
     let source = match scm {
-        Some(ScmType::Git) => match selection {
-            DiffSelection::Worktree => GitSource::worktree(root),
-            DiffSelection::Staged => GitSource::index(root),
-            DiffSelection::Rev(rev) => GitSource::rev(root, rev),
-        },
+        Some(ScmType::Git) => git_source(root, selection).await?,
         Some(other) => bail!(
             "{} is a {other} repository, which wiff cannot capture from yet; pipe a unified diff on stdin instead",
             root.display()
@@ -144,24 +140,54 @@ pub(crate) async fn capture_scm_diff(
     Ok(captured)
 }
 
+/// Build the git source for `selection`: a working-tree or staged review pins
+/// its base at the current commit, while a named revision reviews that revision
+/// against its first parent.
+async fn git_source(root: PathBuf, selection: DiffSelection) -> anyhow::Result<GitSource> {
+    Ok(match selection {
+        DiffSelection::Worktree => {
+            let base = GitSource::pinned_base_at_head(root.clone()).await?;
+            GitSource::worktree(root, base)
+        }
+        DiffSelection::Staged => {
+            let base = GitSource::pinned_base_at_head(root.clone()).await?;
+            GitSource::index(root, base)
+        }
+        // Diffing against the first parent shows a merge's net change onto the
+        // mainline (everything the merged branch brought in), rather than git
+        // show's combined diff, which for a clean merge is empty.
+        DiffSelection::Rev(rev) => GitSource::revision(
+            root,
+            BaseRuleset::new("parent(@)"),
+            TipRule::Ref { name: rev },
+        ),
+    })
+}
+
 /// Recapture a session's diff from the source recorded in its `header`, or
 /// `None` when that source is a one-shot diff (piped on stdin) that cannot be
 /// regenerated. Both `wiff refresh` and the in-TUI refresh flow through here, so
 /// the mapping from a recorded source back to a live capture lives in one place.
-pub(crate) async fn recapture_diff(header: &SessionHeader) -> anyhow::Result<Option<String>> {
-    let selection = match &header.source {
-        SourceKind::GitWorktree => DiffSelection::Worktree,
-        SourceKind::GitIndex => DiffSelection::Staged,
-        SourceKind::GitRev { rev } => DiffSelection::Rev(rev.clone()),
+pub(crate) async fn recapture_diff(header: &SessionHeader) -> anyhow::Result<Option<CapturedDiff>> {
+    let ScmSource { scm, base, tip } = match &header.source {
+        SourceKind::Scm(scm_source) => scm_source.clone(),
         SourceKind::Stdin => return Ok(None),
+        SourceKind::Forge => bail!("a forge session cannot yet be recaptured"),
     };
     let root = header
         .repo_root
         .clone()
         .context("the session records no repository root, so its diff cannot be recaptured")?;
-    // Every regenerable source recorded today is a git one.
-    let captured = capture_scm_diff(Some(ScmType::Git), root.into(), selection).await?;
-    Ok(Some(captured.text))
+    if scm != ScmType::Git {
+        bail!("wiff cannot yet recapture a {scm} session");
+    }
+    let source = match tip {
+        TipRule::Worktree => GitSource::worktree(root, base),
+        TipRule::Index => GitSource::index(root, base),
+        other => GitSource::revision(root, base, other),
+    };
+    let captured = source.capture().await?;
+    Ok(Some(captured))
 }
 
 /// Read content piped on stdin, returning `None` when stdin is a terminal or

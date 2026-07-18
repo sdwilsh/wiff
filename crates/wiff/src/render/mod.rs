@@ -87,13 +87,13 @@ fn latest_files(state: &ReviewState) -> &[FileSummary] {
 mod fixture {
     use time::OffsetDateTime;
     use ulid::Ulid;
-    use wiff_core::SidebandHash;
     use wiff_core::record::{
         Anchor, Author, AuthorKind, CommentNumber, CommentTarget, Confidence, Description,
-        DiffVersionRecord, Disposition, FORMAT_VERSION, FileSummary, Seq, SessionHeader,
-        SourceKind, VersionNumber,
+        DiffVersionRecord, Disposition, FORMAT_VERSION, FileSummary, ScmSource, Seq, SessionHeader,
+        SourceKind, TipRule, VersionNumber,
     };
     use wiff_core::review::{ActorVerdict, CommentState, DescriptionState, ReviewState};
+    use wiff_core::{BaseRuleset, ScmType, SidebandHash};
     use wiff_diff::{FileStatus, LineNo, Side};
 
     fn ulid(text: &str) -> Ulid {
@@ -254,11 +254,17 @@ mod fixture {
                 project: "demo".to_string(),
                 repo_root: Some("/repos/demo".to_string()),
                 cwd: "/repos/demo".to_string(),
-                source: SourceKind::GitWorktree,
+                source: SourceKind::Scm(ScmSource {
+                    scm: ScmType::Git,
+                    base: BaseRuleset::new("ref(name(deadbeef))"),
+                    tip: TipRule::Worktree,
+                }),
             },
             versions: vec![DiffVersionRecord {
                 number: VersionNumber(0),
                 diff_hash: SidebandHash::of(b"main.rs"),
+                base_revision: None,
+                head_revision: None,
                 files: vec![FileSummary {
                     old_path: "main.rs".to_string(),
                     new_path: "main.rs".to_string(),

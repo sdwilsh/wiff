@@ -14,17 +14,23 @@ pub mod git;
 use async_trait::async_trait;
 
 use crate::error::Result;
-use crate::record::SourceKind;
+use crate::record::{RevisionId, SourceKind};
 
-pub use git::GitSource;
+pub use git::{GitRepo, GitSource};
 
-/// A diff captured from a source: its unified diff text and how it was obtained.
+/// A diff captured from a source, ready to record as a review's next version.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapturedDiff {
     /// The unified diff text.
     pub text: String,
     /// How the diff was obtained.
     pub source: SourceKind,
+    /// The base commit the diff was captured against, when the source has an
+    /// authoritative base.
+    pub base_revision: Option<RevisionId>,
+    /// The tip commit the diff was captured at, absent for a working-tree or
+    /// index capture whose tip is the uncommitted state.
+    pub head_revision: Option<RevisionId>,
 }
 
 /// A producer of unified diff text.

@@ -7,7 +7,10 @@
 //! needs the repository and belongs to each scm's source adapter, which this
 //! module deliberately leaves out.
 
+use serde::{Deserialize, Serialize};
+
 use crate::identity::ScmType;
+use crate::record::RevisionId;
 
 /// A parsed base ruleset: the ordered rules tried left to right until one
 /// resolves.
@@ -16,6 +19,104 @@ pub struct Ruleset {
     /// The rules, tried in order. A ruleset from [`parse_ruleset`] holds at
     /// least one, though the field itself does not enforce that.
     pub rules: Vec<Rule>,
+}
+
+impl Ruleset {
+    /// A ruleset of a single unguarded rule.
+    fn single(op: RuleOp) -> Self {
+        Self {
+            rules: vec![Rule { scm: None, op }],
+        }
+    }
+
+    /// The ruleset that pins a review at `revision`, resolving to the same commit
+    /// every refresh.
+    pub fn pinned(revision: &RevisionId) -> Self {
+        Self::single(RuleOp::Ref(Reference::Literal(revision.to_string())))
+    }
+
+    /// The ruleset that reviews the whole history back to the root.
+    pub fn empty() -> Self {
+        Self::single(RuleOp::Empty)
+    }
+}
+
+impl std::fmt::Display for Ruleset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (index, rule) in self.rules.iter().enumerate() {
+            if index > 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "{rule}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for Rule {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(scm) = self.scm {
+            write!(f, "{scm}:")?;
+        }
+        write!(f, "{}", self.op)
+    }
+}
+
+impl std::fmt::Display for RuleOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RuleOp::Ref(reference) => write!(f, "ref({reference})"),
+            RuleOp::Parent(reference) => write!(f, "parent({reference})"),
+            RuleOp::MergeBase(reference) => write!(f, "merge-base({reference})"),
+            RuleOp::Empty => f.write_str("empty"),
+            RuleOp::Native { scm, expr } => write!(f, "{scm}({expr})"),
+        }
+    }
+}
+
+impl std::fmt::Display for Reference {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Reference::Literal(name) => write!(f, "name({name})"),
+            Reference::Trunk => f.write_str("trunk"),
+            Reference::Upstream => f.write_str("upstream"),
+            Reference::Tip => f.write_str("@"),
+        }
+    }
+}
+
+/// The base-ruleset grammar text, as the user or config wrote it, parsed with
+/// [`parse_ruleset`] when a review's base is resolved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct BaseRuleset(pub String);
+
+impl BaseRuleset {
+    /// Build a ruleset from arbitrary grammar text.
+    pub fn new(text: impl Into<String>) -> Self {
+        Self(text.into())
+    }
+
+    /// The ruleset that pins a review at `revision`.
+    pub fn pinned(revision: &RevisionId) -> Self {
+        Self(Ruleset::pinned(revision).to_string())
+    }
+
+    /// The ruleset that reviews the whole history back to the root.
+    pub fn empty() -> Self {
+        Self(Ruleset::empty().to_string())
+    }
+
+    /// Returns the ruleset grammar as written.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for BaseRuleset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 /// One rule of a base ruleset, tried in turn until one resolves a base commit.
@@ -535,6 +636,24 @@ mod tests {
                 position: 9,
             })
         );
+    }
+
+    #[test]
+    fn rendering_a_ruleset_is_the_inverse_of_parsing_it() {
+        let text =
+            "git:ref(name(origin/main)), parent(@), merge-base(trunk), empty, jj(parents(@))";
+        let ruleset = parse_ruleset(text).expect("parse");
+        wince::assert_eq!(ruleset.to_string(), text.to_string());
+    }
+
+    #[test]
+    fn the_structured_constructors_render_to_parseable_grammar() {
+        let revision = RevisionId("9c1b453".to_string());
+        wince::assert_eq!(
+            Ruleset::pinned(&revision).to_string(),
+            "ref(name(9c1b453))".to_string()
+        );
+        wince::assert_eq!(Ruleset::empty().to_string(), "empty".to_string());
     }
 
     #[test]

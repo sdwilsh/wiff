@@ -37,14 +37,21 @@ fn identity() -> ProjectIdentity {
     }
 }
 
+/// A stdin capture of `text`, the one-shot source a refresh test replays.
+fn stdin_capture(text: &str) -> CapturedDiff {
+    CapturedDiff {
+        text: text.to_string(),
+        source: SourceKind::Stdin,
+        base_revision: None,
+        head_revision: None,
+    }
+}
+
 /// Create a session whose v0 is [`V0`] and attach a comment to line 3 (`gamma`)
 /// on the after side, returning the session and the comment's id.
 fn session_with_gamma_comment() -> (tempfile::TempDir, SessionLog, Ulid) {
     let base = tempfile::tempdir().unwrap();
-    let captured = CapturedDiff {
-        text: V0.to_string(),
-        source: SourceKind::Stdin,
-    };
+    let captured = stdin_capture(V0);
     let mut log = create_session(
         base.path(),
         &identity(),
@@ -164,7 +171,7 @@ new file mode 100644
 +gamma
 +delta
 ";
-    let outcome = refresh_session(&mut log, v1, author(), LockWait::Block).unwrap();
+    let outcome = refresh_session(&mut log, &stdin_capture(v1), author(), LockWait::Block).unwrap();
     wince::assert_eq!(
         outcome,
         Some(RefreshOutcome {
@@ -202,7 +209,7 @@ new file mode 100644
 +gamma is now different
 +delta
 ";
-    let outcome = refresh_session(&mut log, v1, author(), LockWait::Block).unwrap();
+    let outcome = refresh_session(&mut log, &stdin_capture(v1), author(), LockWait::Block).unwrap();
     wince::assert_eq!(
         outcome,
         Some(RefreshOutcome {
@@ -241,7 +248,7 @@ new file mode 100644
 +beta
 +delta
 ";
-    let outcome = refresh_session(&mut log, v1, author(), LockWait::Block).unwrap();
+    let outcome = refresh_session(&mut log, &stdin_capture(v1), author(), LockWait::Block).unwrap();
     wince::assert_eq!(
         outcome,
         Some(RefreshOutcome {
@@ -283,7 +290,7 @@ new file mode 100644
 +gamma
 +delta
 ";
-    let outcome = refresh_session(&mut log, v1, agent(), LockWait::Block).unwrap();
+    let outcome = refresh_session(&mut log, &stdin_capture(v1), agent(), LockWait::Block).unwrap();
     wince::assert_eq!(
         outcome,
         Some(RefreshOutcome {
@@ -339,7 +346,7 @@ new file mode 100644
 +gamma
 +delta
 ";
-    let outcome = refresh_session(&mut log, v1, author(), LockWait::Block).unwrap();
+    let outcome = refresh_session(&mut log, &stdin_capture(v1), author(), LockWait::Block).unwrap();
     // Only the parent line comment rebases; the reply is not counted.
     wince::assert_eq!(
         outcome,
@@ -385,7 +392,7 @@ new file mode 100644
 #[test]
 fn an_identical_diff_captures_nothing() {
     let (_base, mut log, id) = session_with_gamma_comment();
-    let outcome = refresh_session(&mut log, V0, author(), LockWait::Block).unwrap();
+    let outcome = refresh_session(&mut log, &stdin_capture(V0), author(), LockWait::Block).unwrap();
     wince::assert_eq!(outcome, None);
     // The comment stays anchored to v0, untouched.
     wince::assert_eq!(

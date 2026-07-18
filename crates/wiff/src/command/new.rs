@@ -84,6 +84,8 @@ impl NewArgs {
             return Ok(CapturedDiff {
                 text,
                 source: SourceKind::Stdin,
+                base_revision: None,
+                head_revision: None,
             });
         }
         let root = identity.repo_root.clone().context(

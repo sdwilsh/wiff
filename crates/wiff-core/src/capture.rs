@@ -13,8 +13,8 @@ use crate::error::{Error, Result};
 use crate::hash::SidebandHash;
 use crate::identity::ProjectIdentity;
 use crate::record::{
-    Author, Description, DiffVersionRecord, FORMAT_VERSION, FileSummary, RecordBody, Seq,
-    SessionHeader, VersionNumber,
+    Author, Description, DiffVersionRecord, FORMAT_VERSION, FileSummary, RecordBody, RevisionId,
+    Seq, SessionHeader, VersionNumber,
 };
 use crate::session::{SessionLock, SessionLog};
 use crate::source::CapturedDiff;
@@ -47,7 +47,14 @@ pub fn create_session(
             source,
         })
     })?;
-    write_diff_version(&mut log, &mut lock, VersionNumber(0), &captured.text)?;
+    write_diff_version(
+        &mut log,
+        &mut lock,
+        VersionNumber(0),
+        &captured.text,
+        captured.base_revision.clone(),
+        captured.head_revision.clone(),
+    )?;
     if let Some((author, description)) = description {
         log.append(
             &mut lock,
@@ -72,6 +79,8 @@ pub fn write_diff_version(
     lock: &mut SessionLock,
     number: VersionNumber,
     diff_text: &str,
+    base_revision: Option<RevisionId>,
+    head_revision: Option<RevisionId>,
 ) -> Result<Seq> {
     let diff = parse(diff_text)?;
     let dir = log.sideband_dir();
@@ -91,6 +100,8 @@ pub fn write_diff_version(
     let record = DiffVersionRecord {
         number,
         diff_hash: SidebandHash::of(diff_text.as_bytes()),
+        base_revision,
+        head_revision,
         files,
     };
     log.append(lock, RecordBody::DiffVersion(record))

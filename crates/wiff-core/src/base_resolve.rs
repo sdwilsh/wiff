@@ -54,7 +54,7 @@ pub trait RevisionResolver {
 pub async fn resolve_base(
     ruleset: &Ruleset,
     tip: &RevisionId,
-    resolver: &dyn RevisionResolver,
+    resolver: &(dyn RevisionResolver + Sync),
 ) -> Result<Option<RevisionId>> {
     for rule in &ruleset.rules {
         // A rule gated to another scm never applies here.
@@ -73,7 +73,7 @@ pub async fn resolve_base(
 async fn resolve_op(
     op: &RuleOp,
     tip: &RevisionId,
-    resolver: &dyn RevisionResolver,
+    resolver: &(dyn RevisionResolver + Sync),
 ) -> Result<Option<RevisionId>> {
     match op {
         RuleOp::Ref(reference) => resolve_reference(reference, tip, resolver).await,
@@ -103,7 +103,7 @@ async fn resolve_op(
 async fn resolve_reference(
     reference: &Reference,
     tip: &RevisionId,
-    resolver: &dyn RevisionResolver,
+    resolver: &(dyn RevisionResolver + Sync),
 ) -> Result<Option<RevisionId>> {
     match reference {
         Reference::Tip => Ok(Some(tip.clone())),

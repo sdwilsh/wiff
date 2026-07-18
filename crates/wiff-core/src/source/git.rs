@@ -10,10 +10,11 @@ use async_trait::async_trait;
 use tempfile::NamedTempFile;
 use tokio::io::AsyncWriteExt;
 
-use crate::base_resolve::RevisionResolver;
+use crate::base_resolve::{RevisionResolver, resolve_base};
+use crate::base_ruleset::{BaseRuleset, parse_ruleset};
 use crate::error::{Error, Result};
 use crate::identity::ScmType;
-use crate::record::{RevisionId, SourceKind};
+use crate::record::{RevisionId, ScmSource, SourceKind, TipRule};
 use crate::source::{CapturedDiff, DiffSource};
 
 /// The context wiff asks git for around each hunk. A large window means a hunk
@@ -38,83 +39,22 @@ struct GitEnv<'a> {
     real_objects: Option<&'a Path>,
 }
 
-/// Which slice of the repository a [`GitSource`] captures.
+/// Revision resolution and diff production against a git repository. Holds the
+/// git subprocess plumbing that both the base-ruleset resolver and a capture run
+/// through, so a [`GitSource`] and a bare resolution both speak to git the same
+/// way (a laundered process with no controlling terminal, an alternate index and
+/// object directory when a capture must write).
 #[derive(Debug, Clone)]
-enum Mode {
-    /// The uncommitted working copy (`git diff` plus intent-to-add untracked).
-    Worktree,
-    /// The index against `HEAD` (`git diff --cached`).
-    Index,
-    /// The changes a single revision introduces (`git show REF`).
-    Rev(String),
-}
-
-/// A git diff of a repository: the uncommitted working copy, the staged index
-/// against `HEAD`, or the changes a single revision introduces.
-#[derive(Debug, Clone)]
-pub struct GitSource {
+pub struct GitRepo {
     repo_root: PathBuf,
-    mode: Mode,
 }
 
-impl GitSource {
-    /// A source for the uncommitted working copy: every change against the
-    /// index, plus new-but-not-ignored files that a bare `git diff` would omit.
-    pub fn worktree(repo_root: impl Into<PathBuf>) -> Self {
+impl GitRepo {
+    /// A handle to the git repository rooted at `repo_root`.
+    pub fn new(repo_root: impl Into<PathBuf>) -> Self {
         Self {
             repo_root: repo_root.into(),
-            mode: Mode::Worktree,
         }
-    }
-
-    /// A source for the index against `HEAD` (`git diff --cached`).
-    pub fn index(repo_root: impl Into<PathBuf>) -> Self {
-        Self {
-            repo_root: repo_root.into(),
-            mode: Mode::Index,
-        }
-    }
-
-    /// A source for the changes `rev` introduces (`git show REF`).
-    pub fn rev(repo_root: impl Into<PathBuf>, rev: impl Into<String>) -> Self {
-        Self {
-            repo_root: repo_root.into(),
-            mode: Mode::Rev(rev.into()),
-        }
-    }
-
-    fn kind(&self) -> SourceKind {
-        match &self.mode {
-            Mode::Worktree => SourceKind::GitWorktree,
-            Mode::Index => SourceKind::GitIndex,
-            Mode::Rev(rev) => SourceKind::GitRev { rev: rev.clone() },
-        }
-    }
-
-    /// The full uncommitted working copy diff. To show untracked files as
-    /// additions without disturbing the real index, we seed a throwaway index
-    /// from it and record only the untracked, non-ignored files there as
-    /// intent-to-add; modifications and deletions still show because they are
-    /// never staged into the throwaway.
-    async fn capture_worktree(&self) -> Result<String> {
-        let index = self.seed_temp_index().await?;
-        // git add --intent-to-add writes an empty blob into the object database,
-        // which fails when .git is mounted read-only. Redirect object writes to a
-        // throwaway directory, keeping the repo's real objects readable as an
-        // alternate, so an untracked file still shows without touching the repo.
-        let scratch = tempfile::tempdir().map_err(|source| {
-            Error::Source(format!(
-                "could not create a temporary object directory: {source}"
-            ))
-        })?;
-        let real_objects = self.real_objects_path().await?;
-        let env = GitEnv {
-            index: Some(index.path()),
-            scratch_objects: Some(scratch.path()),
-            real_objects: Some(&real_objects),
-        };
-        self.add_untracked_files_to_temp_index(env).await?;
-        self.run_diff(env).await
     }
 
     /// Copy the repo's real index into a temporary file. A repository without an
@@ -198,34 +138,17 @@ impl GitSource {
         Ok(())
     }
 
-    /// Run `git diff` with expanded context, optionally against an alternate
-    /// index, returning its text.
-    async fn run_diff(&self, env: GitEnv<'_>) -> Result<String> {
+    /// Run `git diff` with expanded context and the given trailing arguments
+    /// (the base, and for a two-commit diff the tip), under `env`.
+    async fn diff(&self, trailing: &[OsString], env: GitEnv<'_>) -> Result<String> {
         let mut args: Vec<OsString> = vec![
             "diff".into(),
             format!("--unified={GIT_CONTEXT_LINES}").into(),
         ];
-        if matches!(self.mode, Mode::Index) {
-            args.push("--cached".into());
-        }
+        args.extend_from_slice(trailing);
         let output = self.git(args, env).await?;
         String::from_utf8(output.stdout)
             .map_err(|source| Error::Source(format!("git diff was not valid UTF-8: {source}")))
-    }
-
-    /// The patch a single revision introduces (`git show REF`).
-    async fn capture_rev(&self, rev: &str) -> Result<String> {
-        // An empty --format= suppresses the commit log, so the sideband holds
-        // only the diff.
-        let args: [OsString; 4] = [
-            "show".into(),
-            "--format=".into(),
-            format!("--unified={GIT_CONTEXT_LINES}").into(),
-            rev.into(),
-        ];
-        let output = self.git(args, GitEnv::default()).await?;
-        String::from_utf8(output.stdout)
-            .map_err(|source| Error::Source(format!("git show was not valid UTF-8: {source}")))
     }
 
     /// Run a git subcommand under the repo and return its output on success.
@@ -344,7 +267,7 @@ impl GitSource {
 }
 
 #[async_trait]
-impl RevisionResolver for GitSource {
+impl RevisionResolver for GitRepo {
     fn scm(&self) -> ScmType {
         ScmType::Git
     }
@@ -417,17 +340,157 @@ impl RevisionResolver for GitSource {
     }
 }
 
+/// A git diff of a reviewed range: a base ruleset and a tip rule that resolve to
+/// concrete commits, then diffed. A working-tree or index tip diffs the resolved
+/// base against the uncommitted state; a ref or pinned tip diffs the base against
+/// the resolved tip commit.
+#[derive(Debug, Clone)]
+pub struct GitSource {
+    repo: GitRepo,
+    base: BaseRuleset,
+    tip: TipRule,
+}
+
+impl GitSource {
+    /// A source reviewing the uncommitted working copy against `base`.
+    pub fn worktree(repo_root: impl Into<PathBuf>, base: BaseRuleset) -> Self {
+        Self {
+            repo: GitRepo::new(repo_root),
+            base,
+            tip: TipRule::Worktree,
+        }
+    }
+
+    /// A source reviewing the staged index against `base` (`git diff --cached`).
+    pub fn index(repo_root: impl Into<PathBuf>, base: BaseRuleset) -> Self {
+        Self {
+            repo: GitRepo::new(repo_root),
+            base,
+            tip: TipRule::Index,
+        }
+    }
+
+    /// A source reviewing `base` against the commit a ref or pinned `tip`
+    /// resolves to.
+    pub fn revision(repo_root: impl Into<PathBuf>, base: BaseRuleset, tip: TipRule) -> Self {
+        Self {
+            repo: GitRepo::new(repo_root),
+            base,
+            tip,
+        }
+    }
+
+    /// The base ruleset that pins a review at the repository's current commit, or
+    /// the empty tree when HEAD is unborn (a repository with no commits yet).
+    pub async fn pinned_base_at_head(repo_root: impl Into<PathBuf>) -> Result<BaseRuleset> {
+        let repo = GitRepo::new(repo_root);
+        Ok(match repo.resolve_ref("HEAD").await? {
+            Some(head) => BaseRuleset::pinned(&head),
+            None => BaseRuleset::empty(),
+        })
+    }
+
+    /// Resolve the tip rule to the commit the base ruleset resolves against. A
+    /// working-tree or index tip sits on the current commit, or the empty tree
+    /// when HEAD is unborn.
+    async fn resolve_tip(&self) -> Result<RevisionId> {
+        match &self.tip {
+            TipRule::Worktree | TipRule::Index => {
+                match self.repo.resolve_ref("HEAD").await? {
+                    Some(head) => Ok(head),
+                    None => self.repo.empty().await?.ok_or_else(|| {
+                        Error::Source("git could not name the empty tree".to_string())
+                    }),
+                }
+            }
+            TipRule::Ref { name } => self.repo.resolve_ref(name).await?.ok_or_else(|| {
+                Error::Source(format!("revision '{name}' did not resolve to a commit"))
+            }),
+            TipRule::Pinned { revision } => self
+                .repo
+                .resolve_commit(revision.as_str())
+                .await?
+                .ok_or_else(|| {
+                    Error::Source(format!("revision '{revision}' did not resolve to a commit"))
+                }),
+            TipRule::ChangeId { id } => Err(Error::Source(format!(
+                "a change-id tip ({id}) is not supported under git"
+            ))),
+        }
+    }
+
+    /// The uncommitted working copy diffed against `base`. To show untracked
+    /// files as additions without disturbing the real index, we seed a throwaway
+    /// index and record only the untracked, non-ignored files there as
+    /// intent-to-add; modifications and deletions still show because they are
+    /// never staged into the throwaway.
+    async fn capture_worktree(&self, base: &RevisionId) -> Result<String> {
+        let index = self.repo.seed_temp_index().await?;
+        // git add --intent-to-add writes an empty blob into the object database,
+        // which fails when .git is mounted read-only. Redirect object writes to a
+        // throwaway directory, keeping the repo's real objects readable as an
+        // alternate, so an untracked file still shows without touching the repo.
+        let scratch = tempfile::tempdir().map_err(|source| {
+            Error::Source(format!(
+                "could not create a temporary object directory: {source}"
+            ))
+        })?;
+        let real_objects = self.repo.real_objects_path().await?;
+        let env = GitEnv {
+            index: Some(index.path()),
+            scratch_objects: Some(scratch.path()),
+            real_objects: Some(&real_objects),
+        };
+        self.repo.add_untracked_files_to_temp_index(env).await?;
+        self.repo.diff(&[base.as_str().into()], env).await
+    }
+}
+
 #[async_trait]
 impl DiffSource for GitSource {
     async fn capture(&self) -> Result<CapturedDiff> {
-        let text = match &self.mode {
-            Mode::Worktree => self.capture_worktree().await?,
-            Mode::Index => self.run_diff(GitEnv::default()).await?,
-            Mode::Rev(rev) => self.capture_rev(rev).await?,
+        let ruleset = parse_ruleset(self.base.as_str())?;
+        let tip = self.resolve_tip().await?;
+        let base = resolve_base(&ruleset, &tip, &self.repo)
+            .await?
+            .ok_or_else(|| {
+                Error::Source(format!(
+                    "base ruleset '{}' did not resolve to any commit",
+                    self.base
+                ))
+            })?;
+        let (text, head_revision) = match &self.tip {
+            TipRule::Worktree => (self.capture_worktree(&base).await?, None),
+            TipRule::Index => (
+                self.repo
+                    .diff(
+                        &["--cached".into(), base.as_str().into()],
+                        GitEnv::default(),
+                    )
+                    .await?,
+                None,
+            ),
+            // Any committed tip resolves to a commit and is diffed against the
+            // base; resolve_tip has already rejected a change-id tip under git.
+            _ => (
+                self.repo
+                    .diff(
+                        &[base.as_str().into(), tip.as_str().into()],
+                        GitEnv::default(),
+                    )
+                    .await?,
+                Some(tip.clone()),
+            ),
         };
         Ok(CapturedDiff {
             text,
-            source: self.kind(),
+            source: SourceKind::Scm(ScmSource {
+                scm: ScmType::Git,
+                base: self.base.clone(),
+                tip: self.tip.clone(),
+            }),
+            base_revision: Some(base),
+            head_revision,
         })
     }
 }
@@ -437,10 +500,11 @@ mod tests {
     use std::path::Path;
     use std::process::{Command, Output};
 
-    use super::GitSource;
+    use super::{GitRepo, GitSource};
     use crate::base_resolve::{RevisionResolver, resolve_base};
-    use crate::base_ruleset::parse_ruleset;
-    use crate::record::{RevisionId, SourceKind};
+    use crate::base_ruleset::{BaseRuleset, parse_ruleset};
+    use crate::identity::ScmType;
+    use crate::record::{RevisionId, ScmSource, SourceKind, TipRule};
     use crate::source::DiffSource;
 
     /// Run `git` with `args` in `repo` under a laundered environment so neither
@@ -506,10 +570,26 @@ mod tests {
         git(repo.path(), home.path(), &["add", "f.txt"]);
         git(repo.path(), home.path(), &["commit", "-q", "-m", "add f"]);
 
-        let captured = GitSource::rev(repo.path(), "HEAD")
-            .capture()
-            .await
-            .expect("capture");
+        let head = RevisionId(git_out(repo.path(), home.path(), &["rev-parse", "HEAD"]));
+        let empty_tree = RevisionId(git_out(
+            repo.path(),
+            home.path(),
+            &["hash-object", "-t", "tree", "/dev/null"],
+        ));
+
+        // A ref tip against a parent(@) base: for a root commit the parent falls
+        // back to the empty tree, so the diff is the whole commit, as git show
+        // gave before.
+        let captured = GitSource::revision(
+            repo.path(),
+            BaseRuleset::new("parent(@)"),
+            TipRule::Ref {
+                name: "HEAD".to_string(),
+            },
+        )
+        .capture()
+        .await
+        .expect("capture");
         let expected = "\
 diff --git a/f.txt b/f.txt
 new file mode 100644
@@ -522,9 +602,119 @@ index HASHES
         wince::assert_eq!(stable(&captured.text), expected.to_string());
         wince::assert_eq!(
             captured.source,
-            SourceKind::GitRev {
-                rev: "HEAD".to_string()
-            }
+            SourceKind::Scm(ScmSource {
+                scm: ScmType::Git,
+                base: BaseRuleset::new("parent(@)"),
+                tip: TipRule::Ref {
+                    name: "HEAD".to_string()
+                },
+            })
+        );
+        wince::assert_eq!(captured.base_revision, Some(empty_tree));
+        wince::assert_eq!(captured.head_revision, Some(head));
+    }
+
+    #[tokio::test]
+    async fn a_merge_revision_shows_its_first_parent_net_change() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        git(repo.path(), home.path(), &["init", "-q"]);
+        std::fs::write(repo.path().join("main.txt"), "base\n").expect("write");
+        git(repo.path(), home.path(), &["add", "main.txt"]);
+        git(repo.path(), home.path(), &["commit", "-q", "-m", "base"]);
+        let mainline = git_out(
+            repo.path(),
+            home.path(),
+            &["rev-parse", "--abbrev-ref", "HEAD"],
+        );
+
+        // A feature branch adds its own file, while the mainline advances
+        // independently, so the merge has genuinely divergent parents.
+        git(repo.path(), home.path(), &["switch", "-q", "-c", "feature"]);
+        std::fs::write(repo.path().join("feature.txt"), "feat\n").expect("write");
+        git(repo.path(), home.path(), &["add", "feature.txt"]);
+        git(
+            repo.path(),
+            home.path(),
+            &["commit", "-q", "-m", "add feature"],
+        );
+        git(repo.path(), home.path(), &["switch", "-q", &mainline]);
+        std::fs::write(repo.path().join("main2.txt"), "mainline\n").expect("write");
+        git(repo.path(), home.path(), &["add", "main2.txt"]);
+        git(
+            repo.path(),
+            home.path(),
+            &["commit", "-q", "-m", "advance mainline"],
+        );
+        git(
+            repo.path(),
+            home.path(),
+            &["merge", "-q", "--no-ff", "-m", "merge feature", "feature"],
+        );
+
+        let head = RevisionId(git_out(repo.path(), home.path(), &["rev-parse", "HEAD"]));
+        let first_parent = RevisionId(git_out(repo.path(), home.path(), &["rev-parse", "HEAD^1"]));
+
+        let captured = GitSource::revision(
+            repo.path(),
+            BaseRuleset::new("parent(@)"),
+            TipRule::Ref {
+                name: "HEAD".to_string(),
+            },
+        )
+        .capture()
+        .await
+        .expect("capture");
+        // The net change the merge brought onto the mainline is the feature
+        // branch's file; git show's combined diff of this clean merge is empty.
+        let expected = "\
+diff --git a/feature.txt b/feature.txt
+new file mode 100644
+index HASHES
+--- /dev/null
++++ b/feature.txt
+@@ -0,0 +1 @@
++feat";
+        wince::assert_eq!(stable(&captured.text), expected.to_string());
+        wince::assert_eq!(
+            captured.source,
+            SourceKind::Scm(ScmSource {
+                scm: ScmType::Git,
+                base: BaseRuleset::new("parent(@)"),
+                tip: TipRule::Ref {
+                    name: "HEAD".to_string()
+                },
+            })
+        );
+        wince::assert_eq!(captured.base_revision, Some(first_parent));
+        wince::assert_eq!(captured.head_revision, Some(head));
+    }
+
+    #[tokio::test]
+    async fn a_pinned_tip_that_no_longer_resolves_is_reported() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        git(repo.path(), home.path(), &["init", "-q"]);
+        std::fs::write(repo.path().join("f.txt"), "alpha\n").expect("write");
+        git(repo.path(), home.path(), &["add", "f.txt"]);
+        git(repo.path(), home.path(), &["commit", "-q", "-m", "add f"]);
+
+        // A well-formed object name that names no commit, as a gc'd or
+        // rewritten-away pin would: resolve_tip must reject it with the same
+        // diagnostic a missing ref gives, not pass it down to git diff.
+        let gone = RevisionId("0000000000000000000000000000000000000000".to_string());
+        let result = GitSource::revision(
+            repo.path(),
+            BaseRuleset::empty(),
+            TipRule::Pinned { revision: gone },
+        )
+        .capture()
+        .await;
+        wince::assert_eq!(
+            result.expect_err("pin gone").to_string(),
+            "could not capture diff: revision '0000000000000000000000000000000000000000' did not \
+             resolve to a commit"
+                .to_string()
         );
     }
 
@@ -546,11 +736,18 @@ index HASHES
         std::fs::write(repo.path().join("tracked.txt"), "one\ntwo\n").expect("write");
         std::fs::write(repo.path().join("fresh.txt"), "new\n").expect("write");
 
+        // Pin the base at the current commit before the capture, matching a
+        // default `wiff new`.
+        let head = RevisionId(git_out(repo.path(), home.path(), &["rev-parse", "HEAD"]));
+        let base = BaseRuleset::pinned(&head);
+
         // Strip every write bit from .git to mimic a read-only mount, capture,
         // then restore so the tempdir can be cleaned up.
         let git_dir = repo.path().join(".git");
         set_readonly_recursively(&git_dir, true);
-        let result = GitSource::worktree(repo.path()).capture().await;
+        let result = GitSource::worktree(repo.path(), base.clone())
+            .capture()
+            .await;
         set_readonly_recursively(&git_dir, false);
         let captured = result.expect("capture");
 
@@ -570,7 +767,16 @@ index HASHES
  one
 +two";
         wince::assert_eq!(stable(&captured.text), expected.to_string());
-        wince::assert_eq!(captured.source, SourceKind::GitWorktree);
+        wince::assert_eq!(
+            captured.source,
+            SourceKind::Scm(ScmSource {
+                scm: ScmType::Git,
+                base,
+                tip: TipRule::Worktree,
+            })
+        );
+        wince::assert_eq!(captured.base_revision, Some(head));
+        wince::assert_eq!(captured.head_revision, None);
     }
 
     /// Toggle the read-only bit on every file and directory under `root`
@@ -591,12 +797,12 @@ index HASHES
     }
 
     /// A repository with two commits on `main` and a third on a `feature`
-    /// branch forked from the first, returning the source and the commit ids
+    /// branch forked from the first, returning a repo handle and the commit ids
     /// (first, second, feature tip) for a resolver test to assert against.
     fn forked_repo(
         repo: &tempfile::TempDir,
         home: &tempfile::TempDir,
-    ) -> (GitSource, RevisionId, RevisionId, RevisionId) {
+    ) -> (GitRepo, RevisionId, RevisionId, RevisionId) {
         let (r, h) = (repo.path(), home.path());
         git(r, h, &["init", "-q", "-b", "main"]);
         std::fs::write(r.join("f.txt"), "a\n").expect("write");
@@ -611,7 +817,7 @@ index HASHES
         git(r, h, &["add", "g.txt"]);
         git(r, h, &["commit", "-q", "-m", "feature work"]);
         let feature = RevisionId(git_out(r, h, &["rev-parse", "HEAD"]));
-        (GitSource::worktree(r), first, second, feature)
+        (GitRepo::new(r), first, second, feature)
     }
 
     #[tokio::test]
@@ -724,7 +930,7 @@ index HASHES
         git(r, h, &["commit", "-q", "-m", "root"]);
         let root = RevisionId(git_out(r, h, &["rev-parse", "HEAD"]));
         let empty = git_out(r, h, &["hash-object", "-t", "tree", "/dev/null"]);
-        let source = GitSource::worktree(r);
+        let source = GitRepo::new(r);
         wince::assert_eq!(
             source.parent(&root).await.expect("parent"),
             Some(RevisionId(empty))

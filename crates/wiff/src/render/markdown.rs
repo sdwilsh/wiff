@@ -16,7 +16,7 @@ pub(super) fn render(state: &ReviewState) -> String {
     let mut out = String::new();
     out.push_str(&format!("# Review {}\n\n", state.session.ulid));
     out.push_str(&format!("- project: {}\n", state.session.project));
-    out.push_str(&format!("- source: {}\n", state.session.source.as_str()));
+    out.push_str(&format!("- source: {}\n", state.session.source.describe()));
     match state.latest_version() {
         Some(version) => out.push_str(&format!(
             "- version: v{} ({} file{})\n",
@@ -281,7 +281,7 @@ mod tests {
             "# Review 00000000000000000000000000\n",
             "\n",
             "- project: demo\n",
-            "- source: git_worktree\n",
+            "- source: git worktree\n",
             "- version: v0 (1 file)\n",
             "\n",
             "## Description\n",

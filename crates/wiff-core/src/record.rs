@@ -12,12 +12,14 @@ use time::OffsetDateTime;
 use ulid::Ulid;
 use wiff_diff::{FileStatus, LineNo, Side};
 
+use crate::base_ruleset::BaseRuleset;
 use crate::hash::SidebandHash;
+use crate::identity::ScmType;
 
 /// The session format version, bumped when the record schema changes
 /// incompatibly. A log whose header version differs from this, older or newer,
 /// is refused rather than misread.
-pub const FORMAT_VERSION: u32 = 3;
+pub const FORMAT_VERSION: u32 = 4;
 
 /// A record's 0-based position in its session log and its stable id within the
 /// session. The same integer is a comment's `created_seq`/`updated_seq` and the
@@ -150,6 +152,27 @@ impl std::fmt::Display for RevisionId {
     }
 }
 
+/// A first-class change in an scm that has the concept, in that scm's own change
+/// addressing, read and handed back verbatim. Distinct from a [`RevisionId`]: a
+/// change survives the rewrites (amend, rebase) that give it a new commit, so it
+/// names the moving change rather than one of its commits.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ChangeId(pub String);
+
+impl ChangeId {
+    /// Returns the change text as the scm named it.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ChangeId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// One line of a session log.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Record {
@@ -210,35 +233,84 @@ pub struct SessionHeader {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SourceKind {
-    /// `git diff` of the working tree against the index.
-    GitWorktree,
-    /// `git diff --cached` of the index against HEAD.
-    GitIndex,
-    /// `git show REF`: the changes a single revision introduces.
-    GitRev {
-        /// The revision to show, as the user named it (a ref, a sha, or `HEAD`).
-        rev: String,
-    },
-    /// A unified diff read from stdin; not regenerable.
+    /// A diff captured from a source-control system: a base and a tip rule,
+    /// re-resolved against the repository on every refresh.
+    Scm(ScmSource),
+    /// A unified diff read from stdin.
     Stdin,
+    /// A diff fetched from a forge pull request.
+    Forge,
 }
 
 impl SourceKind {
     /// Whether a new diff version can be captured for this source.
     pub fn regenerable(&self) -> bool {
         match self {
-            SourceKind::GitWorktree | SourceKind::GitIndex | SourceKind::GitRev { .. } => true,
-            SourceKind::Stdin => false,
+            SourceKind::Scm(_) => true,
+            // A stdin diff is a one-shot snapshot, and forge recapture is not
+            // yet wired.
+            SourceKind::Stdin | SourceKind::Forge => false,
         }
     }
 
-    /// The stable identifier for this source, matching its serialized form.
-    pub fn as_str(&self) -> &'static str {
+    /// A short human-facing description of the source.
+    pub fn describe(&self) -> String {
         match self {
-            SourceKind::GitWorktree => "git_worktree",
-            SourceKind::GitIndex => "git_index",
-            SourceKind::GitRev { .. } => "git_rev",
-            SourceKind::Stdin => "stdin",
+            SourceKind::Scm(source) => format!("{} {}", source.scm, source.tip.describe()),
+            SourceKind::Stdin => "stdin".to_string(),
+            SourceKind::Forge => "forge".to_string(),
+        }
+    }
+}
+
+/// A source-control range to review: the scm it lives in, and the base and tip
+/// rules that re-resolve to concrete commits on every refresh.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScmSource {
+    /// The source-control system the range is resolved against.
+    pub scm: ScmType,
+    /// How the base of the reviewed range is resolved, re-evaluated each
+    /// refresh.
+    pub base: BaseRuleset,
+    /// How the tip of the reviewed range is resolved.
+    pub tip: TipRule,
+}
+
+/// How refresh re-resolves the tip of a reviewed range.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "rule", rename_all = "snake_case")]
+pub enum TipRule {
+    /// The uncommitted working copy.
+    Worktree,
+    /// The staged index against its base. Git-specific.
+    Index,
+    /// A named branch or bookmark, re-resolved every refresh.
+    Ref {
+        /// The ref name to resolve.
+        name: String,
+    },
+    /// A first-class change in an scm that has the concept, resolved to its
+    /// current commit each refresh through that scm's native change addressing.
+    ChangeId {
+        /// The change to track.
+        id: ChangeId,
+    },
+    /// A fixed revision that neither follows a ref nor tracks a change; it
+    /// resolves to the same commit until that commit no longer exists.
+    Pinned {
+        /// The revision held under review.
+        revision: RevisionId,
+    },
+}
+
+impl TipRule {
+    /// A one-word name for the tip, distinguishing the kinds of scm review in a
+    /// listing or header.
+    pub fn describe(&self) -> &'static str {
+        match self {
+            TipRule::Worktree => "worktree",
+            TipRule::Index => "index",
+            TipRule::Ref { .. } | TipRule::ChangeId { .. } | TipRule::Pinned { .. } => "revision",
         }
     }
 }
@@ -251,6 +323,15 @@ pub struct DiffVersionRecord {
     pub number: VersionNumber,
     /// The hash of the sideband diff text.
     pub diff_hash: SidebandHash,
+    /// The base commit this version was captured against, when the source has an
+    /// authoritative base.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_revision: Option<RevisionId>,
+    /// The tip commit this version was captured at, when the source has an
+    /// authoritative tip. Absent for a working-tree or index capture, whose tip
+    /// is the uncommitted state rather than a commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_revision: Option<RevisionId>,
     /// A per-file index of the captured diff.
     pub files: Vec<FileSummary>,
 }
@@ -654,16 +735,24 @@ mod tests {
     }
 
     #[test]
-    fn a_revision_source_round_trips_through_json() {
-        let source = SourceKind::GitRev {
-            rev: "HEAD".to_string(),
-        };
+    fn an_scm_source_round_trips_through_json() {
+        let source = SourceKind::Scm(ScmSource {
+            scm: ScmType::Git,
+            base: BaseRuleset::new("parent(@)"),
+            tip: TipRule::Ref {
+                name: "HEAD".to_string(),
+            },
+        });
         let json = serde_json::to_string(&source).expect("serialize");
-        wince::assert_eq!(json, r#"{"kind":"git_rev","rev":"HEAD"}"#.to_string());
+        wince::assert_eq!(
+            json,
+            r#"{"kind":"scm","scm":"git","base":"parent(@)","tip":{"rule":"ref","name":"HEAD"}}"#
+                .to_string()
+        );
         let back: SourceKind = serde_json::from_str(&json).expect("deserialize");
         wince::assert_eq!(back, source);
         wince::assert_eq!(source.regenerable(), true);
-        wince::assert_eq!(source.as_str(), "git_rev");
+        wince::assert_eq!(source.describe(), "git revision".to_string());
     }
 
     #[test]

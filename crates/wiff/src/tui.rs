@@ -13,7 +13,7 @@ use wiff_core::record::{
 };
 use wiff_core::session::{SessionWatcher, read_records, remove_session};
 use wiff_core::{
-    AnchorFailures, LockWait, RefreshOutcome, ReviewState, SessionLog, SidebandHash,
+    AnchorFailures, CapturedDiff, LockWait, RefreshOutcome, ReviewState, SessionLog, SidebandHash,
     capture_draft_anchors, compare_versions, refresh_session,
 };
 use wiff_tui::{
@@ -178,9 +178,9 @@ fn refresh_in_place(
     let viewing = app.comparing_from();
     let state = ReviewState::load(session_path)?;
     let prior_latest = state.latest_version().map(|v| v.number.get());
-    let diff_text = recapture(&state.session)?;
+    let captured = recapture(&state.session)?;
     let mut log = SessionLog::open(session_path)?;
-    let outcome = match refresh_session(&mut log, &diff_text, author.clone(), LockWait::NonBlock)? {
+    let outcome = match refresh_session(&mut log, &captured, author.clone(), LockWait::NonBlock)? {
         Some(outcome) => outcome,
         None => {
             let current = prior_latest.unwrap_or(0);
@@ -320,19 +320,19 @@ fn source_changed(state: &ReviewState) -> bool {
     let recaptured = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(recapture_diff(&state.session))
     });
-    matches!(recaptured, Ok(Some(text)) if SidebandHash::of(text.as_bytes()) != latest.diff_hash)
+    matches!(recaptured, Ok(Some(captured)) if SidebandHash::of(captured.text.as_bytes()) != latest.diff_hash)
 }
 
 /// Recapture the diff from the session's original source. A stdin source cannot
 /// be reread inside the TUI, since stdin is now the terminal, so it is directed
 /// to the `wiff refresh` command instead.
-fn recapture(header: &SessionHeader) -> anyhow::Result<String> {
+fn recapture(header: &SessionHeader) -> anyhow::Result<CapturedDiff> {
     // The event loop runs on a tokio worker, so block on the async recapture
     // without standing up a nested runtime.
-    let text = tokio::task::block_in_place(|| {
+    let captured = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(recapture_diff(header))
     })?;
-    text.context(
+    captured.context(
         "this session's diff came from stdin; refresh it with `wiff refresh` and a new piped diff",
     )
 }
@@ -471,7 +471,7 @@ mod tests {
             project: "demo".to_string(),
             repo_root: Some("/repos/demo".to_string()),
             cwd: "/repos/demo".to_string(),
-            source: SourceKind::GitWorktree,
+            source: SourceKind::Stdin,
         })
     }
 
@@ -895,6 +895,8 @@ new file mode 100644
 "
             .to_string(),
             source: SourceKind::Stdin,
+            base_revision: None,
+            head_revision: None,
         };
         let log = create_session(data.path(), &identity, data.path(), &captured, None)
             .expect("create session");
@@ -929,7 +931,9 @@ new file mode 100644
 +delta
 "
             .to_string(),
-            source: SourceKind::GitWorktree,
+            source: SourceKind::Stdin,
+            base_revision: None,
+            head_revision: None,
         };
         let log = create_session(data.path(), &identity, data.path(), &captured, None)
             .expect("create session");
@@ -1039,7 +1043,9 @@ new file mode 100644
 +delta
 "
             .to_string(),
-            source: SourceKind::GitWorktree,
+            source: SourceKind::Stdin,
+            base_revision: None,
+            head_revision: None,
         };
         let log = create_session(data.path(), &identity, data.path(), &captured, None)
             .expect("create session");
@@ -1215,7 +1221,7 @@ new file mode 100644
             "# Review SESSION\n",
             "\n",
             "- project: demo\n",
-            "- source: git_worktree\n",
+            "- source: git worktree\n",
             "- version: v0 (1 file)\n",
             "\n",
             "## Comments\n",
@@ -1324,7 +1330,7 @@ new file mode 100644
             "# Review SESSION\n",
             "\n",
             "- project: demo\n",
-            "- source: git_worktree\n",
+            "- source: git worktree\n",
             "- version: v1 (1 file)\n",
             "\n",
             "## Comments\n",

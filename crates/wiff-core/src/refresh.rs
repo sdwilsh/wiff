@@ -20,6 +20,7 @@ use crate::rebase::rebase_line_comment;
 use crate::record::{Author, CommentReanchor, Confidence, VersionNumber};
 use crate::review::fold;
 use crate::session::{LockWait, SessionLog};
+use crate::source::CapturedDiff;
 
 /// A tally of a refresh: the version it captured and how its comments fared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -37,25 +38,32 @@ pub struct RefreshOutcome {
     pub outdated: usize,
 }
 
-/// Capture `new_diff_text` as the session's next diff version and rebase its
-/// comments onto it. Returns `None` when the diff is identical to the current
-/// version, so nothing is captured.
+/// Capture `captured` as the session's next diff version and rebase its comments
+/// onto it. Returns `None` when the diff is identical to the current version, so
+/// nothing is captured.
 pub fn refresh_session(
     log: &mut SessionLog,
-    new_diff_text: &str,
+    captured: &CapturedDiff,
     author: Author,
     wait: LockWait,
 ) -> Result<Option<RefreshOutcome>> {
     let (mut lock, records) = log.lock_and_sync(wait)?;
     let state = fold(&records)?;
     let latest = state.latest_version().ok_or(Error::NoDiffVersion)?;
-    if latest.diff_hash == SidebandHash::of(new_diff_text.as_bytes()) {
+    if latest.diff_hash == SidebandHash::of(captured.text.as_bytes()) {
         return Ok(None);
     }
     let number = latest.number.next();
-    let new_diff = parse(new_diff_text)?;
+    let new_diff = parse(&captured.text)?;
 
-    write_diff_version(log, &mut lock, number, new_diff_text)?;
+    write_diff_version(
+        log,
+        &mut lock,
+        number,
+        &captured.text,
+        captured.base_revision.clone(),
+        captured.head_revision.clone(),
+    )?;
 
     // Comments authored against the same version share a parsed old diff.
     let mut old_diffs: HashMap<VersionNumber, Diff> = HashMap::new();

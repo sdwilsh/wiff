@@ -19,7 +19,7 @@ pub(super) fn render(state: &ReviewState) -> anyhow::Result<String> {
             project: &state.session.project,
             repo_root: state.session.repo_root.as_deref(),
             cwd: &state.session.cwd,
-            source: state.session.source.as_str(),
+            source: state.session.source.describe(),
         },
         files: latest_files(state),
         description: state.description.as_ref(),
@@ -50,7 +50,7 @@ struct JsonSession<'a> {
     project: &'a str,
     repo_root: Option<&'a str>,
     cwd: &'a str,
-    source: &'static str,
+    source: String,
 }
 
 #[cfg(test)]
@@ -71,7 +71,7 @@ mod tests {
                 "project": "demo",
                 "repo_root": "/repos/demo",
                 "cwd": "/repos/demo",
-                "source": "git_worktree"
+                "source": "git worktree"
             },
             "files": [
                 {

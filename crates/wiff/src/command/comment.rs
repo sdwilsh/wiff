@@ -400,6 +400,8 @@ diff --git a/f.txt b/f.txt
         let captured = CapturedDiff {
             text: DIFF.to_string(),
             source: SourceKind::Stdin,
+            base_revision: None,
+            head_revision: None,
         };
         let identity = ProjectIdentity {
             canonical: "demo".to_string(),

@@ -154,7 +154,7 @@ fn render_list(groups: &[(String, Vec<SessionRow>)], show_projects: bool) -> Str
             out.push_str(&format!(
                 "{indent}{marker} {}  {}  {} comment{}, {} open\n",
                 row.ulid,
-                row.source.as_str(),
+                row.source.describe(),
                 row.comments,
                 if row.comments == 1 { "" } else { "s" },
                 row.open,
@@ -168,7 +168,17 @@ fn render_list(groups: &[(String, Vec<SessionRow>)], show_projects: bool) -> Str
 mod tests {
     use super::{SessionRow, render_list};
     use ulid::Ulid;
-    use wiff_core::record::SourceKind;
+    use wiff_core::record::{ScmSource, SourceKind, TipRule};
+    use wiff_core::{BaseRuleset, ScmType};
+
+    /// A git working-tree source, the common case a listing row shows.
+    fn worktree_source() -> SourceKind {
+        SourceKind::Scm(ScmSource {
+            scm: ScmType::Git,
+            base: BaseRuleset::new("ref(name(deadbeef))"),
+            tip: TipRule::Worktree,
+        })
+    }
 
     fn ulid(text: &str) -> Ulid {
         Ulid::from_string(text).unwrap()
@@ -181,7 +191,7 @@ mod tests {
             vec![
                 SessionRow {
                     ulid: ulid("00000000000000000000000001"),
-                    source: SourceKind::GitWorktree,
+                    source: worktree_source(),
                     active: true,
                     comments: 3,
                     open: 1,
@@ -197,7 +207,7 @@ mod tests {
         )];
         let out = render_list(&groups, false);
         let expected = "\
-* 00000000000000000000000001  git_worktree  3 comments, 1 open
+* 00000000000000000000000001  git worktree  3 comments, 1 open
   00000000000000000000000002  stdin  0 comments, 0 open
 ";
         wince::assert_eq!(out, expected.to_string());
@@ -210,7 +220,7 @@ mod tests {
                 "demo".to_string(),
                 vec![SessionRow {
                     ulid: ulid("00000000000000000000000001"),
-                    source: SourceKind::GitWorktree,
+                    source: worktree_source(),
                     active: true,
                     comments: 1,
                     open: 0,
@@ -230,7 +240,7 @@ mod tests {
         let out = render_list(&groups, true);
         let expected = "\
 demo
-  * 00000000000000000000000001  git_worktree  1 comment, 0 open
+  * 00000000000000000000000001  git worktree  1 comment, 0 open
 other
     00000000000000000000000002  stdin  2 comments, 2 open
 ";

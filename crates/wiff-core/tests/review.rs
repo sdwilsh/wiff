@@ -9,10 +9,10 @@ use wiff_core::record::{
     Anchor, Author, AuthorKind, CommentCreate, CommentEvent, CommentEventKind, CommentNumber,
     CommentReanchor, CommentRef, CommentTarget, Confidence, Description, DescriptionRecord,
     DiffVersionRecord, Disposition, ExternalKind, ExternalRef, FORMAT_VERSION, FileSummary,
-    ForgeId, Record, RecordBody, Seq, SessionHeader, SourceKind, VersionNumber,
+    ForgeId, Record, RecordBody, ScmSource, Seq, SessionHeader, SourceKind, TipRule, VersionNumber,
 };
 use wiff_core::review::{ActorVerdict, CommentState, DescriptionState, ReviewState, fold, threads};
-use wiff_core::{Error, SidebandHash};
+use wiff_core::{BaseRuleset, Error, ScmType, SidebandHash};
 use wiff_diff::{FileStatus, LineNo, Side};
 
 fn comment_a() -> Ulid {
@@ -74,7 +74,11 @@ fn header() -> SessionHeader {
         project: "demo".to_string(),
         repo_root: Some("/repos/demo".to_string()),
         cwd: "/repos/demo".to_string(),
-        source: SourceKind::GitWorktree,
+        source: SourceKind::Scm(ScmSource {
+            scm: ScmType::Git,
+            base: BaseRuleset::new("ref(name(deadbeef))"),
+            tip: TipRule::Worktree,
+        }),
     }
 }
 
@@ -82,6 +86,8 @@ fn version(number: u32, path: &str) -> DiffVersionRecord {
     DiffVersionRecord {
         number: VersionNumber(number),
         diff_hash: SidebandHash::of(path.as_bytes()),
+        base_revision: None,
+        head_revision: None,
         files: vec![FileSummary {
             old_path: path.to_string(),
             new_path: path.to_string(),
@@ -456,7 +462,7 @@ fn a_newer_format_version_is_refused() {
     );
     wince::snapshot_display!(
         error,
-        "session format version 4 does not match supported version 3"
+        "session format version 5 does not match supported version 4"
     );
 }
 
@@ -474,7 +480,7 @@ fn an_older_format_version_is_refused() {
     );
     wince::snapshot_display!(
         error,
-        "session format version 2 does not match supported version 3"
+        "session format version 3 does not match supported version 4"
     );
 }
 
