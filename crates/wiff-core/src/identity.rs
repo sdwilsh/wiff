@@ -8,32 +8,52 @@
 
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::{Error, Result};
 
-/// The source-control system a repository root belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The source-control system a repository root belongs to, named by the short
+/// token it is written with everywhere the model refers to it: the `git:` gate
+/// on a base rule and the `git(...)` scm-native escape hatch. The serde rename
+/// on each variant fixes the on-disk form to that token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ScmType {
     /// A git checkout.
+    #[serde(rename = "git")]
     Git,
     /// A Jujutsu workspace.
+    #[serde(rename = "jj")]
     Jujutsu,
     /// A Mercurial repository.
+    #[serde(rename = "hg")]
     Mercurial,
     /// A Sapling repository.
+    #[serde(rename = "sl")]
     Sapling,
 }
 
-impl std::fmt::Display for ScmType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let name = match self {
-            ScmType::Git => "git",
-            ScmType::Jujutsu => "jujutsu",
-            ScmType::Mercurial => "mercurial",
-            ScmType::Sapling => "sapling",
-        };
-        f.write_str(name)
+impl ScmType {
+    /// Every scm wiff knows, in a stable order for listing the accepted tokens
+    /// in a message.
+    pub const ALL: [ScmType; 4] = [
+        ScmType::Git,
+        ScmType::Jujutsu,
+        ScmType::Mercurial,
+        ScmType::Sapling,
+    ];
+
+    /// Read an scm from its short token, or `None` when the token names no known
+    /// scm.
+    pub fn from_token(token: &str) -> Option<Self> {
+        serde_plain::from_str(token).ok()
     }
 }
+
+// `Display` and `from_token` read the serde token so the one rename on each
+// variant is the single source of truth for both directions. The short token is
+// the wire form deliberately: the model names an scm one way in messages, gates,
+// and storage alike.
+serde_plain::derive_display_from_serialize!(ScmType);
 
 /// The project a session belongs to: the bucket name and the repository root it
 /// was derived from.

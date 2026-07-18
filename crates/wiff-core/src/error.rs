@@ -29,6 +29,10 @@ pub enum Error {
     #[error("could not capture diff: {0}")]
     Source(String),
 
+    /// A stored base ruleset could not be parsed.
+    #[error(transparent)]
+    BaseRuleset(#[from] crate::base_ruleset::ParseError),
+
     /// Captured diff text could not be parsed into the diff model.
     #[error("could not parse captured diff: {0}")]
     Diff(#[from] wiff_diff::parse::ParseError),
