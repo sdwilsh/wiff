@@ -21,6 +21,7 @@ use ulid::Ulid;
 use wiff_config::Config;
 use wiff_core::record::{Author, AuthorKind, ScmSource, SessionHeader, SourceKind, TipRule};
 use wiff_core::session::{active_session, data_dir, session_file};
+use wiff_core::source::{HeadBranch, head_branch};
 use wiff_core::{BaseRuleset, CapturedDiff, DiffSource, GitSource, ProjectIdentity, ScmType};
 
 use self::comment::CommentArgs;
@@ -193,7 +194,7 @@ pub(crate) async fn recapture_diff(header: &SessionHeader) -> anyhow::Result<Opt
         scm,
         base,
         tip,
-        branch_hint: _,
+        branch_hint,
     } = match &header.source {
         SourceKind::Scm(scm_source) => scm_source.clone(),
         SourceKind::Stdin => return Ok(None),
@@ -206,6 +207,41 @@ pub(crate) async fn recapture_diff(header: &SessionHeader) -> anyhow::Result<Opt
     if scm != ScmType::Git {
         bail!("wiff cannot yet recapture a {scm} session");
     }
+    // A working-tree or index recapture reads whatever the repository root has
+    // checked out now. The pinned base was chosen against the branch the session
+    // was created on, so recapturing on a different branch would diff that base
+    // against an unrelated working tree. Refuse unless the branch context still
+    // matches the one recorded at creation, treating a detached-created session
+    // that has since moved onto a branch as just such a mismatch. A committed tip
+    // resolves the same revision regardless of what is checked out and needs no
+    // guard.
+    if matches!(tip, TipRule::Worktree | TipRule::Index) {
+        match head_branch(Path::new(&root), scm) {
+            HeadBranch::On(now) if branch_hint.as_deref() == Some(now.as_str()) => {}
+            HeadBranch::Detached if branch_hint.is_none() => {}
+            // A git that cannot be reached leaves the branch unknown; refusing
+            // with an honest report is safer than recapturing against a working
+            // tree we could not confirm, and avoids misreporting the fault as a
+            // detached head.
+            HeadBranch::Unknown => bail!(
+                "wiff could not determine which branch the working copy is on \
+                 (is git installed, and is this a git repository?). Try again \
+                 once git is reachable."
+            ),
+            HeadBranch::On(now) => {
+                return Err(branch_context_moved(
+                    branch_hint.as_deref(),
+                    &format!("branch `{}`", strip_refs_heads_prefix(&now)),
+                ));
+            }
+            HeadBranch::Detached => {
+                return Err(branch_context_moved(
+                    branch_hint.as_deref(),
+                    "a detached HEAD",
+                ));
+            }
+        }
+    }
     let source = match tip {
         TipRule::Worktree => GitSource::worktree(root, base),
         TipRule::Index => GitSource::index(root, base),
@@ -213,6 +249,40 @@ pub(crate) async fn recapture_diff(header: &SessionHeader) -> anyhow::Result<Opt
     };
     let captured = source.capture().await?;
     Ok(Some(captured))
+}
+
+/// The error refusing a recapture because the working copy's branch context has
+/// moved away from the one the session was created on. `created_on` is the full
+/// ref recorded at creation, or `None` when the session recorded no branch (its
+/// HEAD was detached, or it predates branch recording); `now` is a
+/// ready-phrased description of the current context.
+fn branch_context_moved(created_on: Option<&str>, now: &str) -> anyhow::Error {
+    // Only a session that recorded a branch can name one to return to. Without a
+    // recorded branch there is no checkout that would restore the original
+    // context, so the only remedy offered is to start a fresh session.
+    match created_on.map(strip_refs_heads_prefix) {
+        Some(branch) => anyhow::anyhow!(
+            "This review session was created from a commit based on branch \
+             `{branch}` but the working copy is currently checked out on a commit \
+             based on {now}.\n\n\
+             You either need to switch the working copy back to branch `{branch}` \
+             to refresh the review, or quit this session and start (or resume) a \
+             session from the current state of the repo if that is what you wish \
+             to review."
+        ),
+        None => anyhow::anyhow!(
+            "This review session was created without a recorded branch but the \
+             working copy is currently checked out on a commit based on {now}.\n\n\
+             To refresh against a different state, quit this session and start (or \
+             resume) a session from the current state of the repo."
+        ),
+    }
+}
+
+/// A ref name with its `refs/heads/` prefix dropped for display, leaving the
+/// bare branch name; any other ref form is returned unchanged.
+fn strip_refs_heads_prefix(reference: &str) -> &str {
+    reference.strip_prefix("refs/heads/").unwrap_or(reference)
 }
 
 /// Read content piped on stdin, returning `None` when stdin is a terminal or

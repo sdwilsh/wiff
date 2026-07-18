@@ -34,6 +34,7 @@ use crate::exit::{Exit, ExitDefault, ExitPlan, plan_exit};
 use crate::help::{Help, HelpColors};
 use crate::key::{Key, KeyPress};
 use crate::keymap::{Keymap, Resolution};
+use crate::notice::{Notice, NoticeColors};
 use crate::picker::{Picker, PickerColors, PickerRow, RowSpan};
 use crate::render::{
     BoxId, COLUMN_DIVIDER, COLUMN_GUTTER_WIDTH, DEFAULT_SIDE_BY_SIDE_MIN_WIDTH, DiffMode, Document,
@@ -422,6 +423,17 @@ impl Selection {
     }
 }
 
+/// The colors an error notice paints with, taking the theme's warning
+/// foreground for its border.
+fn notice_colors(theme: &Theme) -> NoticeColors {
+    NoticeColors {
+        border: theme.comment_warn_fg,
+        background: theme.background,
+        text: theme.comment_fg,
+        hint: theme.fold_fg,
+    }
+}
+
 /// The review view over a rendered diff.
 pub struct App {
     document: Document,
@@ -443,6 +455,8 @@ pub struct App {
     picker: Option<Picker<App>>,
     /// The open help overlay, present while the reviewer is reading it.
     help: Option<Help>,
+    /// The open error notice, present while the reviewer is reading it.
+    notice: Option<Notice>,
     /// The version comparison the reviewer chose from the picker, present until
     /// the host takes it to reconstruct the diff.
     pending_compare: Option<CompareRequest>,
@@ -508,6 +522,8 @@ pub struct App {
     picker_colors: PickerColors,
     /// The colors the help overlay paints with.
     help_colors: HelpColors,
+    /// The colors the error notice paints with.
+    notice_colors: NoticeColors,
     /// The colors the comment picker paints its status markers with.
     comment_marker_colors: CommentMarkerColors,
     /// A transient note shown in the status line until the next key press, used
@@ -547,6 +563,7 @@ impl App {
             exit: None,
             picker: None,
             help: None,
+            notice: None,
             pending_compare: None,
             compare_on_cancel: None,
             pending_refresh: false,
@@ -588,6 +605,7 @@ impl App {
                 text: theme.comment_fg,
                 hint: theme.fold_fg,
             },
+            notice_colors: notice_colors(theme),
             comment_marker_colors: CommentMarkerColors {
                 draft: theme.comment_draft_fg,
                 muted: theme.comment_flag_fg,
@@ -2111,6 +2129,59 @@ impl App {
         self.help = None;
     }
 
+    /// Raise a modal notice headed `title` showing `body`.
+    pub fn show_notice(&mut self, title: impl Into<String>, body: impl Into<String>) {
+        self.notice = Some(Notice::new(title, body, self.notice_colors));
+    }
+
+    /// Whether an error notice is open.
+    pub fn noticing(&self) -> bool {
+        self.notice.is_some()
+    }
+
+    /// Returns the open error notice, or `None` when no notice is displayed.
+    pub fn notice(&self) -> Option<&Notice> {
+        self.notice.as_ref()
+    }
+
+    /// Wrap the open notice to `width` and return the number of wrapped lines.
+    /// Returns zero when no notice is open.
+    pub fn notice_wrap(&mut self, width: usize) -> usize {
+        self.notice
+            .as_mut()
+            .map_or(0, |notice| notice.wrap_to(width))
+    }
+
+    /// Set how many lines the open notice shows, from the space the host gives
+    /// it. Does nothing when no notice is open.
+    pub fn notice_set_height(&mut self, height: usize) {
+        if let Some(notice) = self.notice.as_mut() {
+            notice.set_height(height);
+        }
+    }
+
+    /// Scroll the open notice with a resolved navigation action. Ignores any
+    /// non-movement action, and does nothing when no notice is open.
+    pub fn notice_nav(&mut self, action: Action) {
+        let Some(notice) = self.notice.as_mut() else {
+            return;
+        };
+        match action {
+            Action::LineDown => notice.scroll_down(),
+            Action::LineUp => notice.scroll_up(),
+            Action::PageDown => notice.page_down(),
+            Action::PageUp => notice.page_up(),
+            Action::Top => notice.to_top(),
+            Action::Bottom => notice.to_bottom(),
+            _ => {}
+        }
+    }
+
+    /// Close the error notice.
+    pub fn close_notice(&mut self) {
+        self.notice = None;
+    }
+
     /// The background the whole view fills with, for the host to paint behind the
     /// document so the theme reads over the terminal's own background.
     pub fn background(&self) -> Rgb {
@@ -2150,6 +2221,7 @@ impl App {
             text: theme.comment_fg,
             hint: theme.fold_fg,
         };
+        self.notice_colors = notice_colors(theme);
         self.comment_marker_colors = CommentMarkerColors {
             draft: theme.comment_draft_fg,
             muted: theme.comment_flag_fg,
@@ -4564,6 +4636,23 @@ mod tests {
             "<-|#2b303b|->                                        \n",
             "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
         );
+    }
+
+    #[test]
+    fn a_notice_opens_forwards_navigation_and_closes() {
+        // A notice raised over the review reports as open, forwards a scroll to
+        // the wrapped message, and closes on request. Its framing is covered by
+        // the notice's own tests; here the app wiring is what is under test.
+        let mut app = App::reviewing(versioned_review(0), 8, &theme());
+        wince::assert_eq!(app.noticing(), false);
+        app.show_notice("Refresh failed", "one\ntwo\nthree\nfour");
+        wince::assert_eq!(app.noticing(), true);
+        app.notice_wrap(20);
+        app.notice_set_height(2);
+        app.notice_nav(Action::Bottom);
+        wince::assert_eq!(app.notice().map(|notice| notice.top()), Some(2));
+        app.close_notice();
+        wince::assert_eq!(app.noticing(), false);
     }
 
     #[test]

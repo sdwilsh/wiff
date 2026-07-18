@@ -15,7 +15,7 @@ use crate::base_ruleset::{BaseRuleset, parse_ruleset};
 use crate::error::{Error, Result};
 use crate::identity::ScmType;
 use crate::record::{RevisionId, ScmSource, SourceKind, TipRule};
-use crate::source::{CapturedDiff, DiffSource};
+use crate::source::{CapturedDiff, DiffSource, HeadBranch};
 
 /// The context wiff asks git for around each hunk. A large window means a hunk
 /// holds most or all of its file, so highlighting and rebasing have more to work
@@ -292,8 +292,7 @@ impl GitRepo {
 /// Interpret the output of `rev-parse --symbolic-full-name <spec>`: the full ref
 /// name when git named one under `refs/`, or `None` for a bare revision, a
 /// detached head (git echoes the literal `HEAD`), or an unresolvable spec (git
-/// exits nonzero). Shared by the async [`GitRepo::symbolic_ref`] and the sync
-/// [`current_branch`] so the two read git's answer the same way.
+/// exits nonzero).
 fn ref_name_from_symbolic(success: bool, stdout: &[u8]) -> Result<Option<String>> {
     if !success {
         return Ok(None);
@@ -304,24 +303,36 @@ fn ref_name_from_symbolic(success: bool, stdout: &[u8]) -> Result<Option<String>
     Ok(name.starts_with("refs/").then(|| name.to_string()))
 }
 
-/// The full ref name the git repository at `repo_root` currently has checked out
-/// (`refs/heads/...`), or `None` for a detached head or any failure to reach
-/// git. The sync counterpart to [`GitRepo::symbolic_ref`] for the discovery path,
-/// which runs outside an async context; both run the same
-/// `rev-parse --symbolic-full-name HEAD` and share [`ref_name_from_symbolic`].
-/// The child inherits no stdin and runs against `-C repo_root`, matching the
-/// process policy of [`GitRepo::spawn`].
-pub fn current_branch(repo_root: &Path) -> Option<String> {
-    let output = std::process::Command::new("git")
+/// The branch state of the git repository at `repo_root`: the branch it is on
+/// (full ref name, `refs/heads/...`), a detached head, or an unknown state when
+/// git cannot be reached or gives an answer that cannot be read. The sync
+/// counterpart to [`GitRepo::symbolic_ref`] for paths that run outside an async
+/// context; both run the same `rev-parse --symbolic-full-name HEAD`. The child
+/// inherits no stdin and runs against `-C repo_root`, matching the process
+/// policy of [`GitRepo::spawn`].
+pub fn head_branch(repo_root: &Path) -> HeadBranch {
+    let Ok(output) = std::process::Command::new("git")
         .arg("-C")
         .arg(repo_root)
         .args(["rev-parse", "--symbolic-full-name", "HEAD"])
         .stdin(Stdio::null())
         .output()
-        .ok()?;
-    ref_name_from_symbolic(output.status.success(), &output.stdout)
-        .ok()
-        .flatten()
+    else {
+        return HeadBranch::Unknown;
+    };
+    if !output.status.success() {
+        return HeadBranch::Unknown;
+    }
+    let Ok(text) = std::str::from_utf8(&output.stdout) else {
+        return HeadBranch::Unknown;
+    };
+    let name = text.trim();
+    if name.starts_with("refs/") {
+        HeadBranch::On(name.to_string())
+    } else {
+        // Git echoes the literal `HEAD` for a detached head.
+        HeadBranch::Detached
+    }
 }
 
 #[async_trait]

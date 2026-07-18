@@ -121,6 +121,9 @@ pub fn draw<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
         if app.helping() {
             render_help(frame, doc_area, app);
         }
+        if app.noticing() {
+            render_notice(frame, doc_area, app);
+        }
     })?;
     Ok(())
 }
@@ -178,6 +181,53 @@ fn render_picker(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_widget(Paragraph::new(picker.lines(inner)).block(block), rect);
 }
 
+/// A framed, scrollable modal ready to draw over the view: its titled border
+/// colors, the content lines filling it, and where the scrollable window sits.
+struct ScrollingModal<'a> {
+    title: &'a str,
+    border: Rgb,
+    background: Rgb,
+    lines: Vec<ratatui::text::Line<'static>>,
+    /// The first visible content line, for the scrollbar thumb.
+    top: usize,
+    /// The total content lines, and how many the window shows; a scrollbar is
+    /// drawn only when the former exceeds the latter.
+    total: usize,
+    visible: usize,
+}
+
+/// Draw `modal` into `rect`, clearing the cells behind it, framing it with a
+/// titled border, and running a scrollbar down the right border when its content
+/// is taller than the window. Shared by the help overlay and the error notice,
+/// which frame and scroll alike.
+fn render_scrolling_modal(frame: &mut Frame, rect: Rect, modal: ScrollingModal) {
+    let background = Style::default().bg(color(modal.background));
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(background.fg(color(modal.border)))
+        .style(background)
+        .title(modal.title.to_string());
+    frame.render_widget(Clear, rect);
+    frame.render_widget(Paragraph::new(modal.lines).block(block), rect);
+    // More content than the window shows draws a scrollbar down the right border,
+    // spanning the content rows above the spacer and hint, so the reviewer can
+    // see there is more off-screen.
+    if modal.total > modal.visible {
+        let mut state = ScrollbarState::new(modal.total.saturating_sub(modal.visible) + 1)
+            .position(modal.top)
+            .viewport_content_length(modal.visible);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None);
+        let track = Rect {
+            y: rect.y + 1,
+            height: modal.visible as u16,
+            ..rect
+        };
+        frame.render_stateful_widget(scrollbar, track, &mut state);
+    }
+}
+
 /// Draw the help overlay centered over `area`, clearing the cells behind it, its
 /// window sized so a reference taller than the space scrolls rather than
 /// overflowing.
@@ -190,32 +240,48 @@ fn render_help(frame: &mut Frame, area: Rect, app: &mut App) {
     let Some(help) = app.help() else {
         return;
     };
-    let top = help.top();
-    let background = Style::default().bg(color(help.background()));
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(background.fg(color(help.border())))
-        .style(background)
-        .title(help.title().to_string());
-    frame.render_widget(Clear, rect);
-    frame.render_widget(Paragraph::new(help.lines(inner)).block(block), rect);
-    // More rows than the window shows draws a scrollbar down the right border,
-    // spanning the content rows above the spacer and hint, so the reviewer can
-    // see there is more of the reference off-screen.
-    if total > visible {
-        let mut state = ScrollbarState::new(total.saturating_sub(visible) + 1)
-            .position(top)
-            .viewport_content_length(visible);
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .begin_symbol(None)
-            .end_symbol(None);
-        let track = Rect {
-            y: rect.y + 1,
-            height: visible as u16,
-            ..rect
-        };
-        frame.render_stateful_widget(scrollbar, track, &mut state);
-    }
+    render_scrolling_modal(
+        frame,
+        rect,
+        ScrollingModal {
+            title: help.title(),
+            border: help.border(),
+            background: help.background(),
+            lines: help.lines(inner),
+            top: help.top(),
+            total,
+            visible,
+        },
+    );
+}
+
+/// Draw the error notice centered over `area`, clearing the cells behind it,
+/// its window sized so a message taller than the space scrolls rather than
+/// overflowing.
+fn render_notice(frame: &mut Frame, area: Rect, app: &mut App) {
+    let Some(content_width) = app.notice().map(|n| n.width()) else {
+        return;
+    };
+    let inner = modal_inner_width(area, content_width);
+    let total = app.notice_wrap(inner);
+    let (rect, _, visible) = centered_modal(area, total, content_width);
+    app.notice_set_height(visible);
+    let Some(notice) = app.notice() else {
+        return;
+    };
+    render_scrolling_modal(
+        frame,
+        rect,
+        ScrollingModal {
+            title: notice.title(),
+            border: notice.border(),
+            background: notice.background(),
+            lines: notice.lines(),
+            top: notice.top(),
+            total,
+            visible,
+        },
+    );
 }
 
 /// Draw the inline comment editor into `area`: the document lines above it, the
@@ -421,7 +487,8 @@ fn event_loop<B: Backend>(
         // A modal view -- the comment editor, search prompt, or picker (the
         // file, comment, theme, or exit list) -- owns a spot or buffer that
         // folding a document change in would disturb.
-        let modal = app.composing() || app.searching() || app.picking() || app.helping();
+        let modal =
+            app.composing() || app.searching() || app.picking() || app.helping() || app.noticing();
         // Reveal files as their background highlight arrives, repainting
         // immediately only when the change is on screen.
         if !modal && app.poll_highlights() {
@@ -459,6 +526,22 @@ fn event_loop<B: Backend>(
             app.search_key(press);
         } else if app.composing() {
             app.compose_key(press);
+        } else if app.noticing() {
+            // The notice is a message to read: navigation scrolls it and every
+            // other key closes it, the same way the help overlay behaves.
+            match input.press(press) {
+                Some(
+                    action @ (Action::LineDown
+                    | Action::LineUp
+                    | Action::PageDown
+                    | Action::PageUp
+                    | Action::Top
+                    | Action::Bottom),
+                ) => app.notice_nav(action),
+                Some(_) => app.close_notice(),
+                None if input.is_pending() => {}
+                None => app.close_notice(),
+            }
         } else if app.helping() {
             // The overlay is a reference to read: navigation scrolls it and
             // every other key closes it. A press that only begins a multi-press
@@ -521,7 +604,8 @@ fn event_loop<B: Backend>(
         // modal owns a spot or buffer it would disturb, and the watcher holds
         // the change until the modal closes. The change gate is a cheap stat, so
         // syncing per key costs almost nothing when the file is untouched.
-        if !(app.composing() || app.searching() || app.picking() || app.helping()) {
+        if !(app.composing() || app.searching() || app.picking() || app.helping() || app.noticing())
+        {
             sync(&mut app);
         }
     }
@@ -691,6 +775,45 @@ mod tests {
             " │any key to close                                                  │ \n",
             " └──────────────────────────────────────────────────────────────────┘ \n",
             "src/lib.rs                                                0 open  100%\n",
+        );
+    }
+
+    #[test]
+    fn a_notice_floats_wrapped_and_centered_over_the_view() {
+        // A message too long for the one-row status line is raised as a notice
+        // whose text wraps across a centered modal, titled and cleared over the
+        // diff behind it, with the dismissal hint below.
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[(LineKind::Context, "let x = 1;", 1)],
+            )],
+        };
+        let document = DiffView::new(theme()).expect("view").render(&diff);
+        let mut app = App::new(document, 0, &theme());
+        // A clearly synthetic body, so the fixture does not impersonate a real
+        // message and cannot fall out of step with one as the wording changes.
+        app.show_notice(
+            "Notice",
+            "The quick brown fox jumps over the lazy dog and then keeps running \
+             well past the edge of the modal so the text has to wrap.",
+        );
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            screen(72, 12, app),
+            "modified  src/lib.rs                                                    \n",
+            "@@ -1,1 +1,1 @@                                                         \n",
+            "   1 ┌Notice──────────────────────────────────────────────────────┐     \n",
+            "     │The quick brown fox jumps over the lazy dog and then keeps  │     \n",
+            "     │running well past the edge of the modal so the text has to  │     \n",
+            "     │wrap.                                                       │     \n",
+            "     │                                                            │     \n",
+            "     │any key to close                                            │     \n",
+            "     └────────────────────────────────────────────────────────────┘     \n",
+            "                                                                        \n",
+            "                                                                        \n",
+            "src/lib.rs                                                  0 open  100%\n",
         );
     }
 

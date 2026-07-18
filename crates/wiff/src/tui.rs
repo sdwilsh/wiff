@@ -86,11 +86,14 @@ pub fn open(session_path: &Path, config: &Config, offer_refresh: bool) -> anyhow
     }
 
     // Refresh recaptures the diff and reloads the app in place; save commits the
-    // pending drafts and keeps the review open. Any failure is reported in the
-    // status line rather than tearing down the review.
+    // pending drafts and keeps the review open. Either way a failure keeps the
+    // review standing rather than tearing it down. A refresh failure (a refusal
+    // to recapture, or an scm error) is often too long for the one-row status
+    // line, so it is raised as a modal notice that wraps; save and compare report
+    // in the status line.
     let refresh = |app: &mut App| {
         if let Err(err) = refresh_in_place(session_path, &author, config.tab_width, app) {
-            app.set_message(format!("refresh failed: {err}"));
+            app.show_notice("Refresh failed", err.to_string());
         }
     };
     let save = |app: &mut App| {
@@ -554,6 +557,107 @@ mod tests {
             error.to_string(),
             "this session's diff came from stdin; refresh it with `wiff refresh` and a new piped diff"
                 .to_string()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn refresh_refuses_when_the_working_copy_is_on_a_different_branch() {
+        // A worktree session records the branch it was created on. Switching the
+        // repository to another branch and refreshing would diff the pinned base
+        // against an unrelated working tree, so recapture refuses with the two
+        // branches named rather than capturing a misleading version.
+        let repo = tempfile::tempdir().expect("repo tempdir");
+        let data = tempfile::tempdir().expect("data tempdir");
+        let file = repo.path().join("f.txt");
+
+        git(repo.path(), &["init", "-q", "-b", "topic"]);
+        std::fs::write(&file, "alpha\nbeta\ngamma\n").expect("write base");
+        git(repo.path(), &["add", "f.txt"]);
+        git(repo.path(), &["commit", "-q", "-m", "base"]);
+        std::fs::write(&file, "alpha\nbeta\ngamma\ndelta\n").expect("write v0");
+
+        let identity = ProjectIdentity {
+            canonical: "demo".to_string(),
+            repo_root: Some(repo.path().to_path_buf()),
+            scm: Some(ScmType::Git),
+        };
+        let captured = capture_scm_diff(
+            Some(ScmType::Git),
+            repo.path().to_path_buf(),
+            DiffSelection::Worktree,
+            None,
+        )
+        .await
+        .expect("capture v0");
+        let log = create_session(data.path(), &identity, repo.path(), &captured, None)
+            .expect("create session");
+        let session_path = log.path().to_path_buf();
+        drop(log);
+
+        // Switch to an unrelated branch, then attempt to recapture the session.
+        git(repo.path(), &["checkout", "-q", "-b", "other"]);
+        let state = ReviewState::load(&session_path).expect("load state");
+        let error = recapture(&state.session).unwrap_err();
+        wince::snapshot_display!(
+            error,
+            "This review session was created from a commit based on branch \
+             `topic` but the working copy is currently checked out on a commit \
+             based on branch `other`.\n\n\
+             You either need to switch the working copy back to branch `topic` to \
+             refresh the review, or quit this session and start (or resume) a \
+             session from the current state of the repo if that is what you wish \
+             to review."
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn refresh_refuses_a_detached_head_session_once_a_branch_is_checked_out() {
+        // A worktree session captured on a detached head records no branch. Once
+        // a branch is checked out the working tree is a different context than
+        // the one the pinned base was chosen against, so recapture refuses rather
+        // than diffing the base against an unrelated tree.
+        let repo = tempfile::tempdir().expect("repo tempdir");
+        let data = tempfile::tempdir().expect("data tempdir");
+        let file = repo.path().join("f.txt");
+
+        git(repo.path(), &["init", "-q", "-b", "topic"]);
+        std::fs::write(&file, "alpha\nbeta\ngamma\n").expect("write base");
+        git(repo.path(), &["add", "f.txt"]);
+        git(repo.path(), &["commit", "-q", "-m", "base"]);
+        // Detach HEAD onto the base commit, then make the working-tree change the
+        // session captures.
+        git(repo.path(), &["checkout", "-q", "--detach"]);
+        std::fs::write(&file, "alpha\nbeta\ngamma\ndelta\n").expect("write v0");
+
+        let identity = ProjectIdentity {
+            canonical: "demo".to_string(),
+            repo_root: Some(repo.path().to_path_buf()),
+            scm: Some(ScmType::Git),
+        };
+        let captured = capture_scm_diff(
+            Some(ScmType::Git),
+            repo.path().to_path_buf(),
+            DiffSelection::Worktree,
+            None,
+        )
+        .await
+        .expect("capture v0");
+        let log = create_session(data.path(), &identity, repo.path(), &captured, None)
+            .expect("create session");
+        let session_path = log.path().to_path_buf();
+        drop(log);
+
+        // Check out a branch, then attempt to recapture the detached session.
+        git(repo.path(), &["checkout", "-q", "topic"]);
+        let state = ReviewState::load(&session_path).expect("load state");
+        let error = recapture(&state.session).unwrap_err();
+        wince::snapshot_display!(
+            error,
+            "This review session was created without a recorded branch but the \
+             working copy is currently checked out on a commit based on branch \
+             `topic`.\n\n\
+             To refresh against a different state, quit this session and start (or \
+             resume) a session from the current state of the repo."
         );
     }
 

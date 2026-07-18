@@ -41,11 +41,20 @@ the checkout on its own.
 Start a review from a diff source and open the TUI:
 
 ```bash
-wiff new                 # the working tree
+wiff new                 # the working tree against the current commit
 wiff new --cached        # the staged index
-wiff new --rev HEAD      # the changes a revision introduces
+wiff new --change HEAD   # a branch, change, or revision against its parent
+wiff new --from-base     # the whole branch back to its fork point
 git diff | wiff new      # a unified diff piped in
 ```
+
+A plain `wiff new` pins the base at the current commit, so a commit or amend
+you make afterward stays inside the range and `wiff refresh` shows it. `--change`
+follows a branch or change to its newest commit on refresh, while a bare
+revision is held. `--from-base` takes the base from the configured
+`base_revision_rules` (the merge-base with your upstream by default); `--base
+<ruleset>` overrides it with an explicit ruleset, and `--base empty` reviews the
+whole history to the root.
 
 ### Navigation
 
@@ -89,8 +98,14 @@ A session outlives a single sitting so you and your agent can iterate on it.
 - **Create** a review to begin: `wiff new`.
 - **Iterate** until done: reopen with `wiff resume`, capture new changes into
   the session with `wiff refresh` (or `ctrl-r` in the TUI), which rebases your
-  comments forward onto the new diff.
+  comments forward onto the new diff. Because a session stores how to find its
+  base and tip rather than a frozen pair of commits, refresh follows an amend,
+  rebase, or added commit on its own; when the base has moved out from under the
+  review it captures anyway and warns that the starting point shifted.
 - **Remove** it when finished: `wiff session rm`, or choose Remove session on
   exit.
 
-List sessions any time with `wiff session list`.
+List sessions any time with `wiff session list`. When a repository holds several
+sessions, acting commands without an explicit `--session` resolve the one whose
+review matches the branch you have checked out, falling back to the most recent
+session when none matches.

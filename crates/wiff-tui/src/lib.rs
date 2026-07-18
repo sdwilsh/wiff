@@ -18,6 +18,7 @@ pub mod input;
 pub mod key;
 pub mod keymap;
 mod markdown;
+pub mod notice;
 pub mod picker;
 pub mod render;
 pub mod review;

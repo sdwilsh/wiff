@@ -21,14 +21,39 @@ use crate::record::{RevisionId, SourceKind};
 
 pub use git::{GitRepo, GitSource};
 
+/// The checked-out branch of a repository, distinguishing a real detached head
+/// from a transient failure to reach the scm. A detached head is a repository
+/// state a caller can act on, while an unreachable scm reports nothing about the
+/// branch at all; collapsing the two would let a momentary fault masquerade as a
+/// detached head.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeadBranch {
+    /// Checked out on this branch, named by its full ref (`refs/heads/...`).
+    On(String),
+    /// The head is detached, on no branch.
+    Detached,
+    /// The scm could not be reached, or gave an answer that could not be read.
+    Unknown,
+}
+
+/// The branch state of the repository at `repo_root`. Any scm other than git,
+/// which has no such notion here, reports [`HeadBranch::Unknown`].
+pub fn head_branch(repo_root: &Path, scm: ScmType) -> HeadBranch {
+    match scm {
+        ScmType::Git => git::head_branch(repo_root),
+        ScmType::Jujutsu | ScmType::Sapling | ScmType::Mercurial => HeadBranch::Unknown,
+    }
+}
+
 /// The branch the repository at `repo_root` currently has checked out, as a full
 /// ref name (`refs/heads/...`), or `None` when the head is detached, the scm has
 /// no such notion, or git cannot be reached. Session discovery uses this to
-/// prefer the session that reviews the current branch.
+/// prefer the session that reviews the current branch, where a detached head and
+/// an unreachable scm are alike in offering no branch to match.
 pub fn current_branch(repo_root: &Path, scm: ScmType) -> Option<String> {
-    match scm {
-        ScmType::Git => git::current_branch(repo_root),
-        ScmType::Jujutsu | ScmType::Sapling | ScmType::Mercurial => None,
+    match head_branch(repo_root, scm) {
+        HeadBranch::On(name) => Some(name),
+        HeadBranch::Detached | HeadBranch::Unknown => None,
     }
 }
 
