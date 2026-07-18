@@ -28,6 +28,10 @@ pub struct CapturedDiff {
     /// The base commit the diff was captured against, when the source has an
     /// authoritative base.
     pub base_revision: Option<RevisionId>,
+    /// Whether the resolved base is anchored to the tip under review (e.g. via
+    /// `parent(@)`), and so expected to move with it. Meaningful only when
+    /// `base_revision` is set.
+    pub base_tip_relative: bool,
     /// The tip commit the diff was captured at, absent for a working-tree or
     /// index capture whose tip is the uncommitted state.
     pub head_revision: Option<RevisionId>,

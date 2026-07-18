@@ -85,6 +85,7 @@ impl NewArgs {
                 text,
                 source: SourceKind::Stdin,
                 base_revision: None,
+                base_tip_relative: false,
                 head_revision: None,
             });
         }

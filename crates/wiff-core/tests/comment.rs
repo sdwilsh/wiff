@@ -50,6 +50,7 @@ fn session() -> (tempfile::TempDir, SessionLog) {
         text: DIFF.to_string(),
         source: SourceKind::Stdin,
         base_revision: None,
+        base_tip_relative: false,
         head_revision: None,
     };
     let log = create_session(
@@ -161,6 +162,7 @@ fn adding_comments_captures_anchors_and_folds_to_current_state() {
             number: VersionNumber(0),
             diff_hash: SidebandHash::of(DIFF.as_bytes()),
             base_revision: None,
+            base_tip_relative: false,
             head_revision: None,
             files: vec![
                 FileSummary {

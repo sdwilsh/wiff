@@ -57,14 +57,22 @@ async fn recapture(header: &SessionHeader) -> anyhow::Result<CapturedDiff> {
             text,
             source: SourceKind::Stdin,
             base_revision: None,
+            base_tip_relative: false,
             head_revision: None,
         }),
         None => bail!("this session's diff came from stdin; pipe the new diff on stdin"),
     }
 }
 
-/// Print the captured version and the tally of rebased comments.
+/// Print the captured version and the tally of rebased comments, warning on
+/// stderr when the review's base moved out from under it.
 fn report(outcome: &RefreshOutcome) {
+    if let Some(shift) = &outcome.base_shift {
+        eprintln!(
+            "warning: the review's base moved from {} to {}; it now starts from a different commit",
+            shift.from, shift.to,
+        );
+    }
     let total = outcome.exact + outcome.approximate + outcome.relocated + outcome.outdated;
     println!(
         "captured v{}; rebased {total} comment{}: {} exact, {} shifted, {} moved, {} outdated",

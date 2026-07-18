@@ -87,6 +87,7 @@ fn version(number: u32, path: &str) -> DiffVersionRecord {
         number: VersionNumber(number),
         diff_hash: SidebandHash::of(path.as_bytes()),
         base_revision: None,
+        base_tip_relative: false,
         head_revision: None,
         files: vec![FileSummary {
             old_path: path.to_string(),

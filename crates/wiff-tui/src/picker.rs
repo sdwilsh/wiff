@@ -13,6 +13,7 @@ use ratatui::text::{Line, Span};
 use wiff_diff::Rgb;
 
 use crate::render::color;
+use crate::wrap::wrap_line;
 
 /// One row of a picker: the text it shows and what selecting it does to the
 /// host `Ctx`. The widget holds these as trait objects so a single picker can
@@ -67,14 +68,23 @@ pub struct Picker<Ctx> {
     title: String,
     rows: Vec<Box<dyn PickerRow<Ctx>>>,
     selected: usize,
-    /// The first row of the visible window into `rows`.
+    /// The first content line of the visible window. Content lines are the note
+    /// block (`lead` of them) followed by one line per row, so the note scrolls
+    /// with the rows rather than sitting fixed above them.
     top: usize,
-    /// The number of rows the window shows, set by the host each frame from the
-    /// space the modal is given.
+    /// The number of content lines the window shows, set by the host each frame
+    /// from the space the modal is given.
     height: usize,
+    /// The number of leading content lines the note block occupies (its wrapped
+    /// lines plus a spacer), zero when there is no note. Cached from the host's
+    /// per-frame viewport update so the scroll math can place the highlighted
+    /// row past the note.
+    lead: usize,
     /// The key hint shown along the bottom, naming the reviewer's own bound
     /// keys, built by the host.
     hint: String,
+    /// An advisory shown above the rows, painted in the border and title color.
+    note: Option<String>,
     colors: PickerColors,
 }
 
@@ -93,9 +103,49 @@ impl<Ctx> Picker<Ctx> {
             selected: 0,
             top: 0,
             height: 0,
+            lead: 0,
             hint: hint.to_string(),
+            note: None,
             colors,
         }
+    }
+
+    /// Show a single-line `note` above the rows to lead the reviewer with a
+    /// piece of context before they choose a row. Assumes single-width
+    /// characters, matching the widget's char-based width model.
+    pub fn set_note(&mut self, note: impl Into<String>) {
+        self.note = Some(note.into());
+    }
+
+    /// The number of lines the note occupies at content width `width`: the note
+    /// wrapped to that width plus a blank separator line, or zero when there is
+    /// no note.
+    pub fn note_height(&self, width: usize) -> usize {
+        match self.note {
+            Some(_) => self.note_lines(width.saturating_sub(2)).len() + 1,
+            None => 0,
+        }
+    }
+
+    /// The note wrapped to `label_width` columns, each line indented past the
+    /// marker column and painted in the border and title color over the modal
+    /// background. Empty when there is no note.
+    fn note_lines(&self, label_width: usize) -> Vec<Line<'static>> {
+        let Some(note) = &self.note else {
+            return Vec::new();
+        };
+        let style = Style::default()
+            .fg(color(self.colors.border))
+            .bg(color(self.colors.background));
+        // The note is plain single-style text: wrap_line supplies the line
+        // breaking, and every line is painted uniformly in the note color.
+        wrap_line(&Line::from(note.clone()), label_width)
+            .into_iter()
+            .map(|line| {
+                let text: String = line.spans.iter().flat_map(|s| s.content.chars()).collect();
+                Line::from(Span::styled(format!("  {text:<label_width$}"), style))
+            })
+            .collect()
     }
 
     /// Move the highlight to the previous row, stopping at the first.
@@ -141,9 +191,12 @@ impl<Ctx> Picker<Ctx> {
         self.scroll_into_view();
     }
 
-    /// Set how many rows the window shows, keeping the highlight in view.
-    pub fn set_height(&mut self, height: usize) {
+    /// Set the viewport to `height` content lines, `lead` of them the note block
+    /// ahead of the rows, keeping the highlighted row in view. The host measures
+    /// both each frame from the space the modal is given.
+    pub fn set_viewport(&mut self, height: usize, lead: usize) {
         self.height = height;
+        self.lead = lead;
         self.scroll_into_view();
     }
 
@@ -182,7 +235,8 @@ impl<Ctx> Picker<Ctx> {
     }
 
     /// The width of the modal's content inside its border: two columns for the
-    /// highlight marker, then the widest label or the hint.
+    /// highlight marker, then the widest label or the hint. A note does not
+    /// widen the modal; it wraps to whatever width the rows and hint give.
     pub fn width(&self) -> usize {
         let widest = self
             .rows
@@ -194,35 +248,46 @@ impl<Ctx> Picker<Ctx> {
     }
 
     /// The modal's content lines for a content width of `width`: the visible
-    /// window of rows, each marked and highlighted when it is the selection,
-    /// then a spacer and the key hint. Labels and the hint are clipped to fit.
+    /// window over the note block and rows, each row marked and highlighted when
+    /// it is the selection, then a spacer and the key hint pinned below. Labels
+    /// and the hint are clipped to fit.
     pub fn lines(&self, width: usize) -> Vec<Line<'static>> {
         let label_width = width.saturating_sub(2);
         let background = color(self.colors.background);
-        let end = (self.top + self.height).min(self.rows.len());
         let text_color = color(self.colors.text);
-        let mut lines: Vec<Line<'static>> = (self.top..end)
-            .map(|index| {
-                let selected = index == self.selected;
-                let marker = if selected { "> " } else { "  " };
-                let row_bg = if selected {
-                    color(self.colors.selected_bg)
-                } else {
-                    background
-                };
-                match self.rows[index].styled() {
-                    Some(spans) => styled_row(marker, &spans, label_width, text_color, row_bg),
-                    None => {
-                        let label = clip(&self.rows[index].label(), label_width);
-                        let text = format!("{marker}{label:<label_width$}");
-                        Line::from(Span::styled(
-                            text,
-                            Style::default().fg(text_color).bg(row_bg),
-                        ))
-                    }
+        // The scrollable content: the note block (its wrapped lines then a
+        // spacer) ahead of one line per row. The window slides over all of it,
+        // so a note too tall for the modal scrolls with the rows rather than
+        // pushing the spacer and hint off the bottom.
+        let mut content: Vec<Line<'static>> = self.note_lines(label_width);
+        if self.note.is_some() {
+            content.push(Line::from(Span::styled(
+                " ".repeat(width),
+                Style::default().bg(background),
+            )));
+        }
+        content.extend((0..self.rows.len()).map(|index| {
+            let selected = index == self.selected;
+            let marker = if selected { "> " } else { "  " };
+            let row_bg = if selected {
+                color(self.colors.selected_bg)
+            } else {
+                background
+            };
+            match self.rows[index].styled() {
+                Some(spans) => styled_row(marker, &spans, label_width, text_color, row_bg),
+                None => {
+                    let label = clip(&self.rows[index].label(), label_width);
+                    let text = format!("{marker}{label:<label_width$}");
+                    Line::from(Span::styled(
+                        text,
+                        Style::default().fg(text_color).bg(row_bg),
+                    ))
                 }
-            })
-            .collect();
+            }
+        }));
+        let end = (self.top + self.height).min(content.len());
+        let mut lines = content[self.top.min(content.len())..end].to_vec();
         lines.push(Line::from(Span::styled(
             " ".repeat(width),
             Style::default().bg(background),
@@ -244,19 +309,22 @@ impl<Ctx> Picker<Ctx> {
         self.height.max(1)
     }
 
-    /// Slide the window so the highlighted row stays visible.
+    /// Slide the window so the highlighted row stays visible. The row sits at
+    /// content line `lead + selected`, past the note block.
     fn scroll_into_view(&mut self) {
         if self.height == 0 {
             return;
         }
-        if self.selected < self.top {
-            self.top = self.selected;
+        let cursor = self.lead + self.selected;
+        if cursor < self.top {
+            self.top = cursor;
         }
-        let bottom = self.selected + 1;
+        let bottom = cursor + 1;
         if bottom > self.top + self.height {
             self.top = bottom - self.height;
         }
-        let max_top = self.rows.len().saturating_sub(self.height);
+        let content_len = self.lead + self.rows.len();
+        let max_top = content_len.saturating_sub(self.height);
         self.top = self.top.min(max_top);
     }
 }
@@ -363,7 +431,7 @@ mod tests {
             })
             .collect();
         let mut picker = Picker::new("Files", rows, HINT, colors());
-        picker.set_height(height);
+        picker.set_viewport(height, 0);
         picker
     }
 
@@ -376,14 +444,15 @@ mod tests {
         // A short list fits its window whole: the first row opens marked and
         // washed, the rest plain, then a spacer and the key hint.
         let picker = picker(3, 5);
-        let expected = "\
-<#333333|#222222|->> item 0                                  
-<#333333|#555555|->  item 1                                  
-<#333333|#555555|->  item 2                                  
-<-|#555555|->                                          
-<#444444|#555555|->  up/down move   enter select   esc cancel
-";
-        wince::assert_eq!(dump(&picker.lines(picker.width())), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&picker.lines(picker.width())),
+            "<#333333|#222222|->> item 0                                  \n",
+            "<#333333|#555555|->  item 1                                  \n",
+            "<#333333|#555555|->  item 2                                  \n",
+            "<-|#555555|->                                          \n",
+            "<#444444|#555555|->  up/down move   enter select   esc cancel\n",
+        );
     }
 
     #[test]
@@ -396,14 +465,15 @@ mod tests {
             picker.select_next();
         }
         wince::assert_eq!(picker.selected(), 3);
-        let expected = "\
-<#333333|#555555|->  item 1                                  
-<#333333|#555555|->  item 2                                  
-<#333333|#222222|->> item 3                                  
-<-|#555555|->                                          
-<#444444|#555555|->  up/down move   enter select   esc cancel
-";
-        wince::assert_eq!(dump(&picker.lines(picker.width())), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&picker.lines(picker.width())),
+            "<#333333|#555555|->  item 1                                  \n",
+            "<#333333|#555555|->  item 2                                  \n",
+            "<#333333|#222222|->> item 3                                  \n",
+            "<-|#555555|->                                          \n",
+            "<#444444|#555555|->  up/down move   enter select   esc cancel\n",
+        );
     }
 
     #[test]
@@ -419,13 +489,65 @@ mod tests {
         wince::assert_eq!(picker.selected(), 0);
         picker.to_bottom();
         wince::assert_eq!(picker.selected(), 3);
-        let expected = "\
-<#333333|#555555|->  item 2                                  
-<#333333|#222222|->> item 3                                  
-<-|#555555|->                                          
-<#444444|#555555|->  up/down move   enter select   esc cancel
-";
-        wince::assert_eq!(dump(&picker.lines(picker.width())), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&picker.lines(picker.width())),
+            "<#333333|#555555|->  item 2                                  \n",
+            "<#333333|#222222|->> item 3                                  \n",
+            "<-|#555555|->                                          \n",
+            "<#444444|#555555|->  up/down move   enter select   esc cancel\n",
+        );
+    }
+
+    #[test]
+    fn a_note_wraps_to_the_content_width_leading_the_rows_in_the_border_color() {
+        // A note wider than the content wraps across as many lines as it needs,
+        // breaking at spaces, painted in the border and title color, then a
+        // blank line before the rows. The note does not widen the box past the
+        // hint.
+        let mut picker = picker(2, 5);
+        picker.set_note("the review base moved out from under you to a different commit");
+        wince::assert_eq!(picker.note_height(picker.width()), 3);
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&picker.lines(picker.width())),
+            "<#111111|#555555|->  the review base moved out from under you\n",
+            "<#111111|#555555|->  to a different commit                   \n",
+            "<-|#555555|->                                          \n",
+            "<#333333|#222222|->> item 0                                  \n",
+            "<#333333|#555555|->  item 1                                  \n",
+            "<-|#555555|->                                          \n",
+            "<#444444|#555555|->  up/down move   enter select   esc cancel\n",
+        );
+    }
+
+    #[test]
+    fn a_note_scrolls_with_the_rows_when_the_content_overflows_the_viewport() {
+        // Note plus rows exceed a three-line viewport. At the top the note shows
+        // above the first row; stepping to the last row scrolls the note off,
+        // and the spacer and hint stay pinned below throughout.
+        let mut picker = picker(4, 3);
+        picker.set_note("heads up");
+        picker.set_viewport(3, picker.note_height(picker.width()));
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&picker.lines(picker.width())),
+            "<#111111|#555555|->  heads up                                \n",
+            "<-|#555555|->                                          \n",
+            "<#333333|#222222|->> item 0                                  \n",
+            "<-|#555555|->                                          \n",
+            "<#444444|#555555|->  up/down move   enter select   esc cancel\n",
+        );
+        picker.to_bottom();
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&picker.lines(picker.width())),
+            "<#333333|#555555|->  item 1                                  \n",
+            "<#333333|#555555|->  item 2                                  \n",
+            "<#333333|#222222|->> item 3                                  \n",
+            "<-|#555555|->                                          \n",
+            "<#444444|#555555|->  up/down move   enter select   esc cancel\n",
+        );
     }
 
     #[test]
@@ -437,13 +559,14 @@ mod tests {
             index: 0,
         })];
         let mut picker = Picker::new("Files", rows, HINT, colors());
-        picker.set_height(1);
-        let expected = "\
-<#333333|#222222|->> crates/wiff
-<-|#555555|->             
-<#444444|#555555|->  up/down mov
-";
-        wince::assert_eq!(dump(&picker.lines(13)), expected.to_string());
+        picker.set_viewport(1, 0);
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&picker.lines(13)),
+            "<#333333|#222222|->> crates/wiff\n",
+            "<-|#555555|->             \n",
+            "<#444444|#555555|->  up/down mov\n",
+        );
     }
 
     #[test]

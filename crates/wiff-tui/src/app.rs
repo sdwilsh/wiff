@@ -1860,8 +1860,13 @@ impl App {
             self.set_message("no earlier version to compare against".to_string());
             return;
         }
-        self.picker =
-            Some(self.compare_picker("Compare versions", latest, self.comparing_from(), None));
+        self.picker = Some(self.compare_picker(
+            "Compare versions",
+            latest,
+            self.comparing_from(),
+            None,
+            None,
+        ));
     }
 
     /// Build the modal list of captured versions to compare against, titled
@@ -1876,6 +1881,7 @@ impl App {
         latest: u32,
         showing: Option<u32>,
         last_commented: Option<u32>,
+        note: Option<String>,
     ) -> Picker<App> {
         let annotate = |text: String, version: Option<u32>| {
             let mut marks = Vec::new();
@@ -1918,6 +1924,9 @@ impl App {
             .collect();
         let hint = self.picker_hint();
         let mut picker = Picker::new(title, rows, &hint, self.picker_colors);
+        if let Some(note) = note {
+            picker.set_note(note);
+        }
         picker.select(selected);
         picker
     }
@@ -1959,17 +1968,17 @@ impl App {
 
     /// Open the compare-versions list after a refresh, keeping the reviewer's
     /// perspective from before the recapture: `showing` is the version they were
-    /// viewing (`None` for the latest diff) and its row opens marked as where
-    /// they were, and `last_commented` marks where they last committed comments.
-    /// The list is the same one the compare hotkey opens, under a title naming
-    /// the capture that prompted it. Cancelling keeps that same perspective
-    /// against the fresh capture, still a valid view since the comparison's
-    /// right side is always the latest. Does nothing when there is no earlier
-    /// version or on a read-only view with no review.
+    /// viewing (`None` for the latest diff), which opens marked and preselected,
+    /// and `last_commented` marks where they last committed comments. `note`,
+    /// when set, leads the list with advisory context such as a base that moved
+    /// out from under the review. Cancelling keeps that same perspective against
+    /// the fresh capture. Does nothing when there is no earlier version or on a
+    /// read-only view with no review.
     pub fn offer_compare_after_refresh(
         &mut self,
         showing: Option<u32>,
         last_commented: Option<u32>,
+        note: Option<String>,
     ) {
         let Some(latest) = self.latest_version() else {
             return;
@@ -1978,7 +1987,7 @@ impl App {
             return;
         }
         let title = format!("Captured v{latest}: compare against a version, or keep the latest");
-        self.picker = Some(self.compare_picker(&title, latest, showing, last_commented));
+        self.picker = Some(self.compare_picker(&title, latest, showing, last_commented, note));
         self.compare_on_cancel = Some(match showing {
             Some(from) => CompareRequest::Version(from),
             None => CompareRequest::Latest,
@@ -2011,11 +2020,12 @@ impl App {
         self.picker.as_ref()
     }
 
-    /// Set how many rows the open modal list shows, from the space the host
-    /// gives it. Does nothing when the list is closed.
-    pub fn picker_set_height(&mut self, height: usize) {
+    /// Set the open modal list's viewport to `height` content lines, `lead` of
+    /// them the note block ahead of the rows, from the space the host gives it.
+    /// Does nothing when the list is closed.
+    pub fn picker_set_viewport(&mut self, height: usize, lead: usize) {
         if let Some(picker) = self.picker.as_mut() {
-            picker.set_height(height);
+            picker.set_viewport(height, lead);
         }
     }
 
@@ -4262,13 +4272,11 @@ mod tests {
 
     /// Dump the open modal list rendered to its full height, as a human sees it.
     fn dump_picker(app: &mut App) -> String {
+        let width = app.picker().expect("picking").width();
         let rows = app.picker().expect("picking").list_len();
-        app.picker_set_height(rows);
-        dump(
-            &app.picker()
-                .expect("picking")
-                .lines(app.picker().expect("picking").width()),
-        )
+        let lead = app.picker().expect("picking").note_height(width);
+        app.picker_set_viewport(rows + lead, lead);
+        dump(&app.picker().expect("picking").lines(width))
     }
 
     #[test]
@@ -4632,7 +4640,7 @@ mod tests {
         // Refreshing while on the latest diff opens the list marking and opening
         // on the latest, where the reviewer was.
         let mut app = App::reviewing(versioned_review(1), 8, &theme());
-        app.offer_compare_after_refresh(None, None);
+        app.offer_compare_after_refresh(None, None, None);
         wince::assert_eq!(app.picking(), true);
         #[rustfmt::skip]
         wince::snapshot_display!(
@@ -4645,11 +4653,36 @@ mod tests {
     }
 
     #[test]
+    fn the_post_refresh_prompt_leads_with_a_base_move_note() {
+        // A base that moved out from under the review leads the list with a
+        // note in the border and title color, wrapped to the modal width, and a
+        // blank line above the version rows.
+        let mut app = App::reviewing(versioned_review(1), 8, &theme());
+        app.offer_compare_after_refresh(
+            None,
+            None,
+            Some("Base moved abc123 -> def456; the review now starts elsewhere.".to_string()),
+        );
+        wince::assert_eq!(app.picking(), true);
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump_picker(&mut app),
+            "<#ebcb8b|#2b303b|->  Base moved abc123 -> def456; the      \n",
+            "<#ebcb8b|#2b303b|->  review now starts elsewhere.          \n",
+            "<-|#2b303b|->                                        \n",
+            "<#c0c5ce|#65737e|->> the latest diff (v1) (showing now)    \n",
+            "<#c0c5ce|#2b303b|->  changes since v0                      \n",
+            "<-|#2b303b|->                                        \n",
+            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
+        );
+    }
+
+    #[test]
     fn the_post_refresh_prompt_marks_and_opens_on_the_reviewers_prior_comparison() {
         // Refreshing while comparing against v1 opens the list marking and
         // opening on that row, so the reviewer keeps the perspective they had.
         let mut app = App::reviewing(versioned_review(2), 8, &theme());
-        app.offer_compare_after_refresh(Some(1), None);
+        app.offer_compare_after_refresh(Some(1), None, None);
         wince::assert_eq!(app.picking(), true);
         #[rustfmt::skip]
         wince::snapshot_display!(
@@ -4668,7 +4701,7 @@ mod tests {
         // on the latest, where the reviewer was, and marks v1 as where their
         // comments are so they can step to it.
         let mut app = App::reviewing(versioned_review(2), 8, &theme());
-        app.offer_compare_after_refresh(None, Some(1));
+        app.offer_compare_after_refresh(None, Some(1), None);
         wince::assert_eq!(app.picking(), true);
         #[rustfmt::skip]
         wince::snapshot_display!(
@@ -4686,7 +4719,7 @@ mod tests {
         // Stepping to the earlier version and activating closes the prompt and
         // records a request to compare against v0, taken exactly once.
         let mut app = App::reviewing(versioned_review(1), 8, &theme());
-        app.offer_compare_after_refresh(None, None);
+        app.offer_compare_after_refresh(None, None, None);
         app.picker_nav(Action::LineDown);
         app.picker_activate();
         wince::assert_eq!(app.picking(), false);
@@ -4699,7 +4732,7 @@ mod tests {
         // Activating the default choice closes the prompt and records a return
         // to the latest diff the refresh already reloaded.
         let mut app = App::reviewing(versioned_review(1), 8, &theme());
-        app.offer_compare_after_refresh(None, None);
+        app.offer_compare_after_refresh(None, None, None);
         app.picker_activate();
         wince::assert_eq!(app.picking(), false);
         wince::assert_eq!(app.take_pending_compare(), Some(CompareRequest::Latest));
@@ -4712,7 +4745,7 @@ mod tests {
         // version they were on before the refresh, against the fresh capture,
         // taken exactly once.
         let mut app = App::reviewing(versioned_review(2), 8, &theme());
-        app.offer_compare_after_refresh(Some(1), None);
+        app.offer_compare_after_refresh(Some(1), None, None);
         app.picker_cancel();
         wince::assert_eq!(app.picking(), false);
         wince::assert_eq!(app.take_pending_compare(), Some(CompareRequest::Version(1)));
@@ -4724,7 +4757,7 @@ mod tests {
         // Escaping when the reviewer was on the latest before the refresh keeps
         // them on the latest, taken exactly once.
         let mut app = App::reviewing(versioned_review(2), 8, &theme());
-        app.offer_compare_after_refresh(None, None);
+        app.offer_compare_after_refresh(None, None, None);
         app.picker_cancel();
         wince::assert_eq!(app.picking(), false);
         wince::assert_eq!(app.take_pending_compare(), Some(CompareRequest::Latest));

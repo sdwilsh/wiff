@@ -53,6 +53,7 @@ pub fn create_session(
         VersionNumber(0),
         &captured.text,
         captured.base_revision.clone(),
+        captured.base_tip_relative,
         captured.head_revision.clone(),
     )?;
     if let Some((author, description)) = description {
@@ -80,6 +81,7 @@ pub fn write_diff_version(
     number: VersionNumber,
     diff_text: &str,
     base_revision: Option<RevisionId>,
+    base_tip_relative: bool,
     head_revision: Option<RevisionId>,
 ) -> Result<Seq> {
     let diff = parse(diff_text)?;
@@ -101,6 +103,7 @@ pub fn write_diff_version(
         number,
         diff_hash: SidebandHash::of(diff_text.as_bytes()),
         base_revision,
+        base_tip_relative,
         head_revision,
         files,
     };

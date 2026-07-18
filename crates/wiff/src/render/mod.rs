@@ -264,6 +264,7 @@ mod fixture {
                 number: VersionNumber(0),
                 diff_hash: SidebandHash::of(b"main.rs"),
                 base_revision: None,
+                base_tip_relative: false,
                 head_revision: None,
                 files: vec![FileSummary {
                     old_path: "main.rs".to_string(),

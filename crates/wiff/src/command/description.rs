@@ -148,6 +148,7 @@ diff --git a/f.txt b/f.txt
             text: DIFF.to_string(),
             source: SourceKind::Stdin,
             base_revision: None,
+            base_tip_relative: false,
             head_revision: None,
         };
         create_session(base, &identity(), Path::new("/work"), &captured, None).unwrap()

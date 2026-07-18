@@ -451,7 +451,7 @@ impl DiffSource for GitSource {
     async fn capture(&self) -> Result<CapturedDiff> {
         let ruleset = parse_ruleset(self.base.as_str())?;
         let tip = self.resolve_tip().await?;
-        let base = resolve_base(&ruleset, &tip, &self.repo)
+        let resolved = resolve_base(&ruleset, &tip, &self.repo)
             .await?
             .ok_or_else(|| {
                 Error::Source(format!(
@@ -459,6 +459,7 @@ impl DiffSource for GitSource {
                     self.base
                 ))
             })?;
+        let base = resolved.revision;
         let (text, head_revision) = match &self.tip {
             TipRule::Worktree => (self.capture_worktree(&base).await?, None),
             TipRule::Index => (
@@ -490,6 +491,7 @@ impl DiffSource for GitSource {
                 tip: self.tip.clone(),
             }),
             base_revision: Some(base),
+            base_tip_relative: resolved.tip_relative,
             head_revision,
         })
     }
@@ -501,7 +503,7 @@ mod tests {
     use std::process::{Command, Output};
 
     use super::{GitRepo, GitSource};
-    use crate::base_resolve::{RevisionResolver, resolve_base};
+    use crate::base_resolve::{ResolvedBase, RevisionResolver, resolve_base};
     use crate::base_ruleset::{BaseRuleset, parse_ruleset};
     use crate::identity::ScmType;
     use crate::record::{RevisionId, ScmSource, SourceKind, TipRule};
@@ -611,6 +613,9 @@ index HASHES
             })
         );
         wince::assert_eq!(captured.base_revision, Some(empty_tree));
+        // The parent(@) base follows the tip, so a refresh treats its move as
+        // expected.
+        wince::assert_eq!(captured.base_tip_relative, true);
         wince::assert_eq!(captured.head_revision, Some(head));
     }
 
@@ -687,6 +692,7 @@ index HASHES
             })
         );
         wince::assert_eq!(captured.base_revision, Some(first_parent));
+        wince::assert_eq!(captured.base_tip_relative, true);
         wince::assert_eq!(captured.head_revision, Some(head));
     }
 
@@ -776,6 +782,9 @@ index HASHES
             })
         );
         wince::assert_eq!(captured.base_revision, Some(head));
+        // The base is pinned at the commit HEAD was on, not anchored to the
+        // tip, so a later move would be reported.
+        wince::assert_eq!(captured.base_tip_relative, false);
         wince::assert_eq!(captured.head_revision, None);
     }
 
@@ -863,7 +872,13 @@ index HASHES
         let base = resolve_base(&ruleset, &feature, &source)
             .await
             .expect("resolve");
-        wince::assert_eq!(base, Some(first));
+        wince::assert_eq!(
+            base,
+            Some(ResolvedBase {
+                revision: first,
+                tip_relative: false,
+            })
+        );
     }
 
     #[tokio::test]
@@ -880,7 +895,13 @@ index HASHES
         let base = resolve_base(&ruleset, &feature, &source)
             .await
             .expect("resolve");
-        wince::assert_eq!(base, Some(RevisionId(expected)));
+        wince::assert_eq!(
+            base,
+            Some(ResolvedBase {
+                revision: RevisionId(expected),
+                tip_relative: false,
+            })
+        );
     }
 
     #[tokio::test]

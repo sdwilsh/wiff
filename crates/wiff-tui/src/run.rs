@@ -125,14 +125,15 @@ pub fn draw<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
     Ok(())
 }
 
-/// The centered rectangle, content width, and visible row count for a scrolling
-/// modal overlay of `total` rows and `content_width` columns floating over
-/// `area`. The border, spacer, and hint take four rows; the rest is the room the
-/// rows have, so an overlay taller than that scrolls rather than overflowing.
+/// The centered rectangle, content width, and visible line count for a scrolling
+/// modal overlay of `total` content lines and `content_width` columns floating
+/// over `area`. The border, spacer, and hint take four rows; the rest is the
+/// room the content has, so an overlay taller than that scrolls rather than
+/// overflowing.
 fn centered_modal(area: Rect, total: usize, content_width: usize) -> (Rect, usize, usize) {
     let chrome = 4u16;
     let visible = total.min(area.height.saturating_sub(chrome) as usize);
-    let inner = content_width.min(area.width.saturating_sub(2) as usize);
+    let inner = modal_inner_width(area, content_width);
     let width = (inner as u16 + 2).min(area.width);
     let height = (visible as u16 + chrome).min(area.height);
     let rect = Rect {
@@ -144,14 +145,26 @@ fn centered_modal(area: Rect, total: usize, content_width: usize) -> (Rect, usiz
     (rect, inner, visible)
 }
 
+/// The usable inner width of a modal of `content_width` columns over `area`,
+/// accounting for its border. Shared so callers measuring content ahead of
+/// `centered_modal` wrap to the same width it lays out at.
+fn modal_inner_width(area: Rect, content_width: usize) -> usize {
+    content_width.min(area.width.saturating_sub(2) as usize)
+}
+
 /// Draw the modal list centered over `area`, clearing the cells behind it, its
 /// window sized so a list taller than the space scrolls rather than overflowing.
 fn render_picker(frame: &mut Frame, area: Rect, app: &mut App) {
-    let Some((total, content_width)) = app.picker().map(|p| (p.list_len(), p.width())) else {
+    let Some((rows, content_width)) = app.picker().map(|p| (p.list_len(), p.width())) else {
         return;
     };
-    let (rect, inner, visible) = centered_modal(area, total, content_width);
-    app.picker_set_height(visible);
+    // The note wraps to the width the modal lays out at and scrolls with the
+    // rows, so it counts toward the scrollable content measured at that width.
+    let lead = app
+        .picker()
+        .map_or(0, |p| p.note_height(modal_inner_width(area, content_width)));
+    let (rect, inner, visible) = centered_modal(area, rows + lead, content_width);
+    app.picker_set_viewport(visible, lead);
     let Some(picker) = app.picker() else {
         return;
     };

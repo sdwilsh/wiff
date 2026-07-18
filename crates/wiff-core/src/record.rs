@@ -327,6 +327,11 @@ pub struct DiffVersionRecord {
     /// authoritative base.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_revision: Option<RevisionId>,
+    /// Whether the base this version was captured against was anchored to the tip
+    /// under review (e.g. via `parent(@)`), and so expected to move with it.
+    /// Meaningful only when [`base_revision`](Self::base_revision) is set.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub base_tip_relative: bool,
     /// The tip commit this version was captured at, when the source has an
     /// authoritative tip. Absent for a working-tree or index capture, whose tip
     /// is the uncommitted state rather than a commit.

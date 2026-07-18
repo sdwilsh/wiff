@@ -142,12 +142,35 @@ pub enum RuleOp {
     /// Pass an expression verbatim to a named scm's own resolver. The function
     /// name is itself the scm selector: `git(<expr>)` is considered only when the
     /// session's scm is git.
+    ///
+    /// The expression is opaque to the grammar, so a native base that in fact
+    /// tracks the tip (`git(@-)`, `git(HEAD~1)`) is not recognized as
+    /// tip-relative and a refresh will report its move on every advance of the
+    /// tip. Express a tip-tracking base with `parent(@)` or `mergebase(@)`
+    /// instead to have that expected move go unremarked.
     Native {
         /// The scm whose resolver the expression is handed to.
         scm: ScmType,
         /// The expression, with only its surrounding whitespace stripped.
         expr: String,
     },
+}
+
+impl RuleOp {
+    /// Whether this operator anchors its base to the tip under review, its
+    /// reference being `@`. Such a base is expected to move as the tip advances.
+    ///
+    /// This reads the grammar structurally, so a [`Native`](RuleOp::Native)
+    /// expression that tracks the tip is not recognized as tip-relative; its
+    /// opaque text is not introspected here.
+    pub(crate) fn is_tip_relative(&self) -> bool {
+        matches!(
+            self,
+            RuleOp::Ref(Reference::Tip)
+                | RuleOp::Parent(Reference::Tip)
+                | RuleOp::MergeBase(Reference::Tip)
+        )
+    }
 }
 
 /// The reference an operator resolves: a literal ref named with `name(...)`, or

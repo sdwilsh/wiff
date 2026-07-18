@@ -46,6 +46,7 @@ fn stdin_diff() -> CapturedDiff {
         text: DIFF.to_string(),
         source: SourceKind::Stdin,
         base_revision: None,
+        base_tip_relative: false,
         head_revision: None,
     }
 }
@@ -94,6 +95,7 @@ fn create_session_writes_header_version_and_sideband() {
                 number: VersionNumber(0),
                 diff_hash: SidebandHash::of(DIFF.as_bytes()),
                 base_revision: None,
+                base_tip_relative: false,
                 head_revision: None,
                 files: vec![
                     FileSummary {
@@ -166,6 +168,7 @@ fn create_session_writes_an_initial_description_after_the_diff() {
                 number: VersionNumber(0),
                 diff_hash: SidebandHash::of(DIFF.as_bytes()),
                 base_revision: None,
+                base_tip_relative: false,
                 head_revision: None,
                 files: vec![
                     FileSummary {
@@ -214,6 +217,7 @@ fn create_session_writes_an_initial_description_after_the_diff() {
                 number: VersionNumber(0),
                 diff_hash: SidebandHash::of(DIFF.as_bytes()),
                 base_revision: None,
+                base_tip_relative: false,
                 head_revision: None,
                 files: vec![
                     FileSummary {

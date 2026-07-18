@@ -401,6 +401,7 @@ diff --git a/f.txt b/f.txt
             text: DIFF.to_string(),
             source: SourceKind::Stdin,
             base_revision: None,
+            base_tip_relative: false,
             head_revision: None,
         };
         let identity = ProjectIdentity {

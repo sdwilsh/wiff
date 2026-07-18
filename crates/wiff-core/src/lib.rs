@@ -35,7 +35,7 @@ pub use error::{Error, Result};
 pub use hash::SidebandHash;
 pub use identity::{ProjectIdentity, ScmType};
 pub use rebase::{RebaseOutcome, rebase_line_comment};
-pub use refresh::{RefreshOutcome, refresh_session};
+pub use refresh::{BaseShift, RefreshOutcome, refresh_session};
 pub use review::{CommentState, DescriptionState, ReviewState, fold};
 pub use session::{LockWait, SessionLock, SessionLog};
 pub use source::{CapturedDiff, DiffSource, GitSource};

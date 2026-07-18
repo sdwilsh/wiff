@@ -5,13 +5,14 @@ use std::path::Path;
 use time::OffsetDateTime;
 use ulid::Ulid;
 use wiff_core::record::{
-    Anchor, Author, AuthorKind, CommentTarget, Seq, SourceKind, VersionNumber,
+    Anchor, Author, AuthorKind, CommentTarget, RevisionId, ScmSource, Seq, SourceKind, TipRule,
+    VersionNumber,
 };
 use wiff_core::review::{CommentState, fold};
 use wiff_core::session::read_records;
 use wiff_core::{
-    CapturedDiff, DraftComment, LockWait, ProjectIdentity, RefreshOutcome, SessionLog,
-    create_session, refresh_session,
+    BaseRuleset, BaseShift, CapturedDiff, DraftComment, LockWait, ProjectIdentity, RefreshOutcome,
+    ScmType, SessionLog, create_session, refresh_session,
 };
 use wiff_diff::{LineNo, Side};
 
@@ -29,6 +30,21 @@ new file mode 100644
 +delta
 ";
 
+/// v1: [`V0`] with a fifth line appended, differing enough to capture as a new
+/// version.
+const V1: &str = "\
+diff --git a/f.txt b/f.txt
+new file mode 100644
+--- /dev/null
++++ b/f.txt
+@@ -0,0 +1,5 @@
++alpha
++beta
++gamma
++delta
++epsilon
+";
+
 fn identity() -> ProjectIdentity {
     ProjectIdentity {
         canonical: "demo".to_string(),
@@ -43,6 +59,27 @@ fn stdin_capture(text: &str) -> CapturedDiff {
         text: text.to_string(),
         source: SourceKind::Stdin,
         base_revision: None,
+        base_tip_relative: false,
+        head_revision: None,
+    }
+}
+
+/// An scm capture of `text` against `base`, with `tip_relative` recording
+/// whether the base was anchored to the tip under review.
+fn scm_capture(text: &str, base: &str, tip_relative: bool) -> CapturedDiff {
+    CapturedDiff {
+        text: text.to_string(),
+        source: SourceKind::Scm(ScmSource {
+            scm: ScmType::Git,
+            base: BaseRuleset::new(if tip_relative {
+                "parent(@)"
+            } else {
+                "merge-base(upstream)"
+            }),
+            tip: TipRule::Worktree,
+        }),
+        base_revision: Some(RevisionId(base.to_string())),
+        base_tip_relative: tip_relative,
         head_revision: None,
     }
 }
@@ -180,6 +217,7 @@ new file mode 100644
             approximate: 0,
             relocated: 0,
             outdated: 0,
+            base_shift: None,
         })
     );
     wince::assert_eq!(
@@ -218,6 +256,7 @@ new file mode 100644
             approximate: 0,
             relocated: 0,
             outdated: 1,
+            base_shift: None,
         })
     );
     wince::assert_eq!(
@@ -257,6 +296,7 @@ new file mode 100644
             approximate: 1,
             relocated: 0,
             outdated: 0,
+            base_shift: None,
         })
     );
     wince::assert_eq!(
@@ -299,6 +339,7 @@ new file mode 100644
             approximate: 0,
             relocated: 0,
             outdated: 0,
+            base_shift: None,
         })
     );
     let comment = comment_after_refresh(&log);
@@ -356,6 +397,7 @@ new file mode 100644
             approximate: 0,
             relocated: 0,
             outdated: 0,
+            base_shift: None,
         })
     );
     let state = fold(&read_records(log.path()).unwrap()).unwrap();
@@ -386,6 +428,122 @@ new file mode 100644
                 3
             ),
         ]
+    );
+}
+
+/// Create a session whose v0 was captured against `base`, with `tip_relative`
+/// recording whether that base followed the tip, returning it for a refresh test
+/// that moves the base.
+fn session_captured_against(base: &str, tip_relative: bool) -> (tempfile::TempDir, SessionLog) {
+    let dir = tempfile::tempdir().unwrap();
+    let log = create_session(
+        dir.path(),
+        &identity(),
+        Path::new("/work"),
+        &scm_capture(V0, base, tip_relative),
+        None,
+    )
+    .unwrap();
+    (dir, log)
+}
+
+#[test]
+fn a_base_not_anchored_to_the_tip_reports_its_move() {
+    let (_dir, mut log) = session_captured_against("base-a", false);
+    let outcome = refresh_session(
+        &mut log,
+        &scm_capture(V1, "base-b", false),
+        author(),
+        LockWait::Block,
+    )
+    .unwrap();
+    wince::assert_eq!(
+        outcome,
+        Some(RefreshOutcome {
+            version: VersionNumber(1),
+            exact: 0,
+            approximate: 0,
+            relocated: 0,
+            outdated: 0,
+            base_shift: Some(BaseShift {
+                from: RevisionId("base-a".to_string()),
+                to: RevisionId("base-b".to_string()),
+            }),
+        })
+    );
+}
+
+#[test]
+fn a_base_anchored_to_the_tip_does_not_report_its_move() {
+    // parent(@) follows the tip, so its move as the tip advances is expected and
+    // left unremarked even though the resolved base differs.
+    let (_dir, mut log) = session_captured_against("base-a", false);
+    let outcome = refresh_session(
+        &mut log,
+        &scm_capture(V1, "base-b", true),
+        author(),
+        LockWait::Block,
+    )
+    .unwrap();
+    wince::assert_eq!(
+        outcome,
+        Some(RefreshOutcome {
+            version: VersionNumber(1),
+            exact: 0,
+            approximate: 0,
+            relocated: 0,
+            outdated: 0,
+            base_shift: None,
+        })
+    );
+}
+
+#[test]
+fn a_base_that_resolves_to_the_same_commit_reports_no_move() {
+    let (_dir, mut log) = session_captured_against("base-a", false);
+    let outcome = refresh_session(
+        &mut log,
+        &scm_capture(V1, "base-a", false),
+        author(),
+        LockWait::Block,
+    )
+    .unwrap();
+    wince::assert_eq!(
+        outcome,
+        Some(RefreshOutcome {
+            version: VersionNumber(1),
+            exact: 0,
+            approximate: 0,
+            relocated: 0,
+            outdated: 0,
+            base_shift: None,
+        })
+    );
+}
+
+#[test]
+fn switching_a_tip_anchored_base_to_a_pinned_one_reports_no_move() {
+    // v0's base followed the tip (parent(@)), so the commit it resolved to was
+    // never a stable starting point. Switching the ruleset to a pinned base is a
+    // config change, not an involuntary upstream move, so it goes unremarked.
+    let (_dir, mut log) = session_captured_against("base-a", true);
+    let outcome = refresh_session(
+        &mut log,
+        &scm_capture(V1, "base-b", false),
+        author(),
+        LockWait::Block,
+    )
+    .unwrap();
+    wince::assert_eq!(
+        outcome,
+        Some(RefreshOutcome {
+            version: VersionNumber(1),
+            exact: 0,
+            approximate: 0,
+            relocated: 0,
+            outdated: 0,
+            base_shift: None,
+        })
     );
 }
 

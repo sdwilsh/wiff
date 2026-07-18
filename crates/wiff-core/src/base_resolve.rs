@@ -13,6 +13,16 @@ use crate::error::Result;
 use crate::identity::ScmType;
 use crate::record::RevisionId;
 
+/// The outcome of resolving a base ruleset against a repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedBase {
+    /// The commit the base ruleset resolved to.
+    pub revision: RevisionId,
+    /// Whether the resolved base is anchored to the tip under review (e.g. via
+    /// `parent(@)`), and so expected to move with it.
+    pub tip_relative: bool,
+}
+
 /// The per-scm primitives the base grammar resolves through. Each primitive
 /// answers for one repository: it returns `Ok(None)` when the query names
 /// nothing there (an unknown ref, a missing upstream, no common ancestor), which
@@ -55,7 +65,7 @@ pub async fn resolve_base(
     ruleset: &Ruleset,
     tip: &RevisionId,
     resolver: &(dyn RevisionResolver + Sync),
-) -> Result<Option<RevisionId>> {
+) -> Result<Option<ResolvedBase>> {
     for rule in &ruleset.rules {
         // A rule gated to another scm never applies here.
         if rule.scm.is_some_and(|scm| scm != resolver.scm()) {
@@ -74,28 +84,32 @@ async fn resolve_op(
     op: &RuleOp,
     tip: &RevisionId,
     resolver: &(dyn RevisionResolver + Sync),
-) -> Result<Option<RevisionId>> {
-    match op {
-        RuleOp::Ref(reference) => resolve_reference(reference, tip, resolver).await,
+) -> Result<Option<ResolvedBase>> {
+    let revision = match op {
+        RuleOp::Ref(reference) => resolve_reference(reference, tip, resolver).await?,
         RuleOp::Parent(reference) => match resolve_reference(reference, tip, resolver).await? {
-            Some(rev) => resolver.parent(&rev).await,
-            None => Ok(None),
+            Some(rev) => resolver.parent(&rev).await?,
+            None => None,
         },
         RuleOp::MergeBase(reference) => match resolve_reference(reference, tip, resolver).await? {
-            Some(rev) => resolver.merge_base(&rev, tip).await,
-            None => Ok(None),
+            Some(rev) => resolver.merge_base(&rev, tip).await?,
+            None => None,
         },
-        RuleOp::Empty => resolver.empty().await,
+        RuleOp::Empty => resolver.empty().await?,
         // The function name is the scm selector, so a native op for another scm
         // falls through just as a mismatched gate does.
         RuleOp::Native { scm, expr } => {
             if *scm != resolver.scm() {
-                Ok(None)
+                None
             } else {
-                resolver.native(expr).await
+                resolver.native(expr).await?
             }
         }
-    }
+    };
+    Ok(revision.map(|revision| ResolvedBase {
+        revision,
+        tip_relative: op.is_tip_relative(),
+    }))
 }
 
 /// Resolve a reference to a commit. The tip resolves to itself; the others
@@ -148,6 +162,15 @@ mod tests {
 
     fn rev(id: &str) -> RevisionId {
         RevisionId(id.to_string())
+    }
+
+    /// The resolved base a test expects, naming its commit and whether the
+    /// resolving rule was tip-relative.
+    fn resolved(id: &str, tip_relative: bool) -> Option<ResolvedBase> {
+        Some(ResolvedBase {
+            revision: rev(id),
+            tip_relative,
+        })
     }
 
     #[async_trait]
@@ -211,7 +234,7 @@ mod tests {
         let base = resolve_base(&ruleset, &rev("tip"), &resolver)
             .await
             .expect("resolve");
-        wince::assert_eq!(base, Some(rev("ancestor")));
+        wince::assert_eq!(base, resolved("ancestor", false));
     }
 
     #[tokio::test]
@@ -229,7 +252,7 @@ mod tests {
         let base = resolve_base(&ruleset, &rev("tip"), &resolver)
             .await
             .expect("resolve");
-        wince::assert_eq!(base, Some(rev("fork-point")));
+        wince::assert_eq!(base, resolved("fork-point", false));
     }
 
     #[tokio::test]
@@ -252,7 +275,44 @@ mod tests {
         let base = resolve_base(&ruleset, &rev("tip"), &resolver)
             .await
             .expect("resolve");
-        wince::assert_eq!(base, Some(rev("tip-parent")));
+        wince::assert_eq!(base, resolved("tip-parent", true));
+    }
+
+    #[tokio::test]
+    async fn tip_relativeness_reflects_the_rule_that_resolved_not_the_whole_ruleset() {
+        let ruleset = parse_ruleset("merge-base(upstream), parent(@)").expect("parse");
+
+        // With an upstream, the first rule wins: the base is anchored to
+        // upstream, not to the tip, so a later refresh treats its move as
+        // remarkable.
+        let anchored = FakeResolver {
+            upstream: Some(rev("upstream-tip")),
+            merge_bases: HashMap::from([(
+                ("upstream-tip".to_string(), "tip".to_string()),
+                rev("ancestor"),
+            )]),
+            parents: HashMap::from([("tip".to_string(), rev("tip-parent"))]),
+            ..Default::default()
+        };
+        wince::assert_eq!(
+            resolve_base(&ruleset, &rev("tip"), &anchored)
+                .await
+                .expect("resolve"),
+            resolved("ancestor", false)
+        );
+
+        // With no upstream, resolution falls through to parent(@): the same
+        // ruleset now yields a tip-relative base.
+        let tip_relative = FakeResolver {
+            parents: HashMap::from([("tip".to_string(), rev("tip-parent"))]),
+            ..Default::default()
+        };
+        wince::assert_eq!(
+            resolve_base(&ruleset, &rev("tip"), &tip_relative)
+                .await
+                .expect("resolve"),
+            resolved("tip-parent", true)
+        );
     }
 
     #[tokio::test]
@@ -265,7 +325,7 @@ mod tests {
         let base = resolve_base(&ruleset, &rev("tip"), &resolver)
             .await
             .expect("resolve");
-        wince::assert_eq!(base, Some(rev("origin-main-sha")));
+        wince::assert_eq!(base, resolved("origin-main-sha", false));
     }
 
     #[tokio::test]
@@ -278,7 +338,7 @@ mod tests {
         let base = resolve_base(&ruleset, &rev("tip"), &resolver)
             .await
             .expect("resolve");
-        wince::assert_eq!(base, Some(rev("empty-tree")));
+        wince::assert_eq!(base, resolved("empty-tree", false));
     }
 
     #[tokio::test]
@@ -293,7 +353,7 @@ mod tests {
         let base = resolve_base(&ruleset, &rev("tip"), &resolver)
             .await
             .expect("resolve");
-        wince::assert_eq!(base, Some(rev("fallback-sha")));
+        wince::assert_eq!(base, resolved("fallback-sha", false));
     }
 
     #[tokio::test]
@@ -306,7 +366,7 @@ mod tests {
         let base = resolve_base(&ruleset, &rev("tip"), &resolver)
             .await
             .expect("resolve");
-        wince::assert_eq!(base, Some(rev("two-back")));
+        wince::assert_eq!(base, resolved("two-back", false));
     }
 
     #[tokio::test]

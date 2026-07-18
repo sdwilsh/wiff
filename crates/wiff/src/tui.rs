@@ -214,8 +214,10 @@ fn refresh_in_place(
     app.set_message(refresh_report(&outcome));
     // Offer the version list from the reviewer's pre-refresh perspective: their
     // prior view is marked and pre-selected, and cancelling keeps it against the
-    // fresh capture, rather than switching under them mid-review.
-    app.offer_compare_after_refresh(viewing, last_commented);
+    // fresh capture, rather than switching under them mid-review. A base that
+    // moved out from under the review leads the list, where the reviewer is
+    // already choosing which range to look at.
+    app.offer_compare_after_refresh(viewing, last_commented, base_shift_note(&outcome));
     Ok(())
 }
 
@@ -338,10 +340,10 @@ fn recapture(header: &SessionHeader) -> anyhow::Result<CapturedDiff> {
 }
 
 /// The status-line tally of a refresh: the captured version and how its comments
-/// fared.
+/// fared, led by a note when the review's base moved out from under it.
 fn refresh_report(outcome: &RefreshOutcome) -> String {
     let total = outcome.exact + outcome.approximate + outcome.relocated + outcome.outdated;
-    format!(
+    let tally = format!(
         "captured v{}; rebased {total} comment{}: {} exact, {} shifted, {} moved, {} outdated",
         outcome.version,
         if total == 1 { "" } else { "s" },
@@ -349,7 +351,22 @@ fn refresh_report(outcome: &RefreshOutcome) -> String {
         outcome.approximate,
         outcome.relocated,
         outcome.outdated,
-    )
+    );
+    match &outcome.base_shift {
+        Some(shift) => format!("base moved {} -> {}; {tally}", shift.from, shift.to),
+        None => tally,
+    }
+}
+
+/// The advisory the post-refresh compare list leads with when the review's base
+/// moved to a different commit, or none when it held still.
+fn base_shift_note(outcome: &RefreshOutcome) -> Option<String> {
+    outcome.base_shift.as_ref().map(|shift| {
+        format!(
+            "Base moved {} -> {}; the review now starts from a different commit.",
+            shift.from, shift.to,
+        )
+    })
 }
 
 /// The TUI's exit default matching the configured `on_exit` policy.
@@ -548,10 +565,32 @@ mod tests {
             approximate: 1,
             relocated: 1,
             outdated: 0,
+            base_shift: None,
         });
         wince::assert_eq!(
             report,
             "captured v3; rebased 4 comments: 2 exact, 1 shifted, 1 moved, 0 outdated".to_string()
+        );
+    }
+
+    #[test]
+    fn the_refresh_report_leads_with_a_moved_base() {
+        let report = refresh_report(&RefreshOutcome {
+            version: VersionNumber(3),
+            exact: 1,
+            approximate: 0,
+            relocated: 0,
+            outdated: 0,
+            base_shift: Some(wiff_core::BaseShift {
+                from: wiff_core::record::RevisionId("oldbase".to_string()),
+                to: wiff_core::record::RevisionId("newbase".to_string()),
+            }),
+        });
+        wince::assert_eq!(
+            report,
+            "base moved oldbase -> newbase; captured v3; rebased 1 comment: 1 exact, 0 shifted, \
+             0 moved, 0 outdated"
+                .to_string()
         );
     }
 
@@ -896,6 +935,7 @@ new file mode 100644
             .to_string(),
             source: SourceKind::Stdin,
             base_revision: None,
+            base_tip_relative: false,
             head_revision: None,
         };
         let log = create_session(data.path(), &identity, data.path(), &captured, None)
@@ -933,6 +973,7 @@ new file mode 100644
             .to_string(),
             source: SourceKind::Stdin,
             base_revision: None,
+            base_tip_relative: false,
             head_revision: None,
         };
         let log = create_session(data.path(), &identity, data.path(), &captured, None)
@@ -1045,6 +1086,7 @@ new file mode 100644
             .to_string(),
             source: SourceKind::Stdin,
             base_revision: None,
+            base_tip_relative: false,
             head_revision: None,
         };
         let log = create_session(data.path(), &identity, data.path(), &captured, None)
