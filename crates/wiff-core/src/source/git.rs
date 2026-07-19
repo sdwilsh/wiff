@@ -179,7 +179,7 @@ impl GitRepo {
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .unwrap_or_default();
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::Source(format!(
+            return Err(Error::Repo(format!(
                 "git {subcommand} failed ({}): {}",
                 output.status,
                 stderr.trim()
@@ -215,7 +215,7 @@ impl GitRepo {
         tokio::process::Command::from(command)
             .output()
             .await
-            .map_err(|source| Error::Source(format!("could not run git: {source}")))
+            .map_err(|source| Error::Repo(format!("could not run git: {source}")))
     }
 
     /// Run a git query that prints a single revision, returning it trimmed.
@@ -235,16 +235,15 @@ impl GitRepo {
                     .map(|arg| arg.to_string_lossy().into_owned())
                     .unwrap_or_default();
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(Error::Source(format!(
+                return Err(Error::Repo(format!(
                     "git {subcommand} failed ({}): {}",
                     output.status,
                     stderr.trim()
                 )));
             }
         }
-        let text = String::from_utf8(output.stdout).map_err(|source| {
-            Error::Source(format!("git printed a non-UTF-8 revision: {source}"))
-        })?;
+        let text = String::from_utf8(output.stdout)
+            .map_err(|source| Error::Repo(format!("git printed a non-UTF-8 revision: {source}")))?;
         let trimmed = text.trim();
         if trimmed.is_empty() {
             return Ok(None);
@@ -300,7 +299,7 @@ fn ref_name_from_symbolic(success: bool, stdout: &[u8]) -> Result<Option<String>
         return Ok(None);
     }
     let text = std::str::from_utf8(stdout)
-        .map_err(|source| Error::Source(format!("git rev-parse was not valid UTF-8: {source}")))?;
+        .map_err(|source| Error::Repo(format!("git rev-parse was not valid UTF-8: {source}")))?;
     let name = text.trim();
     Ok(name.starts_with("refs/").then(|| name.to_string()))
 }
@@ -490,7 +489,7 @@ impl GitRepo {
             Some(1) => Ok(false),
             _ => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                Err(Error::Source(format!(
+                Err(Error::Repo(format!(
                     "git config --get {key} failed ({}): {}",
                     output.status,
                     stderr.trim()
@@ -578,9 +577,9 @@ impl ScmRepo for GitRepo {
             let resolved = self
                 .resolve_commit(&scratch)
                 .await?
-                .ok_or_else(|| Error::Source("git fetch left no ref to resolve".to_string()))?;
+                .ok_or_else(|| Error::Repo("git fetch left no ref to resolve".to_string()))?;
             if self.resolve_commit(commit.as_str()).await? != Some(resolved.clone()) {
-                return Err(Error::Source(format!(
+                return Err(Error::Repo(format!(
                     "fetched {git_ref} resolved to {resolved}, but the forge reported {commit}"
                 )));
             }
@@ -598,7 +597,7 @@ impl ScmRepo for GitRepo {
 
     async fn pin_base(&self, commit: &RevisionId, session: Ulid) -> Result<()> {
         if self.resolve_commit(commit.as_str()).await?.is_none() {
-            return Err(Error::Source(format!(
+            return Err(Error::Repo(format!(
                 "base commit {commit} is not present locally to pin"
             )));
         }
@@ -608,17 +607,17 @@ impl ScmRepo for GitRepo {
 
     async fn publish_branch(&self, remote: &str, branch: &str, commit: &RevisionId) -> Result<()> {
         let branch_name = self.current_branch_name().await?.ok_or_else(|| {
-            Error::Source("cannot publish a branch from a detached head".to_string())
+            Error::Repo("cannot publish a branch from a detached head".to_string())
         })?;
         // Publishing points the checked-out branch at the pushed branch as its
         // upstream, so the reviewed commit must be that branch's tip; otherwise
         // a later plain `git push` would send a different commit than the one
         // published.
         let tip = self.resolve_commit("HEAD").await?.ok_or_else(|| {
-            Error::Source("the current branch has no commit to publish".to_string())
+            Error::Repo("the current branch has no commit to publish".to_string())
         })?;
         if self.resolve_commit(commit.as_str()).await? != Some(tip) {
-            return Err(Error::Source(format!(
+            return Err(Error::Repo(format!(
                 "cannot publish {commit}: it is not the tip of {branch_name}"
             )));
         }
@@ -654,7 +653,7 @@ impl ScmRepo for GitRepo {
             )
             .await?;
         let listing = String::from_utf8(output.stdout)
-            .map_err(|source| Error::Source(format!("git printed a non-UTF-8 ref: {source}")))?;
+            .map_err(|source| Error::Repo(format!("git printed a non-UTF-8 ref: {source}")))?;
         for refname in listing.lines() {
             self.delete_ref(refname).await?;
         }
@@ -1495,7 +1494,7 @@ index HASHES
         };
         wince::assert_eq!(
             normalized,
-            "could not capture diff: git merge-base failed (exit status: 128): STDERR".to_string()
+            "git merge-base failed (exit status: 128): STDERR".to_string()
         );
     }
 
@@ -1566,7 +1565,7 @@ index HASHES
             (error.to_string(), refs),
             (
                 format!(
-                    "could not capture diff: fetched refs/heads/main resolved to {head}, \
+                    "fetched refs/heads/main resolved to {head}, \
                      but the forge reported deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
                 ),
                 String::new()
@@ -1617,7 +1616,7 @@ index HASHES
             (error.to_string(), pinned, refs),
             (
                 format!(
-                    "could not capture diff: fetched refs/heads/main resolved to {commit}, \
+                    "fetched refs/heads/main resolved to {commit}, \
                      but the forge reported deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
                 ),
                 commit.to_string(),
@@ -1650,7 +1649,7 @@ index HASHES
             .expect_err("absent base is rejected");
         wince::assert_eq!(
             error.to_string(),
-            "could not capture diff: base commit \
+            "base commit \
              deadbeefdeadbeefdeadbeefdeadbeefdeadbeef is not present locally to pin"
                 .to_string()
         );
@@ -1750,9 +1749,7 @@ index HASHES
         wince::assert_eq!(
             (error.to_string(), remote_branches),
             (
-                format!(
-                    "could not capture diff: cannot publish {first}: it is not the tip of main"
-                ),
+                format!("cannot publish {first}: it is not the tip of main"),
                 String::new(),
             )
         );

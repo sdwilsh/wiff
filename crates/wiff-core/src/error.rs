@@ -29,6 +29,13 @@ pub enum Error {
     #[error("could not capture diff: {0}")]
     Source(String),
 
+    /// A repository operation failed: running the SCM, or a precondition it
+    /// enforces (publishing a commit that is not the branch tip, pinning a base
+    /// the repo does not hold). The message describes the failure on its own, so
+    /// it is passed through without a framing prefix.
+    #[error("{0}")]
+    Repo(String),
+
     /// A stored base ruleset could not be parsed.
     #[error(transparent)]
     BaseRuleset(#[from] crate::base_ruleset::ParseError),
