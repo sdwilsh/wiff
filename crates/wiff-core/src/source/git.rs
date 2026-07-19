@@ -5,6 +5,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use tempfile::NamedTempFile;
@@ -534,8 +535,30 @@ impl GitSource {
             real_objects: Some(&real_objects),
         };
         self.repo.add_untracked_files_to_temp_index(env).await?;
+        backdate_stat_cache(&index)?;
         self.repo.diff(&[base.as_str().into()], env).await
     }
+}
+
+/// Backdate `index` so git re-reads the working tree instead of trusting the
+/// stat cache copied into it. The temp index is a copy of the real one, but its
+/// file is written after the working files it describes; because it is newer
+/// than every entry, git's racy-git safeguard stays off and git trusts the
+/// copied stat cache, missing a same-size edit whose modification time coincides
+/// with the committed entry's. Backdating the index file to before every entry
+/// makes them all racily clean, which forces the content comparison. The chosen
+/// time is one second past the epoch rather than the epoch itself because git
+/// reads a zero index timestamp as "unknown" and disables the racy-git check.
+fn backdate_stat_cache(index: &NamedTempFile) -> Result<()> {
+    let pre_historic = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+    index
+        .as_file()
+        .set_modified(pre_historic)
+        .map_err(|source| {
+            Error::Source(format!(
+                "could not set the temporary index modification time: {source}"
+            ))
+        })
 }
 
 #[async_trait]
