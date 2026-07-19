@@ -21,6 +21,7 @@ thiserror.workspace = true
 time.workspace = true
 tokio = { workspace = true }
 ulid.workspace = true
+url.workspace = true
 wiff-diff.workspace = true
 
 [dev-dependencies]

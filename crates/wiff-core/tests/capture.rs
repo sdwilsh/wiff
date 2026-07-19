@@ -87,6 +87,7 @@ fn create_session_writes_header_version_and_sideband() {
                 repo_root: None,
                 cwd: "/work".to_string(),
                 source: SourceKind::Stdin,
+                forge: None,
             }),
         ),
         (
@@ -160,6 +161,7 @@ fn create_session_writes_an_initial_description_after_the_diff() {
                 repo_root: None,
                 cwd: "/work".to_string(),
                 source: SourceKind::Stdin,
+                forge: None,
             }),
         ),
         (
@@ -212,6 +214,7 @@ fn create_session_writes_an_initial_description_after_the_diff() {
                 repo_root: None,
                 cwd: "/work".to_string(),
                 source: SourceKind::Stdin,
+                forge: None,
             },
             versions: vec![DiffVersionRecord {
                 number: VersionNumber(0),

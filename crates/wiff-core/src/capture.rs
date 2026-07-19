@@ -45,6 +45,7 @@ pub fn create_session(
             repo_root,
             cwd: cwd_text,
             source,
+            forge: None,
         })
     })?;
     write_diff_version(

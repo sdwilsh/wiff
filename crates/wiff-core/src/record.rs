@@ -10,6 +10,7 @@
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use ulid::Ulid;
+use url::Url;
 use wiff_diff::{FileStatus, LineNo, Side};
 
 use crate::base_ruleset::BaseRuleset;
@@ -173,6 +174,54 @@ impl std::fmt::Display for ChangeId {
     }
 }
 
+/// The web URL of a forge pull request, such as
+/// `https://github.com/wezterm/wezterm/pull/6185`, held in normalized form: the
+/// host is lowercased, a default port dropped, and dot-segments resolved, while
+/// path case is preserved. Spellings that differ only in the host thus compare
+/// equal under `Eq` and `Hash`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[serde(transparent)]
+pub struct ForgeUrl(String);
+
+impl ForgeUrl {
+    /// Parse `text` as a forge pull-request URL, requiring an absolute http or
+    /// https URL with a host, and keep its normalized form.
+    pub fn parse(text: &str) -> std::result::Result<Self, ForgeUrlError> {
+        let url = Url::parse(text).map_err(|_| ForgeUrlError(text.to_string()))?;
+        let has_host = url.host_str().is_some_and(|host| !host.is_empty());
+        if !matches!(url.scheme(), "http" | "https") || !has_host {
+            return Err(ForgeUrlError(text.to_string()));
+        }
+        Ok(Self(url.into()))
+    }
+
+    /// The URL text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ForgeUrl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for ForgeUrl {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let text = String::deserialize(deserializer)?;
+        ForgeUrl::parse(&text).map_err(serde::de::Error::custom)
+    }
+}
+
+/// A string that could not be read as a forge pull-request URL.
+#[derive(Debug, thiserror::Error)]
+#[error("{0} is not an absolute http(s) URL with a host")]
+pub struct ForgeUrlError(String);
+
 /// One line of a session log.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Record {
@@ -227,6 +276,10 @@ pub struct SessionHeader {
     pub cwd: String,
     /// How the diff was captured, and whether it can be regenerated.
     pub source: SourceKind,
+    /// The pull request this session mirrors, bound once at creation. `None`
+    /// for a session with no forge linkage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forge: Option<ForgeUrl>,
 }
 
 /// How a session's diff is obtained.
@@ -877,5 +930,68 @@ mod tests {
         );
         let back: CommentEvent = serde_json::from_str(&json).expect("deserialize");
         wince::assert_eq!(back, event);
+    }
+
+    #[test]
+    fn a_forge_url_admits_only_an_absolute_http_url_with_a_host() {
+        let cases: [(&str, std::result::Result<&str, &str>); 9] = [
+            (
+                "https://github.com/wezterm/wezterm/pull/6185",
+                Ok("https://github.com/wezterm/wezterm/pull/6185"),
+            ),
+            (
+                "http://git.example.com:8080/a/b/pulls/3",
+                Ok("http://git.example.com:8080/a/b/pulls/3"),
+            ),
+            // Normalization lowercases the host, drops a default port, and
+            // resolves dot-segments, so equal pull requests collapse to one
+            // value.
+            (
+                "https://GitHub.com/Wez/Repo/pull/1",
+                Ok("https://github.com/Wez/Repo/pull/1"),
+            ),
+            (
+                "https://github.com:443/a/b/pull/1",
+                Ok("https://github.com/a/b/pull/1"),
+            ),
+            (
+                "https://github.com/a/../b/pull/1",
+                Ok("https://github.com/b/pull/1"),
+            ),
+            (
+                "ftp://github.com/a/b",
+                Err("ftp://github.com/a/b is not an absolute http(s) URL with a host"),
+            ),
+            (
+                "github.com/a/b",
+                Err("github.com/a/b is not an absolute http(s) URL with a host"),
+            ),
+            (
+                "https://",
+                Err("https:// is not an absolute http(s) URL with a host"),
+            ),
+            ("", Err(" is not an absolute http(s) URL with a host")),
+        ];
+        for (input, expect) in cases {
+            let output = ForgeUrl::parse(input)
+                .map(|url| url.as_str().to_string())
+                .map_err(|err| err.to_string());
+            let expect = expect.map(str::to_string).map_err(str::to_string);
+            wince::assert_eq!(output, expect, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn a_forge_url_rejects_a_garbage_string_on_deserialization() {
+        let ok: ForgeUrl =
+            serde_json::from_str(r#""https://github.com/a/b/pull/1""#).expect("valid url");
+        wince::assert_eq!(ok.as_str(), "https://github.com/a/b/pull/1");
+
+        let bad =
+            serde_json::from_str::<ForgeUrl>(r#""not a url""#).expect_err("garbage is rejected");
+        wince::assert_eq!(
+            bad.to_string(),
+            "not a url is not an absolute http(s) URL with a host"
+        );
     }
 }

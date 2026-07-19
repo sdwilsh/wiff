@@ -14,6 +14,7 @@ pub mod git;
 use std::path::Path;
 
 use async_trait::async_trait;
+use ulid::Ulid;
 
 use crate::error::Result;
 use crate::identity::ScmType;
@@ -88,4 +89,53 @@ impl DiffSource for CapturedDiff {
     async fn capture(&self) -> Result<CapturedDiff> {
         Ok(self.clone())
     }
+}
+
+/// How to bring a pull request's commits into a local repo. The variant names
+/// the wire protocol the forge's repository speaks, not the tool that runs
+/// locally: a git working copy and a jj working copy both satisfy
+/// [`FetchSource::Git`], the former by shelling out to git and the latter
+/// through its git backend.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FetchSource {
+    /// Fetch `git_ref` from `url` and expect it to resolve to `commit`. The
+    /// forge adapter has already chosen between the pull-ref namespace and the
+    /// head repository, so this holds one resolved fetch either way.
+    Git {
+        /// The repository the forge adapter chose to fetch from.
+        url: String,
+        /// The ref within that repository to fetch.
+        git_ref: String,
+        /// The commit the fetched ref is required to resolve to; a fetch that
+        /// resolves to a different commit is rejected.
+        commit: RevisionId,
+    },
+}
+
+/// Local repository operations forge support needs beyond producing diff text:
+/// fetching a forge's commits, publishing a branch, and managing pins.
+#[async_trait]
+pub trait ScmRepo {
+    /// Fetch `source` into the local repo, pin the fetched commit under the
+    /// session's `head` pin, and return the commit it resolved to. Fails when
+    /// this SCM cannot speak the protocol `source` names, or when the fetched
+    /// ref does not resolve to the commit `source` expects.
+    async fn fetch_pinned(&self, source: &FetchSource, session: Ulid) -> Result<RevisionId>;
+
+    /// Pin an already-present `commit` under the session's `base` pin. The base
+    /// is the pull request's target-branch tip, which the repo usually already
+    /// holds.
+    async fn pin_base(&self, commit: &RevisionId, session: Ulid) -> Result<()>;
+
+    /// Publish `commit` to `remote` (the local name of the repository's remote
+    /// for the forge host) as branch `branch`. Records tracking to the published
+    /// branch when the checked-out branch has no upstream, leaving an existing
+    /// upstream as the user configured it.
+    async fn publish_branch(&self, remote: &str, branch: &str, commit: &RevisionId) -> Result<()>;
+
+    /// Delete the session's pins, letting the fetched commits be garbage
+    /// collected. The session's own files are untouched; discarding a session
+    /// calls this to leave nothing behind in the repo. A pin that is already
+    /// absent is not an error.
+    async fn remove_pins(&self, session: Ulid) -> Result<()>;
 }

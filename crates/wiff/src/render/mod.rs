@@ -260,6 +260,7 @@ mod fixture {
                     tip: TipRule::Worktree,
                     branch_hint: None,
                 }),
+                forge: None,
             },
             versions: vec![DiffVersionRecord {
                 number: VersionNumber(0),

@@ -25,6 +25,7 @@ fn header(ulid: Ulid) -> RecordBody {
             tip: TipRule::Worktree,
             branch_hint: None,
         }),
+        forge: None,
     })
 }
 
@@ -230,6 +231,7 @@ fn scm_header(source: SourceKind) -> impl FnOnce(Ulid) -> RecordBody {
             repo_root: Some("/repos/demo".to_string()),
             cwd: "/repos/demo".to_string(),
             source,
+            forge: None,
         })
     }
 }

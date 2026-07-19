@@ -10,13 +10,14 @@ use std::time::{Duration, SystemTime};
 use async_trait::async_trait;
 use tempfile::NamedTempFile;
 use tokio::io::AsyncWriteExt;
+use ulid::Ulid;
 
 use crate::base_resolve::{RevisionResolver, resolve_base};
 use crate::base_ruleset::{BaseRuleset, parse_ruleset};
 use crate::error::{Error, Result};
 use crate::identity::ScmType;
 use crate::record::{RevisionId, ScmSource, SourceKind, TipRule};
-use crate::source::{CapturedDiff, DiffSource, HeadBranch};
+use crate::source::{CapturedDiff, DiffSource, FetchSource, HeadBranch, ScmRepo};
 
 /// The context wiff asks git for around each hunk. A large window means a hunk
 /// holds most or all of its file, so highlighting and rebasing have more to work
@@ -410,6 +411,257 @@ impl RevisionResolver for GitRepo {
     }
 }
 
+/// Which of a session's two pin refs to address: the reviewed head, or the
+/// base it is compared against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PinSlot {
+    Head,
+    Base,
+}
+
+impl PinSlot {
+    fn as_str(self) -> &'static str {
+        match self {
+            PinSlot::Head => "head",
+            PinSlot::Base => "base",
+        }
+    }
+}
+
+/// The prefix under which wiff owns all of `session`'s refs, kept apart from
+/// `refs/heads/` so a pin can never name or clobber a user's own branch.
+fn session_ref_prefix(session: Ulid) -> String {
+    format!("refs/wiff/{session}/")
+}
+
+/// Build the ref that pins one slot of `session`, under wiff's own namespace.
+fn pin_ref(session: Ulid, slot: PinSlot) -> String {
+    format!("{}{}", session_ref_prefix(session), slot.as_str())
+}
+
+impl GitRepo {
+    /// Create or move `refname` to `commit`. Unconditional (no expected old
+    /// value) so re-pinning the same slot stays idempotent.
+    async fn update_ref(&self, refname: &str, commit: &RevisionId) -> Result<()> {
+        self.git(
+            [
+                "update-ref".into(),
+                OsString::from(refname),
+                OsString::from(commit.as_str()),
+            ],
+            GitEnv::default(),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Delete `refname`, tolerating its absence. Deletes by name without peeling
+    /// to a commit, so it removes even a ref whose target object is missing.
+    async fn delete_ref(&self, refname: &str) -> Result<()> {
+        self.git(
+            ["update-ref".into(), "-d".into(), OsString::from(refname)],
+            GitEnv::default(),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// The local branch name `HEAD` is on, or `None` when the head is detached.
+    async fn current_branch_name(&self) -> Result<Option<String>> {
+        Ok(self
+            .symbolic_ref("HEAD")
+            .await?
+            .and_then(|full| full.strip_prefix("refs/heads/").map(str::to_string)))
+    }
+
+    /// Whether git config holds a value for `key`. `git config --get` exits 1
+    /// for a key that is simply absent; any other nonzero exit (a multi-valued
+    /// key, an unreadable or corrupt config) is reported as a genuine failure
+    /// rather than mistaken for "unset".
+    async fn config_is_set(&self, key: &str) -> Result<bool> {
+        let output = self
+            .spawn(
+                &["config".into(), "--get".into(), OsString::from(key)],
+                GitEnv::default(),
+            )
+            .await?;
+        match output.status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                Err(Error::Source(format!(
+                    "git config --get {key} failed ({}): {}",
+                    output.status,
+                    stderr.trim()
+                )))
+            }
+        }
+    }
+
+    /// Record `branch_name` as tracking `branch` on `remote`, unless it already
+    /// has an upstream, which is left as the user configured it. The config is
+    /// written directly rather than through `branch --set-upstream-to`, which
+    /// would need a remote-tracking ref to already exist.
+    async fn set_upstream_if_unset(
+        &self,
+        branch_name: &str,
+        remote: &str,
+        branch: &str,
+    ) -> Result<()> {
+        // An upstream is the pair `.remote` + `.merge`; treat the branch as
+        // configured only when both are present. A half-configured branch (one
+        // key hand-edited or left over) is completed here rather than left
+        // unable to reach the published branch with a plain `git push`.
+        let has_remote = self
+            .config_is_set(&format!("branch.{branch_name}.remote"))
+            .await?;
+        let has_merge = self
+            .config_is_set(&format!("branch.{branch_name}.merge"))
+            .await?;
+        if has_remote && has_merge {
+            return Ok(());
+        }
+        self.git(
+            [
+                "config".into(),
+                OsString::from(format!("branch.{branch_name}.remote")),
+                OsString::from(remote),
+            ],
+            GitEnv::default(),
+        )
+        .await?;
+        self.git(
+            [
+                "config".into(),
+                OsString::from(format!("branch.{branch_name}.merge")),
+                OsString::from(format!("refs/heads/{branch}")),
+            ],
+            GitEnv::default(),
+        )
+        .await?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ScmRepo for GitRepo {
+    async fn fetch_pinned(&self, source: &FetchSource, session: Ulid) -> Result<RevisionId> {
+        let FetchSource::Git {
+            url,
+            git_ref,
+            commit,
+        } = source;
+        let pin = pin_ref(session, PinSlot::Head);
+        // Fetch into a per-session scratch ref rather than the head pin or the
+        // shared FETCH_HEAD: a scratch ref keeps concurrent fetches in the same
+        // repo from observing one another's commit, and it keeps a re-fetch that
+        // turns out inconsistent from destroying a good head pinned by an
+        // earlier successful fetch. The leading `+` overwrites any scratch ref
+        // an interrupted fetch left behind.
+        let scratch = format!("{}incoming", session_ref_prefix(session));
+        self.git(
+            [
+                "fetch".into(),
+                "--no-tags".into(),
+                OsString::from(url),
+                OsString::from(format!("+{git_ref}:{scratch}")),
+            ],
+            GitEnv::default(),
+        )
+        .await?;
+        let outcome = async {
+            // Resolve both sides to a full object name before comparing: the
+            // forge may report an abbreviated or differently-cased hash, and the
+            // fetched commit is now present under the scratch ref to resolve the
+            // promised one against.
+            let resolved = self
+                .resolve_commit(&scratch)
+                .await?
+                .ok_or_else(|| Error::Source("git fetch left no ref to resolve".to_string()))?;
+            if self.resolve_commit(commit.as_str()).await? != Some(resolved.clone()) {
+                return Err(Error::Source(format!(
+                    "fetched {git_ref} resolved to {resolved}, but the forge reported {commit}"
+                )));
+            }
+            // Promote the verified commit to the head pin only now, so a bad
+            // fetch never disturbs a pin from an earlier good one.
+            self.update_ref(&pin, &resolved).await?;
+            Ok(resolved)
+        }
+        .await;
+        // Drop the scratch ref whether or not validation passed; the head pin
+        // now holds the verified commit on success and is untouched on failure.
+        let _ = self.delete_ref(&scratch).await;
+        outcome
+    }
+
+    async fn pin_base(&self, commit: &RevisionId, session: Ulid) -> Result<()> {
+        if self.resolve_commit(commit.as_str()).await?.is_none() {
+            return Err(Error::Source(format!(
+                "base commit {commit} is not present locally to pin"
+            )));
+        }
+        self.update_ref(&pin_ref(session, PinSlot::Base), commit)
+            .await
+    }
+
+    async fn publish_branch(&self, remote: &str, branch: &str, commit: &RevisionId) -> Result<()> {
+        let branch_name = self.current_branch_name().await?.ok_or_else(|| {
+            Error::Source("cannot publish a branch from a detached head".to_string())
+        })?;
+        // Publishing points the checked-out branch at the pushed branch as its
+        // upstream, so the reviewed commit must be that branch's tip; otherwise
+        // a later plain `git push` would send a different commit than the one
+        // published.
+        let tip = self.resolve_commit("HEAD").await?.ok_or_else(|| {
+            Error::Source("the current branch has no commit to publish".to_string())
+        })?;
+        if self.resolve_commit(commit.as_str()).await? != Some(tip) {
+            return Err(Error::Source(format!(
+                "cannot publish {commit}: it is not the tip of {branch_name}"
+            )));
+        }
+        // A non-forced push: an existing remote branch that is not a
+        // fast-forward of `commit` is refused rather than overwritten.
+        self.git(
+            [
+                "push".into(),
+                OsString::from(remote),
+                OsString::from(format!("{}:refs/heads/{branch}", commit.as_str())),
+            ],
+            GitEnv::default(),
+        )
+        .await?;
+        self.set_upstream_if_unset(&branch_name, remote, branch)
+            .await
+    }
+
+    async fn remove_pins(&self, session: Ulid) -> Result<()> {
+        // Delete every ref under the session's namespace, not just the head and
+        // base pins: a fetch that died between writing its `incoming` scratch
+        // ref and cleaning it up would otherwise orphan a commit that stays
+        // resolvable forever, the leak the pins exist to avoid.
+        let prefix = session_ref_prefix(session);
+        let output = self
+            .git(
+                [
+                    "for-each-ref".into(),
+                    OsString::from("--format=%(refname)"),
+                    OsString::from(&prefix),
+                ],
+                GitEnv::default(),
+            )
+            .await?;
+        let listing = String::from_utf8(output.stdout)
+            .map_err(|source| Error::Source(format!("git printed a non-UTF-8 ref: {source}")))?;
+        for refname in listing.lines() {
+            self.delete_ref(refname).await?;
+        }
+        Ok(())
+    }
+}
+
 /// A git diff of a reviewed range: a base ruleset and a tip rule that resolve to
 /// concrete commits, then diffed. A working-tree or index tip diffs the resolved
 /// base against the uncommitted state; a ref or pinned tip diffs the base against
@@ -622,12 +874,14 @@ mod tests {
     use std::path::Path;
     use std::process::{Command, Output};
 
+    use ulid::Ulid;
+
     use super::{GitRepo, GitSource};
     use crate::base_resolve::{ResolvedBase, RevisionResolver, resolve_base};
     use crate::base_ruleset::{BaseRuleset, parse_ruleset};
     use crate::identity::ScmType;
     use crate::record::{RevisionId, ScmSource, SourceKind, TipRule};
-    use crate::source::DiffSource;
+    use crate::source::{DiffSource, FetchSource, ScmRepo};
 
     /// Run `git` with `args` in `repo` under a laundered environment so neither
     /// the setup nor the capture under test can pick up host or per-user git
@@ -1242,6 +1496,332 @@ index HASHES
         wince::assert_eq!(
             normalized,
             "could not capture diff: git merge-base failed (exit status: 128): STDERR".to_string()
+        );
+    }
+
+    /// A ULID for a session, distinct across tests so pin refs never collide.
+    fn session(n: u128) -> Ulid {
+        Ulid(n)
+    }
+
+    #[tokio::test]
+    async fn fetch_pinned_brings_a_ref_down_and_pins_it_under_the_session() {
+        // A separate origin repo holds the commit to fetch; the working repo
+        // fetches it by path and ref, as a forge fetch would by URL and ref.
+        let origin = tempfile::tempdir().expect("tempdir");
+        let work = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        let (o, w, h) = (origin.path(), work.path(), home.path());
+        git(o, h, &["init", "-q", "-b", "main"]);
+        std::fs::write(o.join("f.txt"), "a\n").expect("write");
+        git(o, h, &["add", "f.txt"]);
+        git(o, h, &["commit", "-q", "-m", "origin work"]);
+        let commit = RevisionId(git_out(o, h, &["rev-parse", "HEAD"]));
+        git(w, h, &["init", "-q", "-b", "main"]);
+
+        let repo = GitRepo::new(w);
+        let sess = session(1);
+        let source = FetchSource::Git {
+            url: o.to_string_lossy().into_owned(),
+            git_ref: "refs/heads/main".to_string(),
+            commit: commit.clone(),
+        };
+        let resolved = repo.fetch_pinned(&source, sess).await.expect("fetch");
+        wince::assert_eq!(resolved, commit.clone());
+        // The pin resolves to the fetched commit, held under refs/wiff and not
+        // as a branch anyone would see.
+        let pinned = git_out(w, h, &["rev-parse", &format!("refs/wiff/{sess}/head")]);
+        wince::assert_eq!(pinned, commit.to_string());
+        let branches = git_out(w, h, &["branch", "--list", "--format=%(refname)"]);
+        wince::assert_eq!(branches, String::new());
+    }
+
+    #[tokio::test]
+    async fn fetch_pinned_rejects_a_ref_that_resolves_to_an_unexpected_commit() {
+        let origin = tempfile::tempdir().expect("tempdir");
+        let work = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        let (o, w, h) = (origin.path(), work.path(), home.path());
+        git(o, h, &["init", "-q", "-b", "main"]);
+        std::fs::write(o.join("f.txt"), "a\n").expect("write");
+        git(o, h, &["add", "f.txt"]);
+        git(o, h, &["commit", "-q", "-m", "origin work"]);
+        git(w, h, &["init", "-q", "-b", "main"]);
+
+        let repo = GitRepo::new(w);
+        let stale = RevisionId("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string());
+        let source = FetchSource::Git {
+            url: o.to_string_lossy().into_owned(),
+            git_ref: "refs/heads/main".to_string(),
+            commit: stale,
+        };
+        let error = repo
+            .fetch_pinned(&source, session(2))
+            .await
+            .expect_err("fetch rejects a moved ref");
+        let head = git_out(o, h, &["rev-parse", "HEAD"]);
+        // The rejected fetch leaves no pin resolvable under the session.
+        let refs = git_out(w, h, &["for-each-ref", "--format=%(refname)", "refs/wiff/"]);
+        wince::assert_eq!(
+            (error.to_string(), refs),
+            (
+                format!(
+                    "could not capture diff: fetched refs/heads/main resolved to {head}, \
+                     but the forge reported deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+                ),
+                String::new()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_pinned_re_fetch_that_mismatches_keeps_a_prior_good_pin() {
+        let origin = tempfile::tempdir().expect("tempdir");
+        let work = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        let (o, w, h) = (origin.path(), work.path(), home.path());
+        git(o, h, &["init", "-q", "-b", "main"]);
+        std::fs::write(o.join("f.txt"), "a\n").expect("write");
+        git(o, h, &["add", "f.txt"]);
+        git(o, h, &["commit", "-q", "-m", "origin work"]);
+        let commit = RevisionId(git_out(o, h, &["rev-parse", "HEAD"]));
+        git(w, h, &["init", "-q", "-b", "main"]);
+
+        let repo = GitRepo::new(w);
+        let sess = session(4);
+        // A first, good fetch pins the head at the real commit.
+        let good = FetchSource::Git {
+            url: o.to_string_lossy().into_owned(),
+            git_ref: "refs/heads/main".to_string(),
+            commit: commit.clone(),
+        };
+        repo.fetch_pinned(&good, sess).await.expect("first fetch");
+
+        // A second fetch of the same ref, but the forge now promises a commit
+        // that does not match, is rejected.
+        let stale = FetchSource::Git {
+            url: o.to_string_lossy().into_owned(),
+            git_ref: "refs/heads/main".to_string(),
+            commit: RevisionId("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string()),
+        };
+        let error = repo
+            .fetch_pinned(&stale, sess)
+            .await
+            .expect_err("mismatched re-fetch is rejected");
+
+        // The head pin still resolves to the first good commit, and no scratch
+        // ref was left behind.
+        let pinned = git_out(w, h, &["rev-parse", &format!("refs/wiff/{sess}/head")]);
+        let refs = git_out(w, h, &["for-each-ref", "--format=%(refname)", "refs/wiff/"]);
+        wince::assert_eq!(
+            (error.to_string(), pinned, refs),
+            (
+                format!(
+                    "could not capture diff: fetched refs/heads/main resolved to {commit}, \
+                     but the forge reported deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+                ),
+                commit.to_string(),
+                format!("refs/wiff/{sess}/head")
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn pin_base_pins_a_present_commit_and_rejects_an_absent_one() {
+        let repo_dir = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        let (r, h) = (repo_dir.path(), home.path());
+        git(r, h, &["init", "-q", "-b", "main"]);
+        std::fs::write(r.join("f.txt"), "a\n").expect("write");
+        git(r, h, &["add", "f.txt"]);
+        git(r, h, &["commit", "-q", "-m", "base"]);
+        let base = RevisionId(git_out(r, h, &["rev-parse", "HEAD"]));
+        let repo = GitRepo::new(r);
+        let sess = session(3);
+
+        repo.pin_base(&base, sess).await.expect("pin base");
+        let pinned = git_out(r, h, &["rev-parse", &format!("refs/wiff/{sess}/base")]);
+        wince::assert_eq!(pinned, base.to_string());
+
+        let absent = RevisionId("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string());
+        let error = repo
+            .pin_base(&absent, sess)
+            .await
+            .expect_err("absent base is rejected");
+        wince::assert_eq!(
+            error.to_string(),
+            "could not capture diff: base commit \
+             deadbeefdeadbeefdeadbeefdeadbeefdeadbeef is not present locally to pin"
+                .to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_pins_deletes_both_pins_and_tolerates_their_absence() {
+        let repo_dir = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        let (r, h) = (repo_dir.path(), home.path());
+        git(r, h, &["init", "-q", "-b", "main"]);
+        std::fs::write(r.join("f.txt"), "a\n").expect("write");
+        git(r, h, &["add", "f.txt"]);
+        git(r, h, &["commit", "-q", "-m", "c"]);
+        let commit = RevisionId(git_out(r, h, &["rev-parse", "HEAD"]));
+        let repo = GitRepo::new(r);
+        let sess = session(4);
+
+        // Removing with no pins present is a no-op, not an error.
+        repo.remove_pins(sess).await.expect("remove absent pins");
+
+        repo.pin_base(&commit, sess).await.expect("pin base");
+        repo.update_ref(&super::pin_ref(sess, super::PinSlot::Head), &commit)
+            .await
+            .expect("pin head");
+        // An `incoming` scratch ref, as an interrupted fetch would leave behind;
+        // remove_pins must clear the whole namespace, not just head and base.
+        repo.update_ref(&format!("refs/wiff/{sess}/incoming"), &commit)
+            .await
+            .expect("plant scratch ref");
+        repo.remove_pins(sess).await.expect("remove pins");
+
+        let refs = git_out(r, h, &["for-each-ref", "--format=%(refname)", "refs/wiff/"]);
+        wince::assert_eq!(refs, String::new());
+    }
+
+    #[tokio::test]
+    async fn publish_branch_pushes_to_the_remote_and_records_tracking() {
+        let bare = tempfile::tempdir().expect("tempdir");
+        let work = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        let (b, w, h) = (bare.path(), work.path(), home.path());
+        git(b, h, &["init", "-q", "--bare"]);
+        git(w, h, &["init", "-q", "-b", "main"]);
+        git(w, h, &["remote", "add", "origin", &b.to_string_lossy()]);
+        std::fs::write(w.join("f.txt"), "a\n").expect("write");
+        git(w, h, &["add", "f.txt"]);
+        git(w, h, &["commit", "-q", "-m", "work"]);
+        let commit = RevisionId(git_out(w, h, &["rev-parse", "HEAD"]));
+
+        let repo = GitRepo::new(w);
+        repo.publish_branch("origin", "my-feature", &commit)
+            .await
+            .expect("publish");
+
+        // The remote holds the published branch at the reviewed commit.
+        let remote_tip = git_out(b, h, &["rev-parse", "refs/heads/my-feature"]);
+        wince::assert_eq!(remote_tip, commit.to_string());
+        // The local branch now tracks it, so a plain `git push` follows.
+        let remote = git_out(w, h, &["config", "branch.main.remote"]);
+        let merge = git_out(w, h, &["config", "branch.main.merge"]);
+        wince::assert_eq!(
+            (remote, merge),
+            ("origin".to_string(), "refs/heads/my-feature".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn publish_branch_refuses_a_commit_that_is_not_the_current_branch_tip() {
+        let bare = tempfile::tempdir().expect("tempdir");
+        let work = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        let (b, w, h) = (bare.path(), work.path(), home.path());
+        git(b, h, &["init", "-q", "--bare"]);
+        git(w, h, &["init", "-q", "-b", "main"]);
+        git(w, h, &["remote", "add", "origin", &b.to_string_lossy()]);
+        std::fs::write(w.join("f.txt"), "a\n").expect("write");
+        git(w, h, &["add", "f.txt"]);
+        git(w, h, &["commit", "-q", "-m", "first"]);
+        let first = RevisionId(git_out(w, h, &["rev-parse", "HEAD"]));
+        // Move the branch past `first`, so publishing `first` no longer matches
+        // the branch tracking would be pointed at.
+        std::fs::write(w.join("f.txt"), "a\nb\n").expect("write");
+        git(w, h, &["commit", "-qa", "-m", "second"]);
+
+        let repo = GitRepo::new(w);
+        let error = repo
+            .publish_branch("origin", "my-feature", &first)
+            .await
+            .expect_err("stale commit is refused");
+        // The guard fires before any push, so the remote gained no branch.
+        let remote_branches = git_out(
+            b,
+            h,
+            &["for-each-ref", "--format=%(refname)", "refs/heads/"],
+        );
+        wince::assert_eq!(
+            (error.to_string(), remote_branches),
+            (
+                format!(
+                    "could not capture diff: cannot publish {first}: it is not the tip of main"
+                ),
+                String::new(),
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn publish_branch_leaves_a_preexisting_upstream_untouched() {
+        let bare = tempfile::tempdir().expect("tempdir");
+        let work = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        let (b, w, h) = (bare.path(), work.path(), home.path());
+        git(b, h, &["init", "-q", "--bare"]);
+        git(w, h, &["init", "-q", "-b", "main"]);
+        git(w, h, &["remote", "add", "origin", &b.to_string_lossy()]);
+        std::fs::write(w.join("f.txt"), "a\n").expect("write");
+        git(w, h, &["add", "f.txt"]);
+        git(w, h, &["commit", "-q", "-m", "work"]);
+        let commit = RevisionId(git_out(w, h, &["rev-parse", "HEAD"]));
+        // A tracking config the user already set for their branch.
+        git(w, h, &["config", "branch.main.remote", "origin"]);
+        git(w, h, &["config", "branch.main.merge", "refs/heads/main"]);
+
+        let repo = GitRepo::new(w);
+        repo.publish_branch("origin", "my-feature", &commit)
+            .await
+            .expect("publish");
+
+        // The push still happened, but the existing upstream was left as it was.
+        let remote_tip = git_out(b, h, &["rev-parse", "refs/heads/my-feature"]);
+        let merge = git_out(w, h, &["config", "branch.main.merge"]);
+        wince::assert_eq!(
+            (remote_tip, merge),
+            (commit.to_string(), "refs/heads/main".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn publish_branch_completes_a_half_configured_upstream() {
+        let bare = tempfile::tempdir().expect("tempdir");
+        let work = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        let (b, w, h) = (bare.path(), work.path(), home.path());
+        git(b, h, &["init", "-q", "--bare"]);
+        git(w, h, &["init", "-q", "-b", "main"]);
+        git(w, h, &["remote", "add", "origin", &b.to_string_lossy()]);
+        std::fs::write(w.join("f.txt"), "a\n").expect("write");
+        git(w, h, &["add", "f.txt"]);
+        git(w, h, &["commit", "-q", "-m", "work"]);
+        let commit = RevisionId(git_out(w, h, &["rev-parse", "HEAD"]));
+        // Only `.merge` is set, with no `.remote`: a half-configured state that
+        // a plain `git push` cannot act on, so publishing completes it rather
+        // than treating the branch as already tracking.
+        git(
+            w,
+            h,
+            &["config", "branch.main.merge", "refs/heads/leftover"],
+        );
+
+        let repo = GitRepo::new(w);
+        repo.publish_branch("origin", "my-feature", &commit)
+            .await
+            .expect("publish");
+
+        // Both halves now name the published branch, a working upstream.
+        let remote = git_out(w, h, &["config", "branch.main.remote"]);
+        let merge = git_out(w, h, &["config", "branch.main.merge"]);
+        wince::assert_eq!(
+            (remote, merge),
+            ("origin".to_string(), "refs/heads/my-feature".to_string())
         );
     }
 }

@@ -154,6 +154,7 @@ fn adding_comments_captures_anchors_and_folds_to_current_state() {
         repo_root: None,
         cwd: "/work".to_string(),
         source: SourceKind::Stdin,
+        forge: None,
     };
     wince::assert_eq!(state.session, expected_header);
     wince::assert_eq!(

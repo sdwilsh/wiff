@@ -80,6 +80,7 @@ fn header() -> SessionHeader {
             tip: TipRule::Worktree,
             branch_hint: None,
         }),
+        forge: None,
     }
 }
 

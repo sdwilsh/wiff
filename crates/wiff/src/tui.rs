@@ -484,6 +484,7 @@ mod tests {
             repo_root: Some("/repos/demo".to_string()),
             cwd: "/repos/demo".to_string(),
             source,
+            forge: None,
         }
     }
 
@@ -496,6 +497,7 @@ mod tests {
             repo_root: Some("/repos/demo".to_string()),
             cwd: "/repos/demo".to_string(),
             source: SourceKind::Stdin,
+            forge: None,
         })
     }
 
