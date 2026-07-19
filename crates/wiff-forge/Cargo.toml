@@ -1,0 +1,21 @@
+[package]
+name = "wiff-forge"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+time.workspace = true
+ulid.workspace = true
+wiff-core.workspace = true
+wiff-diff.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+wince.workspace = true

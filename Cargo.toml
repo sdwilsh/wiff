@@ -4,6 +4,7 @@ members = [
     "crates/wiff-config",
     "crates/wiff-core",
     "crates/wiff-diff",
+    "crates/wiff-forge",
     "crates/wiff-tui",
 ]
 resolver = "3"
@@ -40,5 +41,6 @@ url = "2"
 wiff-config = { path = "crates/wiff-config" }
 wiff-core = { path = "crates/wiff-core" }
 wiff-diff = { path = "crates/wiff-diff" }
+wiff-forge = { path = "crates/wiff-forge" }
 wiff-tui = { path = "crates/wiff-tui" }
 wince = "0.1.0"

@@ -112,6 +112,15 @@ pub enum FetchSource {
     },
 }
 
+impl FetchSource {
+    /// The commit this fetch is required to resolve to.
+    pub fn commit(&self) -> &RevisionId {
+        match self {
+            FetchSource::Git { commit, .. } => commit,
+        }
+    }
+}
+
 /// Local repository operations forge support needs beyond producing diff text:
 /// fetching a forge's commits, publishing a branch, and managing pins.
 #[async_trait]
