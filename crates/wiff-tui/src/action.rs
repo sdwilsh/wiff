@@ -237,6 +237,8 @@ declare_actions! {
         CompareVersions,
         /// Open the file in your editor
         OpenInEditor,
+        /// Suspend to the shell
+        Suspend,
         /// Show this help
         Help,
         // Honors the configured keep-or-remove default.
@@ -343,6 +345,7 @@ mod tests {
             "  refresh = Capture a new diff version\n",
             "  compare_versions = Compare against an earlier version\n",
             "  open_in_editor = Open the file in your editor\n",
+            "  suspend = Suspend to the shell\n",
             "  help = Show this help\n",
             "  quit = Quit\n",
             "  quit_keep = Quit and keep the session\n",

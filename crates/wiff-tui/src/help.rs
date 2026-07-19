@@ -328,14 +328,15 @@ mod tests {
         let mut help = Help::new(&Keymap::defaults(), colors());
         help.set_height(4);
         help.to_bottom();
-        let expected = "\
-<#333333|#222222|->  V                      <#444444|#222222|->  Compare against an earlier version     
-<#333333|#222222|->  o                      <#444444|#222222|->  Open the file in your editor           
-<#333333|#222222|->  h                      <#444444|#222222|->  Show this help                         
-<#333333|#222222|->  q                      <#444444|#222222|->  Quit                                   
-<-|#222222|->                                                                  
-<#555555|#222222|->any key to close                                                  
-";
-        wince::assert_eq!(dump(&help.lines(help.width())), expected.to_string());
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&help.lines(help.width())),
+            "<#333333|#222222|->  o                      <#444444|#222222|->  Open the file in your editor           \n",
+            "<#333333|#222222|->  ctrl-z                 <#444444|#222222|->  Suspend to the shell                   \n",
+            "<#333333|#222222|->  h                      <#444444|#222222|->  Show this help                         \n",
+            "<#333333|#222222|->  q                      <#444444|#222222|->  Quit                                   \n",
+            "<-|#222222|->                                                                  \n",
+            "<#555555|#222222|->any key to close                                                  \n",
+        );
     }
 }

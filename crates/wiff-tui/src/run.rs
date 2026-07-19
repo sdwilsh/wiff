@@ -9,6 +9,7 @@
 use std::io::{self, Stdout};
 use std::time::Duration;
 
+use nix::sys::signal::{Signal, raise};
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::crossterm::cursor::Show;
 use ratatui::crossterm::event::{self, Event};
@@ -579,12 +580,19 @@ fn event_loop<B: Backend>(
                 }
             }
         } else if let Some(action) = input.press(press) {
-            // Refresh and save are the passed-back actions the loop acts on
-            // itself, handing each to the host: refresh recaptures and reloads
-            // the app in place, save commits the pending drafts.
+            // Refresh and save are handed to the host: refresh recaptures and
+            // reloads the app in place, save commits the pending drafts. Suspend
+            // the loop handles itself, stopping the process and repainting on
+            // resume.
             match app.update(action) {
                 Update::Passed(Action::Refresh) => refresh(&mut app),
                 Update::Passed(Action::Save) => save(&mut app),
+                Update::Passed(Action::Suspend) => {
+                    suspend()?;
+                    // The alternate screen comes back blank on resume, so
+                    // discard the prior frame and repaint the whole view.
+                    terminal.clear()?;
+                }
                 _ => {}
             }
         }
@@ -626,13 +634,32 @@ struct TerminalGuard {
 impl TerminalGuard {
     /// Take over the terminal: raw mode on a fresh alternate screen.
     fn enter() -> io::Result<Self> {
-        enable_raw_mode()?;
-        let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen)?;
-        let terminal = Terminal::new(CrosstermBackend::new(stdout))?;
+        take_over_terminal()?;
+        let terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
         install_panic_hook();
         Ok(Self { terminal })
     }
+}
+
+/// Put the terminal into raw mode on a fresh alternate screen. Both the first
+/// takeover and resuming from a suspend use this; the panic hook is installed
+/// once by [`TerminalGuard::enter`], not here.
+fn take_over_terminal() -> io::Result<()> {
+    enable_raw_mode()?;
+    execute!(io::stdout(), EnterAlternateScreen)?;
+    Ok(())
+}
+
+/// Suspend wiff into the shell's job control. Blocks until the process is
+/// continued, then retakes the alternate screen in raw mode.
+fn suspend() -> io::Result<()> {
+    restore_terminal();
+    // A stop signal stops every thread, the background highlight pool included,
+    // and hands the terminal back to the shell. raise returns once the process
+    // is continued with SIGCONT; in an orphaned process group the kernel
+    // discards the stop and it returns without ever stopping.
+    raise(Signal::SIGTSTP).map_err(io::Error::other)?;
+    take_over_terminal()
 }
 
 impl Drop for TerminalGuard {
