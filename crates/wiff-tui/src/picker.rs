@@ -218,6 +218,11 @@ impl<Ctx> Picker<Ctx> {
         self.selected
     }
 
+    /// Returns the first visible content line of the scroll window.
+    pub fn top(&self) -> usize {
+        self.top
+    }
+
     /// The modal's border and title color.
     pub fn border(&self) -> Rgb {
         self.colors.border

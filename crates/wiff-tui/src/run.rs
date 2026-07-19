@@ -166,19 +166,25 @@ fn render_picker(frame: &mut Frame, area: Rect, app: &mut App) {
     let lead = app
         .picker()
         .map_or(0, |p| p.note_height(modal_inner_width(area, content_width)));
-    let (rect, inner, visible) = centered_modal(area, rows + lead, content_width);
+    let total = rows + lead;
+    let (rect, inner, visible) = centered_modal(area, total, content_width);
     app.picker_set_viewport(visible, lead);
     let Some(picker) = app.picker() else {
         return;
     };
-    let background = Style::default().bg(color(picker.background()));
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(background.fg(color(picker.border())))
-        .style(background)
-        .title(picker.title().to_string());
-    frame.render_widget(Clear, rect);
-    frame.render_widget(Paragraph::new(picker.lines(inner)).block(block), rect);
+    render_scrolling_modal(
+        frame,
+        rect,
+        ScrollingModal {
+            title: picker.title(),
+            border: picker.border(),
+            background: picker.background(),
+            lines: picker.lines(inner),
+            top: picker.top(),
+            total,
+            visible,
+        },
+    );
 }
 
 /// A framed, scrollable modal ready to draw over the view: its titled border
@@ -198,8 +204,8 @@ struct ScrollingModal<'a> {
 
 /// Draw `modal` into `rect`, clearing the cells behind it, framing it with a
 /// titled border, and running a scrollbar down the right border when its content
-/// is taller than the window. Shared by the help overlay and the error notice,
-/// which frame and scroll alike.
+/// is taller than the window. Shared by the picker, the help overlay, and the
+/// error notice, which frame and scroll alike.
 fn render_scrolling_modal(frame: &mut Frame, rect: Rect, modal: ScrollingModal) {
     let background = Style::default().bg(color(modal.background));
     let block = Block::default()
@@ -1428,6 +1434,41 @@ mod tests {
             "                                                  \n",
             "                                                  \n",
             "src/lib.rs                           * 1 open  83%\n",
+        );
+    }
+
+    #[test]
+    fn a_picker_taller_than_its_window_runs_a_scrollbar_down_its_border() {
+        let diff = Diff {
+            files: (0..10)
+                .map(|n| {
+                    file(
+                        &format!("src/file{n:02}.rs"),
+                        FileStatus::Modified,
+                        &[(LineKind::Context, "let x = 1;", 1)],
+                    )
+                })
+                .collect(),
+        };
+        let document = DiffView::new(theme()).expect("view").render(&diff);
+        let mut app = App::new(document, 0, &theme());
+        app.update(Action::PickFile);
+
+        // The ten-file list is taller than the four rows the window leaves after
+        // the border, spacer, and hint, so a scrollbar runs down the right
+        // border, its thumb at the top over the first files.
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            screen(40, 9, app),
+            "┌Jump to file──────────────────────────┐\n",
+            "│> src/file00.rs                       █\n",
+            "│  src/file01.rs                       █\n",
+            "│  src/file02.rs                       ║\n",
+            "│  src/file03.rs                       ║\n",
+            "│                                      │\n",
+            "│  up/down move  enter select  esc canc│\n",
+            "└──────────────────────────────────────┘\n",
+            "src/file01.rs                0 open  13%\n",
         );
     }
 }

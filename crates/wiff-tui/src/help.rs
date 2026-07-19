@@ -154,7 +154,7 @@ impl Help {
         self.rows.len()
     }
 
-    /// The first visible row, for the host to place the scrollbar thumb.
+    /// Returns the first visible row of the scroll window.
     pub fn top(&self) -> usize {
         self.top
     }

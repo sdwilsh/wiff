@@ -136,7 +136,7 @@ impl Notice {
         self.top = self.max_top();
     }
 
-    /// The first visible line, for the host to place the scrollbar thumb.
+    /// Returns the first visible line of the scroll window.
     pub fn top(&self) -> usize {
         self.top
     }
