@@ -20,8 +20,8 @@ use wiff_core::source::FetchSource;
 use wiff_diff::{LineNo, Side};
 
 use crate::types::{
-    FetchedComment, FetchedPullRequest, FetchedReview, ForgeAnchor, NewPullRequest,
-    OutgoingComment, OutgoingReview, Resolution, SubmittedReview,
+    FetchedComment, FetchedDescription, FetchedPullRequest, FetchedReview, ForgeAnchor,
+    NewPullRequest, OutgoingComment, OutgoingReview, Resolution, SubmittedReview,
 };
 
 /// GitHub forge adapter backed by an `octocrab` client. One instance talks to a
@@ -81,13 +81,11 @@ impl GithubForge {
         });
         apply_resolutions(&mut comments, &resolutions);
         let head = head_source(pr, &at, &meta);
+        let description = fetched_description(&at, &forge, &meta)?;
 
         Ok(FetchedPullRequest {
             url: pr.clone(),
-            description: Description {
-                title: meta.title.unwrap_or_default(),
-                body: meta.body.unwrap_or_default(),
-            },
+            description,
             head,
             base_ref: meta.base.ref_field.clone(),
             base_commit: RevisionId(meta.base.sha.clone()),
@@ -757,6 +755,36 @@ fn fetched_review(
         disposition,
         dismissed: matches!(state, Some(ReviewState::Dismissed)),
     }))
+}
+
+/// Map a pull request's title and body to the neutral description, bound to the
+/// pull request itself as the forge object it mirrors. GitHub exposes no
+/// timestamp for the body alone, so `authored_at` approximates it with the pull
+/// request's last-activity time (`updated_at`, which any activity bumps),
+/// falling back to its creation time.
+fn fetched_description(
+    at: &PullRequestId,
+    forge: &ForgeId,
+    meta: &octocrab::models::pulls::PullRequest,
+) -> Result<FetchedDescription> {
+    let changed_at = meta
+        .updated_at
+        .or(meta.created_at)
+        .context("a github pull request has neither an updated nor a created time")?;
+    Ok(FetchedDescription {
+        origin: object_ref(
+            forge,
+            ExternalKind::Description,
+            at.number.to_string(),
+            meta.html_url.as_ref().map(ToString::to_string),
+        ),
+        author: author_of(meta.user.as_deref()),
+        content: Description {
+            title: meta.title.clone().unwrap_or_default(),
+            body: meta.body.clone().unwrap_or_default(),
+        },
+        authored_at: to_time(changed_at.timestamp(), changed_at.timestamp_subsec_nanos())?,
+    })
 }
 
 /// Read where an inline comment anchors, falling back to the position it was

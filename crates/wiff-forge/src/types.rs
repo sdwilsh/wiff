@@ -16,8 +16,9 @@ use wiff_diff::{LineNo, Side};
 pub struct FetchedPullRequest {
     /// The pull request's canonical URL.
     pub url: ForgeUrl,
-    /// The pull request's title and body.
-    pub description: Description,
+    /// The pull request's title and body, with the forge provenance a mirrored
+    /// revision records.
+    pub description: FetchedDescription,
     /// How to bring the pull request's commits into a local repo; the wire
     /// protocol the head repository speaks picks the variant.
     pub head: FetchSource,
@@ -38,6 +39,20 @@ impl FetchedPullRequest {
     pub fn head_commit(&self) -> &RevisionId {
         self.head.commit()
     }
+}
+
+/// A pull request's description as the forge reports it: the title and body
+/// together with the provenance a mirrored revision records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchedDescription {
+    /// The forge object this mirrors, the pull request's own body.
+    pub origin: ExternalRef,
+    /// Who authored the pull request the description belongs to.
+    pub author: Author,
+    /// The title and body.
+    pub content: Description,
+    /// When the forge last recorded a change to the description.
+    pub authored_at: OffsetDateTime,
 }
 
 /// An inline position on a pull request's diff in the forge's terms, used in

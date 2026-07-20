@@ -1,26 +1,27 @@
-//! Reconciling a forge pull request's comments and verdicts into the session
-//! log.
+//! Reconciling a forge pull request's comments, verdicts, and description into
+//! the session log.
 //!
-//! A pull mirrors forge comment threads and review verdicts locally. This
-//! module reconciles what the forge reports now against what wiff has already
-//! folded from the log, producing the append-only events that bring a local
-//! review into line with upstream.
+//! A pull mirrors forge comment threads, review verdicts, and the pull
+//! request's description locally. This module reconciles what the forge reports
+//! now against what wiff has already folded from the log, producing the
+//! append-only events that bring a local review into line with upstream.
 
 use std::collections::{HashMap, HashSet};
 
 use ulid::Ulid;
-use wiff_core::CommentState;
 use wiff_core::comment::{
     delete_event, import_create, import_disposition, import_edit, import_resolve,
     place_forge_anchor,
 };
+use wiff_core::description::mirrored_description;
 use wiff_core::record::{
     Anchor, Author, AuthorKind, CommentCreate, CommentTarget, Disposition, ExternalKind,
     ExternalRef, RecordBody, VersionNumber,
 };
+use wiff_core::{CommentState, DescriptionState};
 use wiff_diff::Diff;
 
-use crate::types::{FetchedComment, FetchedReview};
+use crate::types::{FetchedComment, FetchedDescription, FetchedReview};
 
 /// Reconcile the forge's `fetched` comments against the `existing` folded
 /// comments, returning the events that bring the log up to date. `diff` is the
@@ -229,6 +230,34 @@ pub fn reconcile_reviews(
     }
 
     events
+}
+
+/// Reconcile the forge's `fetched` description against the `existing` folded
+/// description, returning the revision to import, or `None` when upstream is
+/// unchanged since the last sync.
+///
+/// The incoming content is compared against `existing`'s `synced_marker`, the
+/// upstream content the last sync recorded, not against the current local
+/// content. That distinguishes an upstream edit, which imports, from a local
+/// edit made against an untouched upstream, which is preserved for the next
+/// push. First contact adopts upstream: a pull creates the session it fills, so
+/// `existing` is absent then and there is no local description to preserve.
+pub fn reconcile_description(
+    fetched: &FetchedDescription,
+    existing: Option<&DescriptionState>,
+) -> Option<RecordBody> {
+    let marker = fetched.content.content_marker();
+    let synced = existing.and_then(|state| state.synced_marker.as_deref());
+    if synced == Some(marker.as_str()) {
+        return None;
+    }
+    Some(mirrored_description(
+        fetched.author.clone(),
+        fetched.content.clone(),
+        fetched.origin.clone(),
+        fetched.authored_at,
+        marker,
+    ))
 }
 
 /// The forge object an `existing` comment mirrors when it is of `kind`, paired

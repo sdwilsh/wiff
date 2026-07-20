@@ -4,15 +4,18 @@ use time::OffsetDateTime;
 use time::macros::datetime;
 use ulid::Ulid;
 use wiff_core::record::{
-    Author, AuthorKind, Disposition, ExternalKind, ExternalRef, FORMAT_VERSION, ForgeId, Record,
-    RecordBody, RevisionId, ScmSource, Seq, SessionHeader, SourceKind, TipRule, VersionNumber,
+    Author, AuthorKind, Description, DescriptionRecord, Disposition, ExternalKind, ExternalRef,
+    FORMAT_VERSION, ForgeId, Record, RecordBody, RevisionId, ScmSource, Seq, SessionHeader,
+    SourceKind, TipRule, VersionNumber,
 };
-use wiff_core::review::{CommentState, ReviewState, fold};
+use wiff_core::review::{CommentState, DescriptionState, ReviewState, fold};
 use wiff_core::{BaseRuleset, ScmType};
 use wiff_diff::parse::parse;
 use wiff_diff::{Diff, LineNo, Side};
-use wiff_forge::types::{FetchedComment, FetchedReview, ForgeAnchor, Resolution};
-use wiff_forge::{reconcile_comments, reconcile_reviews};
+use wiff_forge::types::{
+    FetchedComment, FetchedDescription, FetchedReview, ForgeAnchor, Resolution,
+};
+use wiff_forge::{reconcile_comments, reconcile_description, reconcile_reviews};
 
 const DIFF: &str = "\
 diff --git a/f.txt b/f.txt
@@ -1216,4 +1219,143 @@ fn reconciling_comments_leaves_an_imported_verdict_untouched() {
     let existing = fold_events(verdict);
     let again = reconcile_comments(&[], &existing, &diff(), VersionNumber(0), ids());
     wince::assert_eq!(again, Vec::<RecordBody>::new());
+}
+
+/// A description-object reference on the fake GitHub instance, the pull request
+/// body's own forge object.
+fn description_origin() -> ExternalRef {
+    ExternalRef {
+        kind: ExternalKind::Description,
+        ..origin("pr-7")
+    }
+}
+
+/// A forge description with `title` and `body`, bound to the pull request
+/// itself as the object it mirrors.
+fn fetched_description(title: &str, body: &str) -> FetchedDescription {
+    FetchedDescription {
+        origin: description_origin(),
+        author: human("alice"),
+        content: Description {
+            title: title.to_string(),
+            body: body.to_string(),
+        },
+        authored_at: datetime!(2024-03-01 12:00 UTC),
+    }
+}
+
+/// A locally-authored description revision that leaves the forge binding and
+/// synced marker untouched, as a human edit through the TUI makes.
+fn local_edit(author: &str, title: &str, body: &str) -> RecordBody {
+    RecordBody::Description(DescriptionRecord {
+        author: human(author),
+        authored_at: None,
+        origin: None,
+        synced_marker: None,
+        description: Description {
+            title: title.to_string(),
+            body: body.to_string(),
+        },
+    })
+}
+
+/// Fold `events` into a review and return its current description.
+fn fold_description(events: Vec<RecordBody>) -> Option<DescriptionState> {
+    let mut records = vec![Record {
+        seq: Seq(0),
+        at: OffsetDateTime::UNIX_EPOCH,
+        body: RecordBody::Session(header()),
+    }];
+    for (offset, body) in events.into_iter().enumerate() {
+        records.push(Record {
+            seq: Seq(offset as u64 + 1),
+            at: datetime!(2024-06-01 09:00 UTC),
+            body,
+        });
+    }
+    fold(&records).expect("fold description events").description
+}
+
+#[test]
+fn a_fresh_pull_imports_the_description() {
+    let forge = fetched_description("Add the thing", "A short body.");
+    let event = reconcile_description(&forge, None).expect("first contact imports upstream");
+    let state = fold_description(vec![event]).expect("a description is set");
+    #[rustfmt::skip]
+    wince::snapshot_str!(
+        serde_json::to_string_pretty(&state).expect("serialize description"),
+        r#"{
+  "title": "Add the thing",
+  "body": "A short body.",
+  "author": {
+    "name": "alice",
+    "kind": "human"
+  },
+  "updated_at": "2024-03-01T12:00:00Z",
+  "origin": {
+    "forge": {
+      "provider": "github",
+      "host": "github.com"
+    },
+    "kind": "description",
+    "id": "pr-7"
+  },
+  "synced_marker": "8e5835066037bbaa39e356617eb2011fa509df8b03d074f4b5a80a25db8abcca"
+}"#,
+    );
+}
+
+#[test]
+fn re_pulling_an_unchanged_description_appends_nothing() {
+    let forge = fetched_description("Add the thing", "A short body.");
+    let event = reconcile_description(&forge, None).expect("first contact imports upstream");
+    let state = fold_description(vec![event]);
+    let again = reconcile_description(&forge, state.as_ref());
+    wince::assert_eq!(again, None);
+}
+
+#[test]
+fn an_upstream_edit_reimports_the_description() {
+    let first = fetched_description("Add the thing", "A short body.");
+    let mut events = vec![reconcile_description(&first, None).expect("first contact imports")];
+    let state = fold_description(events.clone());
+    let edited = fetched_description("Add the thing", "A longer body now.");
+    events
+        .push(reconcile_description(&edited, state.as_ref()).expect("an upstream edit reimports"));
+    let state = fold_description(events).expect("a description is set");
+    #[rustfmt::skip]
+    wince::snapshot_str!(
+        serde_json::to_string_pretty(&state).expect("serialize description"),
+        r#"{
+  "title": "Add the thing",
+  "body": "A longer body now.",
+  "author": {
+    "name": "alice",
+    "kind": "human"
+  },
+  "updated_at": "2024-03-01T12:00:00Z",
+  "origin": {
+    "forge": {
+      "provider": "github",
+      "host": "github.com"
+    },
+    "kind": "description",
+    "id": "pr-7"
+  },
+  "synced_marker": "33e541791308c15fc88ecf55bfe42a95f7c5f39e5c3c80cbefb1b8a21ee5c04e"
+}"#,
+    );
+}
+
+#[test]
+fn a_local_edit_against_an_untouched_upstream_is_preserved() {
+    // Import upstream, edit locally, then re-pull with upstream unchanged: the
+    // synced marker still names the imported content, so nothing reimports and
+    // the local edit stands for the next push.
+    let upstream = fetched_description("Add the thing", "Upstream body.");
+    let mut events = vec![reconcile_description(&upstream, None).expect("first contact imports")];
+    events.push(local_edit("alice", "Add the thing", "Local body."));
+    let state = fold_description(events);
+    let again = reconcile_description(&upstream, state.as_ref());
+    wince::assert_eq!(again, None);
 }

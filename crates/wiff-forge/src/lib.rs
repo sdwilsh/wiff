@@ -17,10 +17,10 @@ pub mod types;
 pub use config::{ForgeHost, ForgeTable, TokenOverride, resolve_token};
 pub use error::Unsupported;
 pub use github::GithubForge;
-pub use pull::{reconcile_comments, reconcile_reviews};
+pub use pull::{reconcile_comments, reconcile_description, reconcile_reviews};
 pub use types::{
-    FetchedComment, FetchedPullRequest, FetchedReview, ForgeAnchor, NewPullRequest,
-    OutgoingComment, OutgoingReview, Resolution, SubmittedReview,
+    FetchedComment, FetchedDescription, FetchedPullRequest, FetchedReview, ForgeAnchor,
+    NewPullRequest, OutgoingComment, OutgoingReview, Resolution, SubmittedReview,
 };
 
 use anyhow::Result;

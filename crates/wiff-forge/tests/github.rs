@@ -12,8 +12,8 @@ use wiff_core::record::{
 use wiff_core::source::FetchSource;
 use wiff_diff::{LineNo, Side};
 use wiff_forge::{
-    FetchedComment, FetchedPullRequest, FetchedReview, ForgeAnchor, GithubForge, NewPullRequest,
-    OutgoingComment, OutgoingReview, Resolution, SubmittedReview,
+    FetchedComment, FetchedDescription, FetchedPullRequest, FetchedReview, ForgeAnchor,
+    GithubForge, NewPullRequest, OutgoingComment, OutgoingReview, Resolution, SubmittedReview,
 };
 use wiremock::matchers::{body_json, body_string_contains, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -43,6 +43,28 @@ fn account(login: &str, kind: &str) -> Value {
     })
 }
 
+/// The neutral description a fixture's pull request maps to, bound to the pull
+/// request itself, with `title` and `body` varying per test.
+fn expected_description(title: &str, body: &str) -> FetchedDescription {
+    FetchedDescription {
+        origin: ExternalRef {
+            forge: github_forge_id(),
+            kind: ExternalKind::Description,
+            id: "7".to_string(),
+            url: Some("https://github.com/octo/demo/pull/7".to_string()),
+        },
+        author: Author {
+            name: "author".to_string(),
+            kind: AuthorKind::Human,
+        },
+        content: Description {
+            title: title.to_string(),
+            body: body.to_string(),
+        },
+        authored_at: datetime!(2021-06-01 12:00:00 UTC),
+    }
+}
+
 /// The head commit every fixture's pull request resolves to.
 const HEAD_SHA: &str = "1111111111111111111111111111111111111111";
 /// The base tip every fixture's pull request targets.
@@ -58,6 +80,10 @@ fn base_pull() -> Value {
         "locked": false,
         "title": "Add the thing",
         "body": "",
+        "user": account("author", "User"),
+        "created_at": "2021-06-01T12:00:00Z",
+        "updated_at": "2021-06-01T12:00:00Z",
+        "html_url": "https://github.com/octo/demo/pull/7",
         "head": { "ref": "feature", "sha": HEAD_SHA },
         "base": {
             "ref": "main",
@@ -111,10 +137,7 @@ fn merge(base: &mut Value, over: Value) {
 fn expected_shell(url: &ForgeUrl, comments: Vec<FetchedComment>) -> FetchedPullRequest {
     FetchedPullRequest {
         url: url.clone(),
-        description: Description {
-            title: "Add the thing".to_string(),
-            body: String::new(),
-        },
+        description: expected_description("Add the thing", ""),
         head: FetchSource::Git {
             url: "https://github.com/octo/demo.git".to_string(),
             git_ref: "refs/pull/7/head".to_string(),
@@ -222,6 +245,10 @@ async fn a_pull_request_maps_to_the_neutral_shape() {
         "locked": false,
         "title": "Add the thing",
         "body": "The body of the pull request.",
+        "user": account("author", "User"),
+        "created_at": "2021-06-01T12:00:00Z",
+        "updated_at": "2021-06-01T12:00:00Z",
+        "html_url": "https://github.com/octo/demo/pull/7",
         "head": { "ref": "feature", "sha": "1111111111111111111111111111111111111111" },
         "base": {
             "ref": "main",
@@ -367,10 +394,7 @@ async fn a_pull_request_maps_to_the_neutral_shape() {
 
     let expected = FetchedPullRequest {
         url: url.clone(),
-        description: Description {
-            title: "Add the thing".to_string(),
-            body: "The body of the pull request.".to_string(),
-        },
+        description: expected_description("Add the thing", "The body of the pull request."),
         head: FetchSource::Git {
             url: "https://github.com/octo/demo.git".to_string(),
             git_ref: "refs/pull/7/head".to_string(),
@@ -516,6 +540,10 @@ async fn a_pull_request_without_a_base_clone_url_builds_one_from_its_web_url() {
         "locked": false,
         "title": "Add the thing",
         "body": "",
+        "user": account("author", "User"),
+        "created_at": "2021-06-01T12:00:00Z",
+        "updated_at": "2021-06-01T12:00:00Z",
+        "html_url": "https://github.com/octo/demo/pull/7",
         "head": { "ref": "feature", "sha": "1111111111111111111111111111111111111111" },
         "base": { "ref": "main", "sha": "2222222222222222222222222222222222222222" },
     });
@@ -527,10 +555,7 @@ async fn a_pull_request_without_a_base_clone_url_builds_one_from_its_web_url() {
 
     let expected = FetchedPullRequest {
         url: url.clone(),
-        description: Description {
-            title: "Add the thing".to_string(),
-            body: String::new(),
-        },
+        description: expected_description("Add the thing", ""),
         head: FetchSource::Git {
             url: "https://github.com/octo/demo.git".to_string(),
             git_ref: "refs/pull/7/head".to_string(),
@@ -574,6 +599,10 @@ async fn a_self_hosted_fallback_clone_url_keeps_the_pull_requests_port() {
         "locked": false,
         "title": "Add the thing",
         "body": "",
+        "user": account("author", "User"),
+        "created_at": "2021-06-01T12:00:00Z",
+        "updated_at": "2021-06-01T12:00:00Z",
+        "html_url": "https://git.example.com:8443/octo/demo/pull/7",
         "head": { "ref": "feature", "sha": HEAD_SHA },
         "base": { "ref": "main", "sha": BASE_SHA },
     });
@@ -585,9 +614,27 @@ async fn a_self_hosted_fallback_clone_url_keeps_the_pull_requests_port() {
 
     let expected = FetchedPullRequest {
         url: url.clone(),
-        description: Description {
-            title: "Add the thing".to_string(),
-            body: String::new(),
+        // The self-hosted host names the forge the description mirrors, taken
+        // from the pull request URL rather than github.com.
+        description: FetchedDescription {
+            origin: ExternalRef {
+                forge: ForgeId {
+                    provider: "github".to_string(),
+                    host: "git.example.com".to_string(),
+                },
+                kind: ExternalKind::Description,
+                id: "7".to_string(),
+                url: Some("https://git.example.com:8443/octo/demo/pull/7".to_string()),
+            },
+            author: Author {
+                name: "author".to_string(),
+                kind: AuthorKind::Human,
+            },
+            content: Description {
+                title: "Add the thing".to_string(),
+                body: String::new(),
+            },
+            authored_at: datetime!(2021-06-01 12:00:00 UTC),
         },
         head: FetchSource::Git {
             url: "https://git.example.com:8443/octo/demo.git".to_string(),

@@ -2,8 +2,10 @@
 //! revision here binds no forge provenance; a mirrored revision that does is
 //! built by the forge adapter.
 
+use time::OffsetDateTime;
+
 use crate::error::Result;
-use crate::record::{Author, Description, DescriptionRecord, RecordBody};
+use crate::record::{Author, Description, DescriptionRecord, ExternalRef, RecordBody};
 use crate::session::{LockWait, SessionLog};
 
 /// Set `log`'s description to `description`, attributed to `author`, by
@@ -27,6 +29,25 @@ pub(crate) fn local_description(author: Author, description: Description) -> Rec
         authored_at: None,
         origin: None,
         synced_marker: None,
+        description,
+    })
+}
+
+/// Build a [`DescriptionRecord`] mirroring a forge's description: bound to the
+/// forge object `origin` at the forge's own `authored_at`, and marked with
+/// `synced_marker` as the upstream content this revision reconciled with.
+pub fn mirrored_description(
+    author: Author,
+    description: Description,
+    origin: ExternalRef,
+    authored_at: OffsetDateTime,
+    synced_marker: String,
+) -> RecordBody {
+    RecordBody::Description(DescriptionRecord {
+        author,
+        authored_at: Some(authored_at),
+        origin: Some(origin),
+        synced_marker: Some(synced_marker),
         description,
     })
 }

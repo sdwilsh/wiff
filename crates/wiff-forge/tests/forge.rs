@@ -14,8 +14,8 @@ use wiff_core::record::{
 use wiff_core::source::FetchSource;
 use wiff_diff::{LineNo, Side};
 use wiff_forge::{
-    FetchedComment, FetchedPullRequest, FetchedReview, Forge, ForgeAnchor, NewPullRequest,
-    OutgoingComment, OutgoingReview, Resolution, SubmittedReview, Unsupported,
+    FetchedComment, FetchedDescription, FetchedPullRequest, FetchedReview, Forge, ForgeAnchor,
+    NewPullRequest, OutgoingComment, OutgoingReview, Resolution, SubmittedReview, Unsupported,
 };
 
 fn forge_id() -> ForgeId {
@@ -38,6 +38,26 @@ fn line(n: u32) -> LineNo {
     LineNo::new(n).expect("nonzero line")
 }
 
+fn fetched_description() -> FetchedDescription {
+    FetchedDescription {
+        origin: ExternalRef {
+            forge: forge_id(),
+            kind: ExternalKind::Description,
+            id: "1".to_string(),
+            url: Some("https://github.com/o/r/pull/1".to_string()),
+        },
+        author: Author {
+            name: "octocat".to_string(),
+            kind: AuthorKind::Human,
+        },
+        content: Description {
+            title: "Refactor the widget".to_string(),
+            body: "Splits the widget in two.".to_string(),
+        },
+        authored_at: OffsetDateTime::from_unix_timestamp(1_700_000_000).expect("valid timestamp"),
+    }
+}
+
 /// A canned forge that echoes the pull request URL it was asked about and
 /// returns fixed comments and reviews, so a caller can drive the trait without
 /// a network.
@@ -48,10 +68,7 @@ impl Forge for FakeForge {
     async fn fetch(&self, pr: &ForgeUrl) -> Result<FetchedPullRequest> {
         Ok(FetchedPullRequest {
             url: pr.clone(),
-            description: Description {
-                title: "Refactor the widget".to_string(),
-                body: "Splits the widget in two.".to_string(),
-            },
+            description: fetched_description(),
             head: FetchSource::Git {
                 url: "https://github.com/o/r".to_string(),
                 git_ref: "refs/pull/1/head".to_string(),
@@ -141,10 +158,7 @@ async fn fetch_returns_the_pull_request_the_forge_reports() {
         fetched,
         FetchedPullRequest {
             url: ForgeUrl::parse("https://github.com/o/r/pull/1").expect("valid url"),
-            description: Description {
-                title: "Refactor the widget".to_string(),
-                body: "Splits the widget in two.".to_string(),
-            },
+            description: fetched_description(),
             head: FetchSource::Git {
                 url: "https://github.com/o/r".to_string(),
                 git_ref: "refs/pull/1/head".to_string(),

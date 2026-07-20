@@ -481,6 +481,22 @@ impl Description {
         let body = parts.next().unwrap_or_default().trim().to_string();
         Self { title, body }
     }
+
+    /// A fingerprint of the title and body, used as a description revision's
+    /// `synced_marker` to tell an upstream change from an untouched one. A
+    /// reconcile fingerprints the forge's description and compares it against
+    /// the marker a prior sync recorded; equal fingerprints mean the content is
+    /// unchanged. The title and body are length-prefixed before hashing, so
+    /// distinct pairs never collide the way `to_message` can when a title's own
+    /// newline is indistinguishable from the title/body boundary.
+    pub fn content_marker(&self) -> String {
+        let mut hasher = blake3::Hasher::new();
+        for field in [&self.title, &self.body] {
+            hasher.update(&(field.len() as u64).to_le_bytes());
+            hasher.update(field.as_bytes());
+        }
+        hasher.finalize().to_hex().to_string()
+    }
 }
 
 /// Who authored an annotation.
@@ -868,6 +884,45 @@ mod tests {
             wince::assert_eq!(description.to_message(), message.to_string());
             wince::assert_eq!(Description::from_message(message), description);
         }
+    }
+
+    #[test]
+    fn a_content_marker_separates_the_title_from_the_body() {
+        // Both render to the same commit message "a\n\nb", so a marker over
+        // `to_message` would collide them; the length-prefixed marker does not.
+        let title_holds_the_break = Description {
+            title: "a\n\nb".to_string(),
+            body: String::new(),
+        };
+        let body_holds_the_break = Description {
+            title: "a".to_string(),
+            body: "b".to_string(),
+        };
+        wince::assert_eq!(
+            title_holds_the_break.to_message(),
+            body_holds_the_break.to_message()
+        );
+        assert_ne!(
+            title_holds_the_break.content_marker(),
+            body_holds_the_break.content_marker()
+        );
+        // The same content always fingerprints the same, a changed field differs.
+        wince::assert_eq!(
+            body_holds_the_break.content_marker(),
+            Description {
+                title: "a".to_string(),
+                body: "b".to_string(),
+            }
+            .content_marker()
+        );
+        assert_ne!(
+            body_holds_the_break.content_marker(),
+            Description {
+                title: "a".to_string(),
+                body: "c".to_string(),
+            }
+            .content_marker()
+        );
     }
 
     #[test]
