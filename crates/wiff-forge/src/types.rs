@@ -117,7 +117,11 @@ pub struct OutgoingReview {
     pub disposition: Option<Disposition>,
     /// The review's summary body.
     pub body: String,
-    /// The inline comments to post with the review.
+    /// The fresh inline comments to post with the review, each anchored and none
+    /// a reply. A review submission cannot express a reply, and a review-level
+    /// comment that could not anchor inline is posted separately; the push layer
+    /// routes both through [`Forge::post_comment`](crate::Forge::post_comment)
+    /// rather than placing them here.
     pub comments: Vec<OutgoingComment>,
 }
 
@@ -151,6 +155,11 @@ pub struct SubmittedReview {
 /// The details of a pull request to open from an already-pushed branch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewPullRequest {
+    /// The repository to open the pull request in, e.g.
+    /// `https://github.com/octo/demo`. An adapter is bound only to a host, so
+    /// the repository is named here rather than derived from an existing pull
+    /// request URL, which does not yet exist.
+    pub repo: ForgeUrl,
     /// The pull request's title and body.
     pub description: Description,
     /// The branch holding the changes to review.

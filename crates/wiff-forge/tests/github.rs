@@ -1,7 +1,10 @@
 #![allow(missing_docs)]
 
+use std::collections::BTreeMap;
+
 use serde_json::{Value, json};
 use time::macros::datetime;
+use ulid::Ulid;
 use wiff_core::record::{
     Author, AuthorKind, Description, Disposition, ExternalKind, ExternalRef, ForgeId, ForgeUrl,
     RevisionId,
@@ -9,9 +12,10 @@ use wiff_core::record::{
 use wiff_core::source::FetchSource;
 use wiff_diff::{LineNo, Side};
 use wiff_forge::{
-    FetchedComment, FetchedPullRequest, FetchedReview, ForgeAnchor, GithubForge, Resolution,
+    FetchedComment, FetchedPullRequest, FetchedReview, ForgeAnchor, GithubForge, NewPullRequest,
+    OutgoingComment, OutgoingReview, Resolution, SubmittedReview,
 };
-use wiremock::matchers::{body_string_contains, method, path};
+use wiremock::matchers::{body_json, body_string_contains, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Build a GitHub account JSON object with every field octocrab requires to
@@ -1119,4 +1123,549 @@ async fn a_graphql_failure_leaves_the_rest_fetch_intact() {
     );
 
     wince::assert_eq!(fetched, expected);
+}
+
+/// The `ForgeId` every fixture's objects belong to, `github` on `github.com`.
+fn github_forge_id() -> ForgeId {
+    ForgeId {
+        provider: "github".to_string(),
+        host: "github.com".to_string(),
+    }
+}
+
+#[tokio::test]
+async fn submit_review_posts_the_batch_and_keys_created_comments() {
+    let server = MockServer::start().await;
+
+    let ulid = Ulid::from_string("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("valid ulid");
+    // The batch posts as one call. Its comment has a per-comment disposition,
+    // rendered as a tag atop the body, and a multi-line anchor.
+    let expected_body = json!({
+        "body": "One blocker.",
+        "event": "REQUEST_CHANGES",
+        "comments": [
+            {
+                "path": "src/lib.rs",
+                "body": "**[request changes]**\n\nfix this",
+                "line": 12,
+                "side": "RIGHT",
+                "start_line": 10,
+                "start_side": "RIGHT",
+            }
+        ],
+    });
+    Mock::given(method("POST"))
+        .and(path("/repos/octo/demo/pulls/7/reviews"))
+        .and(body_json(expected_body))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 500,
+            "html_url": "https://github.com/octo/demo/pull/7#pullrequestreview-500",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // The read-back echoes the created comment's anchor and body, which key it
+    // to the submitted comment without relying on the listing order.
+    Mock::given(method("GET"))
+        .and(path("/repos/octo/demo/pulls/7/reviews/500/comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {
+                "id": 600,
+                "html_url": "https://github.com/octo/demo/pull/7#discussion_r600",
+                "path": "src/lib.rs",
+                "line": 12,
+                "side": "RIGHT",
+                "body": "**[request changes]**\n\nfix this",
+            }
+        ])))
+        .mount(&server)
+        .await;
+
+    let github = GithubForge::new("token", Some(&server.uri())).expect("build the adapter");
+    let url = ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("valid url");
+    let review = OutgoingReview {
+        disposition: Some(Disposition::RequestChanges),
+        body: "One blocker.".to_string(),
+        comments: vec![OutgoingComment {
+            comment: ulid,
+            body: "fix this".to_string(),
+            disposition: Some(Disposition::RequestChanges),
+            anchor: Some(ForgeAnchor {
+                path: "src/lib.rs".to_string(),
+                side: Side::After,
+                start_line: LineNo::new(10).expect("nonzero line"),
+                end_line: LineNo::new(12).expect("nonzero line"),
+                commit: RevisionId(HEAD_SHA.to_string()),
+            }),
+            reply_to: None,
+        }],
+    };
+
+    let submitted = github
+        .submit_review(&url, &review)
+        .await
+        .expect("submit succeeds");
+
+    wince::assert_eq!(
+        submitted,
+        SubmittedReview {
+            review: ExternalRef {
+                forge: github_forge_id(),
+                kind: ExternalKind::Verdict,
+                id: "500".to_string(),
+                url: Some("https://github.com/octo/demo/pull/7#pullrequestreview-500".to_string()),
+            },
+            comments: BTreeMap::from([(ulid, review_comment_ref(600))]),
+        }
+    );
+}
+
+#[tokio::test]
+async fn submit_review_keys_comments_by_anchor_not_read_back_order() {
+    let server = MockServer::start().await;
+
+    let first = Ulid::from_string("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("valid ulid");
+    let second = Ulid::from_string("01BX5ZZKBKACTAV9WEVGEMMVRZ").expect("valid ulid");
+    Mock::given(method("POST"))
+        .and(path("/repos/octo/demo/pulls/7/reviews"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 500,
+            "html_url": "https://github.com/octo/demo/pull/7#pullrequestreview-500",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // GitHub returns the two comments in the reverse of submission order. The
+    // anchor keys each back to its own local comment regardless.
+    Mock::given(method("GET"))
+        .and(path("/repos/octo/demo/pulls/7/reviews/500/comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {
+                "id": 611,
+                "html_url": "https://github.com/octo/demo/pull/7#discussion_r611",
+                "path": "src/two.rs",
+                "line": 20,
+                "side": "RIGHT",
+                "body": "second note",
+            },
+            {
+                "id": 610,
+                "html_url": "https://github.com/octo/demo/pull/7#discussion_r610",
+                "path": "src/one.rs",
+                "line": 10,
+                "side": "RIGHT",
+                "body": "first note",
+            }
+        ])))
+        .mount(&server)
+        .await;
+
+    let github = GithubForge::new("token", Some(&server.uri())).expect("build the adapter");
+    let url = ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("valid url");
+    let anchor = |path: &str, line: u32| ForgeAnchor {
+        path: path.to_string(),
+        side: Side::After,
+        start_line: LineNo::new(line).expect("nonzero line"),
+        end_line: LineNo::new(line).expect("nonzero line"),
+        commit: RevisionId(HEAD_SHA.to_string()),
+    };
+    let review = OutgoingReview {
+        disposition: None,
+        body: "Two notes.".to_string(),
+        comments: vec![
+            OutgoingComment {
+                comment: first,
+                body: "first note".to_string(),
+                disposition: None,
+                anchor: Some(anchor("src/one.rs", 10)),
+                reply_to: None,
+            },
+            OutgoingComment {
+                comment: second,
+                body: "second note".to_string(),
+                disposition: None,
+                anchor: Some(anchor("src/two.rs", 20)),
+                reply_to: None,
+            },
+        ],
+    };
+
+    let submitted = github
+        .submit_review(&url, &review)
+        .await
+        .expect("submit succeeds");
+
+    wince::assert_eq!(
+        submitted,
+        SubmittedReview {
+            review: ExternalRef {
+                forge: github_forge_id(),
+                kind: ExternalKind::Verdict,
+                id: "500".to_string(),
+                url: Some("https://github.com/octo/demo/pull/7#pullrequestreview-500".to_string()),
+            },
+            comments: BTreeMap::from([
+                (first, review_comment_ref(610)),
+                (second, review_comment_ref(611)),
+            ]),
+        }
+    );
+}
+
+#[tokio::test]
+async fn submit_review_binds_a_comment_whose_body_github_normalized() {
+    let server = MockServer::start().await;
+
+    let ulid = Ulid::from_string("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("valid ulid");
+    Mock::given(method("POST"))
+        .and(path("/repos/octo/demo/pulls/7/reviews"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 500,
+            "html_url": "https://github.com/octo/demo/pull/7#pullrequestreview-500",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // GitHub stored the body with its trailing whitespace trimmed and CRLF
+    // folded to LF, so the read-back differs byte for byte from what was
+    // submitted. The unique anchor still binds the comment; the body is only a
+    // tiebreaker for co-located comments, so a normalized body does not fail it.
+    Mock::given(method("GET"))
+        .and(path("/repos/octo/demo/pulls/7/reviews/500/comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {
+                "id": 610,
+                "html_url": "https://github.com/octo/demo/pull/7#discussion_r610",
+                "path": "src/one.rs",
+                "line": 10,
+                "side": "RIGHT",
+                "body": "a note",
+            }
+        ])))
+        .mount(&server)
+        .await;
+
+    let github = GithubForge::new("token", Some(&server.uri())).expect("build the adapter");
+    let url = ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("valid url");
+    let review = OutgoingReview {
+        disposition: None,
+        body: "One note.".to_string(),
+        comments: vec![OutgoingComment {
+            comment: ulid,
+            body: "a note\r\n".to_string(),
+            disposition: None,
+            anchor: Some(ForgeAnchor {
+                path: "src/one.rs".to_string(),
+                side: Side::After,
+                start_line: LineNo::new(10).expect("nonzero line"),
+                end_line: LineNo::new(10).expect("nonzero line"),
+                commit: RevisionId(HEAD_SHA.to_string()),
+            }),
+            reply_to: None,
+        }],
+    };
+
+    let submitted = github
+        .submit_review(&url, &review)
+        .await
+        .expect("submit succeeds");
+
+    wince::assert_eq!(
+        submitted,
+        SubmittedReview {
+            review: ExternalRef {
+                forge: github_forge_id(),
+                kind: ExternalKind::Verdict,
+                id: "500".to_string(),
+                url: Some("https://github.com/octo/demo/pull/7#pullrequestreview-500".to_string()),
+            },
+            comments: BTreeMap::from([(ulid, review_comment_ref(610))]),
+        }
+    );
+}
+
+#[tokio::test]
+async fn post_comment_replies_to_an_existing_thread() {
+    let server = MockServer::start().await;
+
+    // A reply names its parent by id and posts through the review-comment
+    // endpoint, not as a fresh anchored comment.
+    Mock::given(method("POST"))
+        .and(path("/repos/octo/demo/pulls/7/comments"))
+        .and(body_json(json!({ "body": "a reply", "in_reply_to": 100 })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 601,
+            "html_url": "https://github.com/octo/demo/pull/7#discussion_r601",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let github = GithubForge::new("token", Some(&server.uri())).expect("build the adapter");
+    let url = ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("valid url");
+    let comment = OutgoingComment {
+        comment: Ulid::from_string("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("valid ulid"),
+        body: "a reply".to_string(),
+        disposition: None,
+        anchor: None,
+        reply_to: Some(ExternalRef {
+            forge: github_forge_id(),
+            kind: ExternalKind::ReviewComment,
+            id: "100".to_string(),
+            url: None,
+        }),
+    };
+
+    let created = github
+        .post_comment(&url, &comment)
+        .await
+        .expect("reply succeeds");
+
+    wince::assert_eq!(created, review_comment_ref(601));
+}
+
+#[tokio::test]
+async fn post_comment_posts_a_fresh_inline_comment() {
+    let server = MockServer::start().await;
+
+    // A new anchored comment names the commit it is placed against and, being
+    // single-line, names only its end line and side.
+    let expected_body = json!({
+        "path": "src/lib.rs",
+        "body": "a note",
+        "line": 42,
+        "side": "RIGHT",
+        "commit_id": HEAD_SHA,
+    });
+    Mock::given(method("POST"))
+        .and(path("/repos/octo/demo/pulls/7/comments"))
+        .and(body_json(expected_body))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 602,
+            "html_url": "https://github.com/octo/demo/pull/7#discussion_r602",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let github = GithubForge::new("token", Some(&server.uri())).expect("build the adapter");
+    let url = ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("valid url");
+    let comment = OutgoingComment {
+        comment: Ulid::from_string("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("valid ulid"),
+        body: "a note".to_string(),
+        disposition: None,
+        anchor: Some(ForgeAnchor {
+            path: "src/lib.rs".to_string(),
+            side: Side::After,
+            start_line: LineNo::new(42).expect("nonzero line"),
+            end_line: LineNo::new(42).expect("nonzero line"),
+            commit: RevisionId(HEAD_SHA.to_string()),
+        }),
+        reply_to: None,
+    };
+
+    let created = github
+        .post_comment(&url, &comment)
+        .await
+        .expect("post succeeds");
+
+    wince::assert_eq!(created, review_comment_ref(602));
+}
+
+#[tokio::test]
+async fn post_comment_posts_a_review_level_comment() {
+    let server = MockServer::start().await;
+
+    // A comment that anchors nowhere posts as a review-level issue comment.
+    Mock::given(method("POST"))
+        .and(path("/repos/octo/demo/issues/7/comments"))
+        .and(body_json(json!({ "body": "top-level note" })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 603,
+            "html_url": "https://github.com/octo/demo/pull/7#issuecomment-603",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let github = GithubForge::new("token", Some(&server.uri())).expect("build the adapter");
+    let url = ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("valid url");
+    let comment = OutgoingComment {
+        comment: Ulid::from_string("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("valid ulid"),
+        body: "top-level note".to_string(),
+        disposition: None,
+        anchor: None,
+        reply_to: None,
+    };
+
+    let created = github
+        .post_comment(&url, &comment)
+        .await
+        .expect("post succeeds");
+
+    wince::assert_eq!(
+        created,
+        ExternalRef {
+            forge: github_forge_id(),
+            kind: ExternalKind::ReviewComment,
+            id: "603".to_string(),
+            url: Some("https://github.com/octo/demo/pull/7#issuecomment-603".to_string()),
+        }
+    );
+}
+
+#[tokio::test]
+async fn edit_comment_patches_an_inline_comment() {
+    let server = MockServer::start().await;
+
+    // A `#discussion_r` fragment marks an inline review comment, edited through
+    // the pull-review-comment endpoint.
+    Mock::given(method("PATCH"))
+        .and(path("/repos/octo/demo/pulls/comments/100"))
+        .and(body_json(json!({ "body": "edited body" })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let github = GithubForge::new("token", Some(&server.uri())).expect("build the adapter");
+    let at = ExternalRef {
+        forge: github_forge_id(),
+        kind: ExternalKind::ReviewComment,
+        id: "100".to_string(),
+        url: Some("https://github.com/octo/demo/pull/7#discussion_r100".to_string()),
+    };
+
+    github
+        .edit_comment(&at, "edited body")
+        .await
+        .expect("edit succeeds");
+    // The mounted patch's expect(1) is verified when the server drops.
+}
+
+#[tokio::test]
+async fn edit_comment_patches_a_review_level_comment() {
+    let server = MockServer::start().await;
+
+    // An `#issuecomment-` fragment marks a review-level comment, edited through
+    // the issue-comment endpoint.
+    Mock::given(method("PATCH"))
+        .and(path("/repos/octo/demo/issues/comments/200"))
+        .and(body_json(json!({ "body": "edited body" })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let github = GithubForge::new("token", Some(&server.uri())).expect("build the adapter");
+    let at = ExternalRef {
+        forge: github_forge_id(),
+        kind: ExternalKind::ReviewComment,
+        id: "200".to_string(),
+        url: Some("https://github.com/octo/demo/pull/7#issuecomment-200".to_string()),
+    };
+
+    github
+        .edit_comment(&at, "edited body")
+        .await
+        .expect("edit succeeds");
+    // The mounted patch's expect(1) is verified when the server drops.
+}
+
+#[tokio::test]
+async fn set_description_patches_the_pull_request() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("PATCH"))
+        .and(path("/repos/octo/demo/pulls/7"))
+        .and(body_json(
+            json!({ "title": "A new title", "body": "A new body." }),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let github = GithubForge::new("token", Some(&server.uri())).expect("build the adapter");
+    let url = ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("valid url");
+    let description = Description {
+        title: "A new title".to_string(),
+        body: "A new body.".to_string(),
+    };
+
+    github
+        .set_description(&url, &description)
+        .await
+        .expect("update succeeds");
+    // The mounted patch's expect(1) is verified when the server drops.
+}
+
+#[tokio::test]
+async fn create_pull_request_opens_one_in_the_named_repository() {
+    let server = MockServer::start().await;
+
+    // The repository comes from the request itself, since no pull request URL
+    // exists to derive it from. GitHub returns the opened pull request's URL.
+    Mock::given(method("POST"))
+        .and(path("/repos/octo/demo/pulls"))
+        .and(body_json(json!({
+            "title": "Refactor the widget",
+            "body": "Splits the widget in two.",
+            "head": "refactor-the-widget",
+            "base": "main",
+        })))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": 900,
+            "html_url": "https://github.com/octo/demo/pull/8",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let github = GithubForge::new("token", Some(&server.uri())).expect("build the adapter");
+    let req = NewPullRequest {
+        repo: ForgeUrl::parse("https://github.com/octo/demo").expect("valid url"),
+        description: Description {
+            title: "Refactor the widget".to_string(),
+            body: "Splits the widget in two.".to_string(),
+        },
+        head_branch: "refactor-the-widget".to_string(),
+        base_branch: "main".to_string(),
+    };
+
+    let opened = github
+        .create_pull_request(&req)
+        .await
+        .expect("create succeeds");
+
+    wince::assert_eq!(
+        opened,
+        ForgeUrl::parse("https://github.com/octo/demo/pull/8").expect("valid url")
+    );
+}
+
+#[tokio::test]
+async fn create_pull_request_rejects_a_url_with_extra_path_segments() {
+    let github = GithubForge::new("token", None).expect("build the adapter");
+    // A pull request URL, not a repository URL: its trailing segments must be
+    // rejected rather than silently opening against the bare owner and repo.
+    let req = NewPullRequest {
+        repo: ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("valid url"),
+        description: Description {
+            title: "Refactor the widget".to_string(),
+            body: "Splits the widget in two.".to_string(),
+        },
+        head_branch: "refactor-the-widget".to_string(),
+        base_branch: "main".to_string(),
+    };
+
+    let error = github
+        .create_pull_request(&req)
+        .await
+        .expect_err("a url with extra segments is rejected");
+
+    wince::assert_eq!(
+        error.to_string(),
+        "https://github.com/octo/demo/pull/7 is not a github repository URL".to_string()
+    );
 }

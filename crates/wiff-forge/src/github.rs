@@ -2,22 +2,27 @@
 //! typed REST models into wiff's neutral shapes and converts their `chrono`
 //! timestamps to `time`, keeping every GitHub-specific type within this module.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use anyhow::{Context, Result, bail};
 use octocrab::Octocrab;
+use serde::Deserialize;
 use serde::de::IgnoredAny;
-use serde_json::json;
+use serde_json::{Value, json};
 use time::{Duration, OffsetDateTime};
 use tracing::warn;
 use url::Url;
 use wiff_core::record::{
-    Author, AuthorKind, Description, ExternalKind, ExternalRef, ForgeId, ForgeUrl, RevisionId,
+    Author, AuthorKind, Description, Disposition, ExternalKind, ExternalRef, ForgeId, ForgeUrl,
+    RevisionId,
 };
 use wiff_core::source::FetchSource;
 use wiff_diff::{LineNo, Side};
 
-use crate::types::{FetchedComment, FetchedPullRequest, FetchedReview, ForgeAnchor, Resolution};
+use crate::types::{
+    FetchedComment, FetchedPullRequest, FetchedReview, ForgeAnchor, NewPullRequest,
+    OutgoingComment, OutgoingReview, Resolution, SubmittedReview,
+};
 
 /// GitHub forge adapter backed by an `octocrab` client. One instance talks to a
 /// single host, chosen by the API base the client was built with.
@@ -313,6 +318,251 @@ impl GithubForge {
         }
         Ok(threads)
     }
+
+    /// Submit a batched review as one call: the summary and verdict together
+    /// with the fresh anchored comments, which either post whole or not at all.
+    /// Replies and review-level fallbacks are not part of the batch; the caller
+    /// posts those through [`post_comment`](Self::post_comment). GitHub returns
+    /// only the review object, so its comments are read back and matched to their
+    /// local counterparts by anchor.
+    ///
+    /// The two calls are not transactional: once the review POST succeeds the
+    /// review exists on the forge, so a read-back or matching failure names the
+    /// created review in its error, letting the caller reconcile rather than
+    /// re-submit a duplicate.
+    pub async fn submit_review(
+        &self,
+        pr: &ForgeUrl,
+        review: &OutgoingReview,
+    ) -> Result<SubmittedReview> {
+        let at = PullRequestId::parse(pr)?;
+        let forge = ForgeId {
+            provider: "github".to_string(),
+            host: pr.host(),
+        };
+        let comments = review
+            .comments
+            .iter()
+            .map(review_comment_payload)
+            .collect::<Result<Vec<_>>>()?;
+        let body = json!({
+            "body": review.body,
+            "event": review_event(review.disposition),
+            "comments": comments,
+        });
+        let route = format!(
+            "/repos/{}/{}/pulls/{}/reviews",
+            at.owner, at.repo, at.number
+        );
+        let created: CreatedObject = self
+            .crab
+            .post(route, Some(&body))
+            .await
+            .with_context(|| format!("submitting a review on {pr}"))?;
+
+        let mut placed = self.review_comments(&at, created.id).await?;
+        if placed.len() != review.comments.len() {
+            bail!(
+                "github created review {} ({}) with {} comments for {} submitted; \
+                 the review exists on the forge and must be reconciled, not re-submitted",
+                created.id,
+                created.html_url,
+                placed.len(),
+                review.comments.len()
+            );
+        }
+        let comments = review
+            .comments
+            .iter()
+            .map(|outgoing| {
+                let matched = match_placed(&placed, outgoing).with_context(|| {
+                    format!(
+                        "binding a comment of review {} ({}) failed; the review exists \
+                         on the forge and must be reconciled, not re-submitted",
+                        created.id, created.html_url
+                    )
+                })?;
+                let made = placed.swap_remove(matched);
+                Ok((outgoing.comment, created_comment_ref(&forge, made)))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        Ok(SubmittedReview {
+            review: object_ref(
+                &forge,
+                ExternalKind::Verdict,
+                created.id.to_string(),
+                Some(created.html_url),
+            ),
+            comments,
+        })
+    }
+
+    /// Post a standalone comment: a reply to an existing thread, a fresh inline
+    /// comment outside a batched review, or a review-level comment that anchors
+    /// nowhere on the diff. Which endpoint is used follows from whether the
+    /// comment replies, anchors inline, or does neither.
+    pub async fn post_comment(
+        &self,
+        pr: &ForgeUrl,
+        comment: &OutgoingComment,
+    ) -> Result<ExternalRef> {
+        let at = PullRequestId::parse(pr)?;
+        let forge = ForgeId {
+            provider: "github".to_string(),
+            host: pr.host(),
+        };
+        let text = comment_body(comment);
+        let created: CreatedObject = if let Some(reply_to) = &comment.reply_to {
+            let parent: u64 = reply_to
+                .id
+                .parse()
+                .with_context(|| format!("{} is not a github comment id", reply_to.id))?;
+            let route = format!(
+                "/repos/{}/{}/pulls/{}/comments",
+                at.owner, at.repo, at.number
+            );
+            self.crab
+                .post(route, Some(&json!({ "body": text, "in_reply_to": parent })))
+                .await
+                .with_context(|| format!("replying to comment {parent} on {pr}"))?
+        } else if let Some(anchor) = &comment.anchor {
+            let mut payload = anchor_payload(anchor, &text);
+            payload["commit_id"] = json!(anchor.commit.0);
+            let route = format!(
+                "/repos/{}/{}/pulls/{}/comments",
+                at.owner, at.repo, at.number
+            );
+            self.crab
+                .post(route, Some(&payload))
+                .await
+                .with_context(|| format!("posting an inline comment on {pr}"))?
+        } else {
+            let route = format!(
+                "/repos/{}/{}/issues/{}/comments",
+                at.owner, at.repo, at.number
+            );
+            self.crab
+                .post(route, Some(&json!({ "body": text })))
+                .await
+                .with_context(|| format!("posting a review-level comment on {pr}"))?
+        };
+        Ok(object_ref(
+            &forge,
+            ExternalKind::ReviewComment,
+            created.id.to_string(),
+            Some(created.html_url),
+        ))
+    }
+
+    /// Re-publish the body of a comment already linked to the forge. An inline
+    /// review comment and a review-level issue comment edit through different
+    /// endpoints, told apart by the comment's web URL.
+    pub async fn edit_comment(&self, at: &ExternalRef, body: &str) -> Result<()> {
+        let location = CommentLocation::parse(at)?;
+        let id: u64 = at
+            .id
+            .parse()
+            .with_context(|| format!("{} is not a github comment id", at.id))?;
+        let route = location.edit_route(id);
+        let _: IgnoredAny = self
+            .crab
+            .patch(route, Some(&json!({ "body": body })))
+            .await
+            .with_context(|| format!("editing comment {id}"))?;
+        Ok(())
+    }
+
+    /// Update the pull request's title and body outside a batched review.
+    pub async fn set_description(&self, pr: &ForgeUrl, description: &Description) -> Result<()> {
+        let at = PullRequestId::parse(pr)?;
+        let route = format!("/repos/{}/{}/pulls/{}", at.owner, at.repo, at.number);
+        let _: IgnoredAny = self
+            .crab
+            .patch(
+                route,
+                Some(&json!({ "title": description.title, "body": description.body })),
+            )
+            .await
+            .with_context(|| format!("updating the description of {pr}"))?;
+        Ok(())
+    }
+
+    /// Open a pull request from an already-pushed branch, returning its URL.
+    pub async fn create_pull_request(&self, req: &NewPullRequest) -> Result<ForgeUrl> {
+        let at = RepoId::parse(&req.repo)?;
+        let route = format!("/repos/{}/{}/pulls", at.owner, at.repo);
+        let body = json!({
+            "title": req.description.title,
+            "body": req.description.body,
+            "head": req.head_branch,
+            "base": req.base_branch,
+        });
+        let created: CreatedObject = self
+            .crab
+            .post(route, Some(&body))
+            .await
+            .with_context(|| format!("opening a pull request in {}", req.repo))?;
+        ForgeUrl::parse(&created.html_url)
+            .with_context(|| format!("{} is not a pull request URL", created.html_url))
+    }
+
+    /// Read a submitted review's inline comments, following its pagination to
+    /// the end. The listing order is GitHub's own; the caller matches each back
+    /// to a submitted comment by anchor and body.
+    async fn review_comments(
+        &self,
+        at: &PullRequestId,
+        review_id: u64,
+    ) -> Result<Vec<PlacedComment>> {
+        let route = format!(
+            "/repos/{}/{}/pulls/{}/reviews/{}/comments",
+            at.owner, at.repo, at.number, review_id
+        );
+        let first: octocrab::Page<PlacedComment> = self
+            .crab
+            .get(&route, None::<&()>)
+            .await
+            .context("listing a submitted review's comments")?;
+        self.crab
+            .all_pages(first)
+            .await
+            .context("listing a submitted review's comments")
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::Forge for GithubForge {
+    async fn fetch(&self, pr: &ForgeUrl) -> Result<FetchedPullRequest> {
+        self.fetch(pr).await
+    }
+
+    async fn submit_review(
+        &self,
+        pr: &ForgeUrl,
+        review: &OutgoingReview,
+    ) -> Result<SubmittedReview> {
+        self.submit_review(pr, review).await
+    }
+
+    async fn post_comment(&self, pr: &ForgeUrl, comment: &OutgoingComment) -> Result<ExternalRef> {
+        self.post_comment(pr, comment).await
+    }
+
+    async fn edit_comment(&self, at: &ExternalRef, body: &str) -> Result<()> {
+        self.edit_comment(at, body).await
+    }
+
+    async fn set_resolved(&self, at: &ExternalRef, resolved: bool) -> Result<()> {
+        self.set_resolved(at, resolved).await
+    }
+
+    async fn set_description(&self, pr: &ForgeUrl, description: &Description) -> Result<()> {
+        self.set_description(pr, description).await
+    }
+
+    async fn create_pull_request(&self, req: &NewPullRequest) -> Result<ForgeUrl> {
+        self.create_pull_request(req).await
+    }
 }
 
 /// A pull request's coordinates on GitHub, taken from the path of its web URL,
@@ -342,6 +592,32 @@ impl PullRequestId {
             owner: owner.to_string(),
             repo: repo.to_string(),
             number,
+        })
+    }
+}
+
+/// A repository's coordinates on GitHub, read from the two path segments of its
+/// web URL, `/<owner>/<repo>`. A URL with further segments (a pull request URL,
+/// say) is rejected rather than truncated to its owner and repo.
+struct RepoId {
+    owner: String,
+    repo: String,
+}
+
+impl RepoId {
+    /// Read the owner and repository from `repo`.
+    fn parse(repo: &ForgeUrl) -> Result<Self> {
+        let url = Url::parse(repo.as_str()).with_context(|| format!("parsing {repo}"))?;
+        let mut segments = url.path_segments().into_iter().flatten();
+        let owner = segments.next().unwrap_or_default();
+        let name = segments.next().unwrap_or_default();
+        let trailing = segments.next().unwrap_or_default();
+        if owner.is_empty() || name.is_empty() || !trailing.is_empty() {
+            bail!("{repo} is not a github repository URL");
+        }
+        Ok(Self {
+            owner: owner.to_string(),
+            repo: name.to_string(),
         })
     }
 }
@@ -536,6 +812,135 @@ fn side_of(side: Option<&str>) -> Side {
     }
 }
 
+/// Name wiff's diff side in GitHub's terms, the reverse of [`side_of`].
+fn side_label(side: Side) -> &'static str {
+    match side {
+        Side::Before => "LEFT",
+        Side::After => "RIGHT",
+    }
+}
+
+/// The review state to submit for a disposition. An absent disposition submits
+/// a plain comment review with no verdict.
+fn review_event(disposition: Option<Disposition>) -> &'static str {
+    match disposition {
+        Some(Disposition::Approve) => "APPROVE",
+        Some(Disposition::RequestChanges) => "REQUEST_CHANGES",
+        None => "COMMENT",
+    }
+}
+
+/// The pushed body of a comment. GitHub cannot represent a per-comment
+/// disposition natively, so one is rendered as a short tag at the top of the
+/// body to keep the signal.
+fn comment_body(comment: &OutgoingComment) -> String {
+    match comment.disposition {
+        Some(Disposition::Approve) => format!("**[approve]**\n\n{}", comment.body),
+        Some(Disposition::RequestChanges) => format!("**[request changes]**\n\n{}", comment.body),
+        None => comment.body.clone(),
+    }
+}
+
+/// Build the JSON for a comment to submit within a batched review, from its
+/// inline anchor. A batched review comment must anchor inline, since GitHub
+/// places each on the diff, and must not be a reply, since a review submission
+/// cannot express one. The push layer upholds both by routing replies and
+/// unanchored comments through [`post_comment`](GithubForge::post_comment); a
+/// violation here is an internal error, not a user's doing.
+fn review_comment_payload(comment: &OutgoingComment) -> Result<Value> {
+    if comment.reply_to.is_some() {
+        bail!("a reply cannot be part of a batched review; post it standalone");
+    }
+    let anchor = comment
+        .anchor
+        .as_ref()
+        .context("a batched review comment must anchor inline")?;
+    Ok(anchor_payload(anchor, &comment_body(comment)))
+}
+
+/// Build the JSON fields naming where a comment anchors on the diff, together
+/// with its body. A single-line anchor names only its end line; a multi-line
+/// one adds the start line and side.
+fn anchor_payload(anchor: &ForgeAnchor, body: &str) -> Value {
+    let mut payload = json!({
+        "path": anchor.path,
+        "body": body,
+        "line": anchor.end_line.get(),
+        "side": side_label(anchor.side),
+    });
+    if anchor.start_line != anchor.end_line {
+        payload["start_line"] = json!(anchor.start_line.get());
+        payload["start_side"] = json!(side_label(anchor.side));
+    }
+    payload
+}
+
+/// Name a review comment GitHub created, keeping its web URL for presentation.
+fn created_comment_ref(forge: &ForgeId, comment: PlacedComment) -> ExternalRef {
+    object_ref(
+        forge,
+        ExternalKind::ReviewComment,
+        comment.id.to_string(),
+        Some(comment.html_url),
+    )
+}
+
+/// Find the created comment that matches `outgoing`, returning its index in
+/// `placed`. GitHub does not contract the order of a review's comment listing,
+/// so a comment is bound to its forge object by its anchor -- path, end line,
+/// and side -- rather than by position. The body disambiguates two comments at
+/// the same anchor, but only then: GitHub may normalize a stored body (line
+/// endings, trailing whitespace), so requiring an exact body match on every
+/// comment would fail a submission that in fact succeeded. A missing or
+/// ambiguous match is a hard error, since binding the wrong forge object would
+/// misdirect every later edit and resolve.
+fn match_placed(placed: &[PlacedComment], outgoing: &OutgoingComment) -> Result<usize> {
+    let anchor = outgoing
+        .anchor
+        .as_ref()
+        .context("a batched review comment must anchor inline")?;
+    let line = u64::from(anchor.end_line.get());
+    let side = side_label(anchor.side);
+    let at_anchor: Vec<usize> = placed
+        .iter()
+        .enumerate()
+        .filter(|(_, made)| {
+            made.path == anchor.path
+                && made.line == Some(line)
+                && side_label(side_of(made.side.as_deref())) == side
+        })
+        .map(|(index, _)| index)
+        .collect();
+    match at_anchor.as_slice() {
+        [] => bail!(
+            "github created no review comment matching {}:{line} on {side}",
+            anchor.path
+        ),
+        [only] => Ok(*only),
+        _ => {
+            let body = comment_body(outgoing);
+            let mut by_body = at_anchor
+                .iter()
+                .filter(|&&index| placed[index].body == body);
+            let first = by_body.next().with_context(|| {
+                format!(
+                    "github created several review comments at {}:{line} on {side}, \
+                     none with a matching body",
+                    anchor.path
+                )
+            })?;
+            if by_body.next().is_some() {
+                bail!(
+                    "github created several review comments at {}:{line} on {side} \
+                     with the same body",
+                    anchor.path
+                );
+            }
+            Ok(*first)
+        }
+    }
+}
+
 /// Wrap a 1-based line number, rejecting the zero GitHub never sends for a
 /// placed comment.
 fn line_no(n: u64) -> Result<LineNo> {
@@ -612,6 +1017,89 @@ fn apply_resolutions(comments: &mut [FetchedComment], resolutions: &HashMap<u64,
             && let Some(resolution) = resolutions.get(&id)
         {
             comment.resolution = Some(resolution.clone());
+        }
+    }
+}
+
+/// A forge object GitHub created or listed, named by its numeric id and web
+/// URL.
+#[derive(Deserialize)]
+struct CreatedObject {
+    id: u64,
+    html_url: String,
+}
+
+/// A review comment read back after a batched submission, with the fields
+/// needed to key it to the local comment it was created for.
+#[derive(Deserialize)]
+struct PlacedComment {
+    id: u64,
+    html_url: String,
+    /// The changed file the comment anchors to.
+    path: String,
+    /// The end line the comment anchors to, absent for a comment GitHub has
+    /// marked outdated.
+    line: Option<u64>,
+    /// The diff side the end line sits on, `LEFT` or `RIGHT`, absent when GitHub
+    /// leaves it to default to the addition side.
+    side: Option<String>,
+    body: String,
+}
+
+/// Where a linked comment lives, used to choose the endpoint that edits it.
+struct CommentLocation {
+    owner: String,
+    repo: String,
+    /// Whether the comment is an inline review comment or a review-level issue
+    /// comment, which edit through different endpoints.
+    kind: CommentKind,
+}
+
+/// Which comment endpoint a linked comment belongs to. GitHub keeps inline
+/// review comments and review-level issue comments in separate id spaces
+/// reached through separate routes.
+enum CommentKind {
+    Inline,
+    Issue,
+}
+
+impl CommentLocation {
+    /// Read the repository and comment kind from a linked comment's web URL,
+    /// whose path names the repository and whose fragment distinguishes an
+    /// inline comment (`#discussion_r...`) from an issue comment
+    /// (`#issuecomment-...`).
+    fn parse(at: &ExternalRef) -> Result<Self> {
+        let web_url = at
+            .url
+            .as_deref()
+            .context("a linked comment has no URL to locate its repository")?;
+        let url = Url::parse(web_url).with_context(|| format!("parsing {web_url}"))?;
+        let mut segments = url.path_segments().into_iter().flatten();
+        let owner = segments.next().unwrap_or_default().to_string();
+        let repo = segments.next().unwrap_or_default().to_string();
+        if owner.is_empty() || repo.is_empty() {
+            bail!("{web_url} names no repository");
+        }
+        let fragment = url.fragment().unwrap_or_default();
+        let kind = if fragment.starts_with("discussion_r") {
+            CommentKind::Inline
+        } else if fragment.starts_with("issuecomment-") {
+            CommentKind::Issue
+        } else {
+            bail!("{web_url} is not a github comment URL");
+        };
+        Ok(Self { owner, repo, kind })
+    }
+
+    /// The endpoint that edits the comment `id` in this repository.
+    fn edit_route(&self, id: u64) -> String {
+        match self.kind {
+            CommentKind::Inline => {
+                format!("/repos/{}/{}/pulls/comments/{id}", self.owner, self.repo)
+            }
+            CommentKind::Issue => {
+                format!("/repos/{}/{}/issues/comments/{id}", self.owner, self.repo)
+            }
         }
     }
 }
