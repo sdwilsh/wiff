@@ -53,6 +53,12 @@ pub struct NewArgs {
 }
 
 impl NewArgs {
+    /// Whether this invocation will launch the review TUI once the session is
+    /// created.
+    pub fn opens_tui(&self) -> bool {
+        !self.no_tui
+    }
+
     /// Create a session: capture a diff from git or piped stdin, persist it, and
     /// report where it landed.
     pub async fn run(self) -> anyhow::Result<()> {

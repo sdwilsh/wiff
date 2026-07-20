@@ -8,8 +8,10 @@ use wiff_core::record::{
 };
 use wiff_core::source::FetchSource;
 use wiff_diff::{LineNo, Side};
-use wiff_forge::{FetchedComment, FetchedPullRequest, FetchedReview, ForgeAnchor, GithubForge};
-use wiremock::matchers::{method, path};
+use wiff_forge::{
+    FetchedComment, FetchedPullRequest, FetchedReview, ForgeAnchor, GithubForge, Resolution,
+};
+use wiremock::matchers::{body_string_contains, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Build a GitHub account JSON object with every field octocrab requires to
@@ -137,14 +139,33 @@ fn review_comment_ref(id: u64) -> ExternalRef {
     }
 }
 
-/// Mount the four read endpoints `fetch` calls, each serving a fixed fixture,
-/// and return a `GithubForge` pointed at the mock server.
-async fn github_serving(
+/// Wrap review-thread `nodes` in the GraphQL `reviewThreads` response shape,
+/// reporting a single page with no further cursor.
+fn threads_response(nodes: Value) -> Value {
+    json!({
+        "data": {
+            "repository": {
+                "pullRequest": {
+                    "reviewThreads": {
+                        "pageInfo": { "hasNextPage": false, "endCursor": null },
+                        "nodes": nodes,
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// Mount the four REST read endpoints and the GraphQL endpoint `fetch` calls,
+/// serving `threads` as the review-thread nodes, and return a `GithubForge`
+/// pointed at the mock server.
+async fn github_serving_with_threads(
     server: &MockServer,
     pull: Value,
     review_comments: Value,
     issue_comments: Value,
     reviews: Value,
+    threads: Value,
 ) -> GithubForge {
     for (route, body) in [
         ("/repos/octo/demo/pulls/7", pull),
@@ -158,7 +179,32 @@ async fn github_serving(
             .mount(server)
             .await;
     }
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(threads_response(threads)))
+        .mount(server)
+        .await;
     GithubForge::new("token", Some(&server.uri())).expect("build the adapter")
+}
+
+/// Mount the read endpoints with no review threads, the common case for a test
+/// that does not exercise thread resolution.
+async fn github_serving(
+    server: &MockServer,
+    pull: Value,
+    review_comments: Value,
+    issue_comments: Value,
+    reviews: Value,
+) -> GithubForge {
+    github_serving_with_threads(
+        server,
+        pull,
+        review_comments,
+        issue_comments,
+        reviews,
+        json!([]),
+    )
+    .await
 }
 
 #[tokio::test]
@@ -670,4 +716,407 @@ async fn a_comment_whose_start_line_is_below_its_end_is_rejected() {
         error.to_string(),
         "a github review comment starts below where it ends".to_string()
     );
+}
+
+#[tokio::test]
+async fn a_resolved_thread_marks_its_root_comment() {
+    let server = MockServer::start().await;
+
+    // Comment 100 roots a resolved thread; comment 101 roots an open one. Only
+    // the resolved thread's root gets a resolution, named by its resolver.
+    let resolved = review_comment_fixture(
+        100,
+        "Please fix this.",
+        account("reviewer", "User"),
+        json!({}),
+    );
+    let open = review_comment_fixture(101, "And this too.", account("reviewer", "User"), json!({}));
+    let threads = json!([
+        {
+            "id": "PRRT_kwthread1",
+            "isResolved": true,
+            "resolvedBy": { "login": "maintainer" },
+            "comments": { "nodes": [ { "databaseId": 100 } ] },
+        },
+        {
+            "id": "PRRT_kwthread2",
+            "isResolved": false,
+            "resolvedBy": null,
+            "comments": { "nodes": [ { "databaseId": 101 } ] },
+        },
+    ]);
+    let github = github_serving_with_threads(
+        &server,
+        base_pull(),
+        json!([resolved, open]),
+        json!([]),
+        json!([]),
+        threads,
+    )
+    .await;
+    let url = ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("valid url");
+
+    let fetched = github.fetch(&url).await.expect("fetch succeeds");
+
+    let anchor = || {
+        Some(ForgeAnchor {
+            path: "src/lib.rs".to_string(),
+            side: Side::After,
+            start_line: LineNo::new(42).expect("nonzero line"),
+            end_line: LineNo::new(42).expect("nonzero line"),
+            commit: RevisionId(HEAD_SHA.to_string()),
+        })
+    };
+    let expected = expected_shell(
+        &url,
+        vec![
+            FetchedComment {
+                origin: review_comment_ref(100),
+                author: Author {
+                    name: "reviewer".to_string(),
+                    kind: AuthorKind::Human,
+                },
+                body: "Please fix this.".to_string(),
+                authored_at: datetime!(2021-06-01 12:00:00 UTC),
+                anchor: anchor(),
+                reply_to: None,
+                resolution: Some(Resolution {
+                    by: Some(Author {
+                        name: "maintainer".to_string(),
+                        kind: AuthorKind::Human,
+                    }),
+                }),
+            },
+            FetchedComment {
+                origin: review_comment_ref(101),
+                author: Author {
+                    name: "reviewer".to_string(),
+                    kind: AuthorKind::Human,
+                },
+                body: "And this too.".to_string(),
+                authored_at: datetime!(2021-06-01 12:00:00 UTC),
+                anchor: anchor(),
+                reply_to: None,
+                resolution: None,
+            },
+        ],
+    );
+
+    wince::assert_eq!(fetched, expected);
+}
+
+#[tokio::test]
+async fn set_resolved_resolves_the_thread_holding_a_comment() {
+    let server = MockServer::start().await;
+
+    // The lookup query finds the thread holding comment 100; the resolve
+    // mutation must run exactly once, addressing that thread by its node id.
+    let threads = threads_response(json!([
+        {
+            "id": "PRRT_kwthread1",
+            "isResolved": false,
+            "resolvedBy": null,
+            "comments": { "nodes": [ { "databaseId": 100 } ] },
+        }
+    ]));
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("reviewThreads("))
+        .respond_with(ResponseTemplate::new(200).set_body_json(threads))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("resolveReviewThread"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "resolveReviewThread": { "thread": { "id": "PRRT_kwthread1" } } }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let github = GithubForge::new("token", Some(&server.uri())).expect("build the adapter");
+    let at = ExternalRef {
+        forge: ForgeId {
+            provider: "github".to_string(),
+            host: "github.com".to_string(),
+        },
+        kind: ExternalKind::ReviewComment,
+        id: "100".to_string(),
+        url: Some("https://github.com/octo/demo/pull/7#discussion_r100".to_string()),
+    };
+
+    github
+        .set_resolved(&at, true)
+        .await
+        .expect("resolve succeeds");
+    // The mounted mutation's expect(1) is verified when the server drops.
+}
+
+#[tokio::test]
+async fn set_resolved_errors_when_no_thread_holds_the_comment() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(threads_response(json!([]))))
+        .mount(&server)
+        .await;
+
+    let github = GithubForge::new("token", Some(&server.uri())).expect("build the adapter");
+    let at = ExternalRef {
+        forge: ForgeId {
+            provider: "github".to_string(),
+            host: "github.com".to_string(),
+        },
+        kind: ExternalKind::ReviewComment,
+        id: "100".to_string(),
+        url: Some("https://github.com/octo/demo/pull/7#discussion_r100".to_string()),
+    };
+
+    let error = github
+        .set_resolved(&at, true)
+        .await
+        .expect_err("an unknown comment is rejected");
+
+    wince::assert_eq!(
+        error.to_string(),
+        "no review thread holds comment 100".to_string()
+    );
+}
+
+#[tokio::test]
+async fn set_resolved_locates_a_thread_from_a_reply_not_its_root() {
+    let server = MockServer::start().await;
+
+    // Comment 101 is a reply, not the thread's root (comment 100). Resolving it
+    // must still find the thread it sits in, since wiff resolves any comment.
+    let threads = threads_response(json!([
+        {
+            "id": "PRRT_kwthread1",
+            "isResolved": false,
+            "resolvedBy": null,
+            "comments": {
+                "pageInfo": { "hasNextPage": false, "endCursor": null },
+                "nodes": [ { "databaseId": 100 }, { "databaseId": 101 } ],
+            },
+        }
+    ]));
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("reviewThreads("))
+        .respond_with(ResponseTemplate::new(200).set_body_json(threads))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("resolveReviewThread"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "resolveReviewThread": { "thread": { "id": "PRRT_kwthread1" } } }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let github = GithubForge::new("token", Some(&server.uri())).expect("build the adapter");
+    let at = ExternalRef {
+        forge: ForgeId {
+            provider: "github".to_string(),
+            host: "github.com".to_string(),
+        },
+        kind: ExternalKind::ReviewComment,
+        id: "101".to_string(),
+        url: Some("https://github.com/octo/demo/pull/7#discussion_r101".to_string()),
+    };
+
+    github
+        .set_resolved(&at, true)
+        .await
+        .expect("resolve succeeds");
+    // The mounted mutation's expect(1) is verified when the server drops.
+}
+
+#[tokio::test]
+async fn set_resolved_pages_a_thread_whose_comment_overflows_the_first_page() {
+    let server = MockServer::start().await;
+
+    // The target comment 250 sits past the first page of the thread's comments,
+    // so the lookup must follow the thread's comment cursor to find it.
+    let threads = threads_response(json!([
+        {
+            "id": "PRRT_kwthread1",
+            "isResolved": false,
+            "resolvedBy": null,
+            "comments": {
+                "pageInfo": { "hasNextPage": true, "endCursor": "CURSOR1" },
+                "nodes": [ { "databaseId": 100 } ],
+            },
+        }
+    ]));
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("reviewThreads("))
+        .respond_with(ResponseTemplate::new(200).set_body_json(threads))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("PullRequestReviewThread"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "node": { "comments": {
+                "pageInfo": { "hasNextPage": false, "endCursor": null },
+                "nodes": [ { "databaseId": 250 } ],
+            } } }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("resolveReviewThread"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "resolveReviewThread": { "thread": { "id": "PRRT_kwthread1" } } }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let github = GithubForge::new("token", Some(&server.uri())).expect("build the adapter");
+    let at = ExternalRef {
+        forge: ForgeId {
+            provider: "github".to_string(),
+            host: "github.com".to_string(),
+        },
+        kind: ExternalKind::ReviewComment,
+        id: "250".to_string(),
+        url: Some("https://github.com/octo/demo/pull/7#discussion_r250".to_string()),
+    };
+
+    github
+        .set_resolved(&at, true)
+        .await
+        .expect("resolve succeeds");
+    // The mounted mutation's expect(1) is verified when the server drops.
+}
+
+#[tokio::test]
+async fn a_bot_resolved_thread_attributes_an_agent() {
+    let server = MockServer::start().await;
+
+    // GitHub's resolvedBy is an actor: a GitHub App reports __typename "Bot",
+    // which maps to an agent the way a bot comment author does.
+    let comment = review_comment_fixture(
+        100,
+        "Please fix this.",
+        account("reviewer", "User"),
+        json!({}),
+    );
+    let threads = json!([
+        {
+            "id": "PRRT_kwthread1",
+            "isResolved": true,
+            "resolvedBy": { "login": "dependabot", "__typename": "Bot" },
+            "comments": { "nodes": [ { "databaseId": 100 } ] },
+        }
+    ]);
+    let github = github_serving_with_threads(
+        &server,
+        base_pull(),
+        json!([comment]),
+        json!([]),
+        json!([]),
+        threads,
+    )
+    .await;
+    let url = ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("valid url");
+
+    let fetched = github.fetch(&url).await.expect("fetch succeeds");
+
+    let expected = expected_shell(
+        &url,
+        vec![FetchedComment {
+            origin: review_comment_ref(100),
+            author: Author {
+                name: "reviewer".to_string(),
+                kind: AuthorKind::Human,
+            },
+            body: "Please fix this.".to_string(),
+            authored_at: datetime!(2021-06-01 12:00:00 UTC),
+            anchor: Some(ForgeAnchor {
+                path: "src/lib.rs".to_string(),
+                side: Side::After,
+                start_line: LineNo::new(42).expect("nonzero line"),
+                end_line: LineNo::new(42).expect("nonzero line"),
+                commit: RevisionId(HEAD_SHA.to_string()),
+            }),
+            reply_to: None,
+            resolution: Some(Resolution {
+                by: Some(Author {
+                    name: "dependabot".to_string(),
+                    kind: AuthorKind::Agent,
+                }),
+            }),
+        }],
+    );
+
+    wince::assert_eq!(fetched, expected);
+}
+
+#[tokio::test]
+async fn a_graphql_failure_leaves_the_rest_fetch_intact() {
+    let server = MockServer::start().await;
+
+    // Thread resolution is additive metadata read over GraphQL; a GraphQL
+    // outage must not abort a fetch the REST endpoints already satisfied. The
+    // comment imports with no resolution rather than the whole fetch failing.
+    let comment = review_comment_fixture(
+        100,
+        "Please fix this.",
+        account("reviewer", "User"),
+        json!({}),
+    );
+    for (route, body) in [
+        ("/repos/octo/demo/pulls/7", base_pull()),
+        ("/repos/octo/demo/pulls/7/comments", json!([comment])),
+        ("/repos/octo/demo/issues/7/comments", json!([])),
+        ("/repos/octo/demo/pulls/7/reviews", json!([])),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(route))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    let github = GithubForge::new("token", Some(&server.uri())).expect("build the adapter");
+    let url = ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("valid url");
+
+    let fetched = github.fetch(&url).await.expect("fetch succeeds");
+
+    let expected = expected_shell(
+        &url,
+        vec![FetchedComment {
+            origin: review_comment_ref(100),
+            author: Author {
+                name: "reviewer".to_string(),
+                kind: AuthorKind::Human,
+            },
+            body: "Please fix this.".to_string(),
+            authored_at: datetime!(2021-06-01 12:00:00 UTC),
+            anchor: Some(ForgeAnchor {
+                path: "src/lib.rs".to_string(),
+                side: Side::After,
+                start_line: LineNo::new(42).expect("nonzero line"),
+                end_line: LineNo::new(42).expect("nonzero line"),
+                commit: RevisionId(HEAD_SHA.to_string()),
+            }),
+            reply_to: None,
+            resolution: None,
+        }],
+    );
+
+    wince::assert_eq!(fetched, expected);
 }
