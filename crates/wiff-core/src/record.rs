@@ -199,6 +199,15 @@ impl ForgeUrl {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Returns the lowercased host that selects the adapter for this forge. An
+    /// IP literal keeps the `url`-normalized bracketed form, `[2001:db8::1]`.
+    pub fn host(&self) -> String {
+        Url::parse(&self.0)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_string))
+            .expect("a ForgeUrl stores a validated, normalized URL with a host")
+    }
 }
 
 impl std::fmt::Display for ForgeUrl {
@@ -993,5 +1002,19 @@ mod tests {
             bad.to_string(),
             "not a url is not an absolute http(s) URL with a host"
         );
+    }
+
+    #[test]
+    fn a_forge_url_reports_its_host() {
+        let cases = [
+            ("https://github.com/wezterm/wezterm/pull/6185", "github.com"),
+            ("http://git.example.com:8080/a/b/pulls/3", "git.example.com"),
+            ("https://GitHub.com/Wez/Repo/pull/1", "github.com"),
+            ("http://[2001:db8::1]:8080/a/b/pull/1", "[2001:db8::1]"),
+        ];
+        for (input, host) in cases {
+            let url = ForgeUrl::parse(input).expect("valid url");
+            wince::assert_eq!(url.host(), host.to_string(), "input: {input}");
+        }
     }
 }

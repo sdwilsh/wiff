@@ -3,6 +3,7 @@
 use wiff_config::{Config, GeneratedRules, OnExit};
 use wiff_core::record::{Author, AuthorKind};
 use wiff_core::{AuthorDefaults, BaseRuleset, DEFAULT_BASE_REVISION_RULES};
+use wiff_forge::{ForgeHost, ForgeTable};
 use wiff_tui::keymap::KeymapOverrides;
 use wiff_tui::{Action, Chord, Resolution};
 
@@ -39,6 +40,10 @@ kotlin = ['^ *(fun|class) .*$']
 names = [\"gen/**/*.rs\", \"!Cargo.lock\"]
 markers = [\"DO NOT EDIT\"]
 
+[forge.\"git.example.org\"]
+provider = \"forgejo\"
+token_env = \"EXAMPLE_TOKEN\"
+
 [keymap]
 line_down = [\"j\", \"down\"]
 quit = [\"q\", \"ctrl-c\"]
@@ -71,6 +76,14 @@ quit = [\"q\", \"ctrl-c\"]
                 .collect(),
             },
             base_revision_rules: BaseRuleset::new(DEFAULT_BASE_REVISION_RULES),
+            forge: ForgeTable::from([(
+                "git.example.org".to_string(),
+                ForgeHost {
+                    provider: Some("forgejo".to_string()),
+                    token_env: Some("EXAMPLE_TOKEN".to_string()),
+                    ..ForgeHost::default()
+                },
+            )]),
             section: [(
                 "kotlin".to_string(),
                 vec![r"^ *(fun|class) .*$".to_string()],
@@ -132,7 +145,7 @@ fn an_unknown_field_is_rejected() {
         "  |\n",
         "1 | wibble = true\n",
         "  | ^^^^^^\n",
-        "unknown field `wibble`, expected one of `on_exit`, `display_context`, `tab_width`, `editor`, `wrap_lines`, `diff_mode`, `side_by_side_min_width`, `nudge_to_detach`, `author`, `base_revision_rules`, `section`, `generated`, `disable_default_keymap`, `keymap`\n",
+        "unknown field `wibble`, expected one of `on_exit`, `display_context`, `tab_width`, `editor`, `wrap_lines`, `diff_mode`, `side_by_side_min_width`, `nudge_to_detach`, `author`, `base_revision_rules`, `forge`, `section`, `generated`, `disable_default_keymap`, `keymap`\n",
     );
 }
 

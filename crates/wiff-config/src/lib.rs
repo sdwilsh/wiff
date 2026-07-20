@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use wiff_core::{AuthorDefaults, BaseRuleset, DEFAULT_BASE_REVISION_RULES};
 use wiff_diff::DEFAULT_TAB_WIDTH;
+use wiff_forge::ForgeTable;
 use wiff_tui::keymap::Keymap;
 use wiff_tui::render::{DEFAULT_DISPLAY_CONTEXT, DEFAULT_SIDE_BY_SIDE_MIN_WIDTH, DiffMode};
 use wiff_tui::{KeymapError, KeymapOverrides};
@@ -68,6 +69,9 @@ pub struct Config {
     /// The default base ruleset for a whole-branch review (`wiff new
     /// --from-base`).
     pub base_revision_rules: BaseRuleset,
+    /// Per-host forge settings: which adapter speaks to a host and where its
+    /// token comes from.
+    pub forge: ForgeTable,
     /// Per-language patterns recognising the enclosing-definition line shown on a
     /// fold marker, keyed by language token. A language here replaces its
     /// built-in patterns; unlisted languages keep the built-ins. Patterns follow
@@ -96,6 +100,7 @@ impl Default for Config {
             nudge_to_detach: true,
             author: AuthorDefaults::default(),
             base_revision_rules: BaseRuleset::new(DEFAULT_BASE_REVISION_RULES),
+            forge: ForgeTable::default(),
             section: BTreeMap::new(),
             generated: GeneratedRules::default(),
             disable_default_keymap: false,

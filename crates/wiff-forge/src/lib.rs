@@ -8,9 +8,11 @@
 //! keeping the layers above forge-agnostic. Sequencing a pull or a push is left
 //! to the orchestration above this trait.
 
+pub mod config;
 pub mod error;
 pub mod types;
 
+pub use config::{ForgeHost, ForgeTable, TokenOverride, resolve_token};
 pub use error::Unsupported;
 pub use types::{
     FetchedComment, FetchedPullRequest, FetchedReview, ForgeAnchor, NewPullRequest,

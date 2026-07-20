@@ -1718,6 +1718,7 @@ dependencies = [
  "toml",
  "wiff-core",
  "wiff-diff",
+ "wiff-forge",
  "wiff-tui",
  "wince",
 ]
@@ -1764,6 +1765,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "serde",
+ "tempfile",
  "thiserror",
  "time",
  "tokio",
