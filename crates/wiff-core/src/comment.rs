@@ -418,6 +418,25 @@ pub fn import_delete(
     import_event(id, author, origin, authored_at, CommentEventKind::Delete)
 }
 
+/// Build an imported verdict change for comment `id` mirroring `origin` by
+/// `author` at the forge's own `authored_at`, setting the disposition or
+/// clearing it when `disposition` is `None`.
+pub fn import_disposition(
+    id: Ulid,
+    author: Author,
+    origin: ExternalRef,
+    authored_at: OffsetDateTime,
+    disposition: Option<Disposition>,
+) -> RecordBody {
+    import_event(
+        id,
+        author,
+        origin,
+        authored_at,
+        CommentEventKind::SetDisposition { disposition },
+    )
+}
+
 /// Wrap a locally-authored event kind in a [`CommentEvent`] envelope: no forge
 /// origin, and no authored-at (its time is the record's).
 fn comment_event(id: Ulid, author: Author, kind: CommentEventKind) -> RecordBody {

@@ -1,24 +1,26 @@
-//! Reconciling a forge pull request's comments into the session log.
+//! Reconciling a forge pull request's comments and verdicts into the session
+//! log.
 //!
-//! A pull mirrors forge comment threads locally. This module reconciles what
-//! the forge reports now against what wiff has already folded from the log,
-//! producing the append-only events that bring a local review into line with
-//! upstream.
+//! A pull mirrors forge comment threads and review verdicts locally. This
+//! module reconciles what the forge reports now against what wiff has already
+//! folded from the log, producing the append-only events that bring a local
+//! review into line with upstream.
 
 use std::collections::{HashMap, HashSet};
 
 use ulid::Ulid;
 use wiff_core::CommentState;
 use wiff_core::comment::{
-    delete_event, import_create, import_edit, import_resolve, place_forge_anchor,
+    delete_event, import_create, import_disposition, import_edit, import_resolve,
+    place_forge_anchor,
 };
 use wiff_core::record::{
-    Anchor, Author, AuthorKind, CommentCreate, CommentTarget, ExternalRef, RecordBody,
-    VersionNumber,
+    Anchor, Author, AuthorKind, CommentCreate, CommentTarget, Disposition, ExternalKind,
+    ExternalRef, RecordBody, VersionNumber,
 };
 use wiff_diff::Diff;
 
-use crate::types::FetchedComment;
+use crate::types::{FetchedComment, FetchedReview};
 
 /// Reconcile the forge's `fetched` comments against the `existing` folded
 /// comments, returning the events that bring the log up to date. `diff` is the
@@ -44,7 +46,7 @@ pub fn reconcile_comments(
     let mut id_by_origin: HashMap<ExternalRef, Ulid> = existing
         .iter()
         .filter(|comment| !comment.deleted)
-        .filter_map(|comment| comment.origin.clone().map(|origin| (origin, comment.id)))
+        .filter_map(|comment| origin_of_kind(comment, ExternalKind::ReviewComment))
         .collect();
     let updates: HashSet<ExternalRef> = id_by_origin.keys().cloned().collect();
 
@@ -130,12 +132,121 @@ pub fn reconcile_comments(
         let Some(origin) = &comment.origin else {
             continue;
         };
+        if origin.kind != ExternalKind::ReviewComment {
+            continue;
+        }
         if !present.contains(origin) {
             events.push(delete_event(comment.id, unknown_author()));
         }
     }
 
     events
+}
+
+/// Reconcile the forge's `fetched` reviews against the `existing` folded
+/// comments, returning the events that import each review's verdict. A review
+/// imports as a review-level comment holding its summary, with the mapped
+/// disposition; a dismissed review has none. `number` is the current diff
+/// version the imported comment is authored against. `new_id` mints a stable id
+/// for each review new this pull.
+///
+/// Unlike a comment, a review absent from `fetched` is not withdrawn: a forge
+/// dismisses a review rather than deleting it, and a dismissal arrives as a
+/// still-listed review whose verdict is cleared here.
+pub fn reconcile_reviews(
+    fetched: &[FetchedReview],
+    existing: &[CommentState],
+    number: VersionNumber,
+    mut new_id: impl FnMut() -> Ulid,
+) -> Vec<RecordBody> {
+    let by_id: HashMap<Ulid, &CommentState> = existing
+        .iter()
+        .map(|comment| (comment.id, comment))
+        .collect();
+    let mut id_by_origin: HashMap<ExternalRef, Ulid> = existing
+        .iter()
+        .filter(|comment| !comment.deleted)
+        .filter_map(|comment| origin_of_kind(comment, ExternalKind::Verdict))
+        .collect();
+    let updates: HashSet<ExternalRef> = id_by_origin.keys().cloned().collect();
+
+    // Reconcile each distinct review once, in first-seen order.
+    let mut order: Vec<&FetchedReview> = Vec::new();
+    let mut present: HashSet<&ExternalRef> = HashSet::new();
+    for review in fetched {
+        if present.insert(&review.origin) {
+            order.push(review);
+        }
+    }
+
+    let mut events = Vec::new();
+    for review in order {
+        let disposition = effective_disposition(review);
+        if updates.contains(&review.origin) {
+            let id = id_by_origin[&review.origin];
+            let current = by_id[&id];
+            if current.body != review.body {
+                events.push(import_edit(
+                    id,
+                    review.author.clone(),
+                    review.origin.clone(),
+                    review.authored_at,
+                    review.body.clone(),
+                ));
+            }
+            // A disposition change, including a dismissal that clears the
+            // verdict, is attributed to the review's own author rather than
+            // whoever acted on the forge: fold rejects a verdict set by anyone
+            // but the comment's author, and a forge that lets an admin dismiss
+            // another's review does not report the dismisser here.
+            if current.disposition != disposition {
+                events.push(import_disposition(
+                    id,
+                    review.author.clone(),
+                    review.origin.clone(),
+                    review.authored_at,
+                    disposition,
+                ));
+            }
+        } else {
+            let id = *id_by_origin
+                .entry(review.origin.clone())
+                .or_insert_with(&mut new_id);
+            events.push(import_create(
+                id,
+                review.author.clone(),
+                review.origin.clone(),
+                review.authored_at,
+                CommentCreate {
+                    target: CommentTarget::Review,
+                    version: number,
+                    anchor: None,
+                    body: review.body.clone(),
+                    disposition,
+                },
+            ));
+        }
+    }
+
+    events
+}
+
+/// The forge object an `existing` comment mirrors when it is of `kind`, paired
+/// with the comment's local id. Reviews and comments each reconcile only their
+/// own kind of origin, so neither withdraws the other's imported comments.
+fn origin_of_kind(comment: &CommentState, kind: ExternalKind) -> Option<(ExternalRef, Ulid)> {
+    let origin = comment.origin.clone()?;
+    (origin.kind == kind).then_some((origin, comment.id))
+}
+
+/// The verdict an imported review holds: its mapped disposition while it
+/// stands, or none once it has been dismissed.
+fn effective_disposition(review: &FetchedReview) -> Option<Disposition> {
+    if review.dismissed {
+        None
+    } else {
+        review.disposition
+    }
 }
 
 /// Order `comments` so a parent precedes any reply that answers it, when the

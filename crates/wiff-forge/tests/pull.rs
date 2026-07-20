@@ -4,15 +4,15 @@ use time::OffsetDateTime;
 use time::macros::datetime;
 use ulid::Ulid;
 use wiff_core::record::{
-    Author, AuthorKind, ExternalKind, ExternalRef, FORMAT_VERSION, ForgeId, Record, RecordBody,
-    RevisionId, ScmSource, Seq, SessionHeader, SourceKind, TipRule, VersionNumber,
+    Author, AuthorKind, Disposition, ExternalKind, ExternalRef, FORMAT_VERSION, ForgeId, Record,
+    RecordBody, RevisionId, ScmSource, Seq, SessionHeader, SourceKind, TipRule, VersionNumber,
 };
-use wiff_core::review::{CommentState, fold};
+use wiff_core::review::{CommentState, ReviewState, fold};
 use wiff_core::{BaseRuleset, ScmType};
 use wiff_diff::parse::parse;
 use wiff_diff::{Diff, LineNo, Side};
-use wiff_forge::reconcile_comments;
-use wiff_forge::types::{FetchedComment, ForgeAnchor, Resolution};
+use wiff_forge::types::{FetchedComment, FetchedReview, ForgeAnchor, Resolution};
+use wiff_forge::{reconcile_comments, reconcile_reviews};
 
 const DIFF: &str = "\
 diff --git a/f.txt b/f.txt
@@ -83,6 +83,32 @@ fn comment(id: &str, author: &str, body: &str) -> FetchedComment {
     }
 }
 
+/// A verdict-submission reference numbered `id`, distinct from a review
+/// comment's reference so the two reconcile independently.
+fn verdict_origin(id: &str) -> ExternalRef {
+    ExternalRef {
+        kind: ExternalKind::Verdict,
+        ..origin(id)
+    }
+}
+
+fn review(
+    id: &str,
+    author: &str,
+    body: &str,
+    disposition: Option<Disposition>,
+    dismissed: bool,
+) -> FetchedReview {
+    FetchedReview {
+        origin: verdict_origin(id),
+        author: human(author),
+        body: body.to_string(),
+        authored_at: datetime!(2024-03-01 12:00 UTC),
+        disposition,
+        dismissed,
+    }
+}
+
 /// Fold `events` into a review, prepending a session header so the log is
 /// well-formed, and return the reconciled comments.
 fn fold_events(events: Vec<RecordBody>) -> Vec<CommentState> {
@@ -99,6 +125,29 @@ fn fold_events(events: Vec<RecordBody>) -> Vec<CommentState> {
         });
     }
     fold(&records).expect("fold reconciled events").comments
+}
+
+/// Fold `events` into a review as [`fold_events`] does, returning the comments
+/// alongside the verdicts derived from them.
+fn fold_reviews(events: Vec<RecordBody>) -> String {
+    let mut records = vec![Record {
+        seq: Seq(0),
+        at: OffsetDateTime::UNIX_EPOCH,
+        body: RecordBody::Session(header()),
+    }];
+    for (offset, body) in events.into_iter().enumerate() {
+        records.push(Record {
+            seq: Seq(offset as u64 + 1),
+            at: datetime!(2024-06-01 09:00 UTC),
+            body,
+        });
+    }
+    let state: ReviewState = fold(&records).expect("fold reconciled events");
+    serde_json::to_string_pretty(&serde_json::json!({
+        "comments": state.comments,
+        "verdicts": state.verdicts,
+    }))
+    .expect("serialize reconciled review")
 }
 
 fn header() -> SessionHeader {
@@ -782,4 +831,389 @@ fn a_reply_listed_before_its_parent_still_threads() {
   }
 ]"#,
     );
+}
+
+#[test]
+fn a_fresh_pull_imports_each_review_verdict() {
+    // An approval, a request for changes, and a plain comment review with no
+    // verdict, each imported as a review-level comment; the fold derives a
+    // verdict for the two that have a disposition.
+    let reviews = vec![
+        review(
+            "r1",
+            "alice",
+            "looks good",
+            Some(Disposition::Approve),
+            false,
+        ),
+        review(
+            "r2",
+            "bob",
+            "please fix",
+            Some(Disposition::RequestChanges),
+            false,
+        ),
+        review("r3", "carol", "just a note", None, false),
+    ];
+    let events = reconcile_reviews(&reviews, &[], VersionNumber(0), ids());
+    #[rustfmt::skip]
+    wince::snapshot_str!(
+        fold_reviews(events),
+        r#"{
+  "comments": [
+    {
+      "anchor": null,
+      "author": {
+        "kind": "human",
+        "name": "alice"
+      },
+      "body": "looks good",
+      "confidence": null,
+      "created_at": "2024-03-01T12:00:00Z",
+      "created_seq": 1,
+      "deleted": false,
+      "deleted_by": null,
+      "disposition": "approve",
+      "id": "00000000000000000000000001",
+      "number": 1,
+      "origin": {
+        "forge": {
+          "host": "github.com",
+          "provider": "github"
+        },
+        "id": "r1",
+        "kind": "verdict"
+      },
+      "resolved": false,
+      "resolved_by": null,
+      "target": {
+        "target": "review"
+      },
+      "updated_at": "2024-03-01T12:00:00Z",
+      "updated_by": {
+        "kind": "human",
+        "name": "alice"
+      },
+      "updated_seq": 1,
+      "version": 0
+    },
+    {
+      "anchor": null,
+      "author": {
+        "kind": "human",
+        "name": "bob"
+      },
+      "body": "please fix",
+      "confidence": null,
+      "created_at": "2024-03-01T12:00:00Z",
+      "created_seq": 2,
+      "deleted": false,
+      "deleted_by": null,
+      "disposition": "request_changes",
+      "id": "00000000000000000000000002",
+      "number": 2,
+      "origin": {
+        "forge": {
+          "host": "github.com",
+          "provider": "github"
+        },
+        "id": "r2",
+        "kind": "verdict"
+      },
+      "resolved": false,
+      "resolved_by": null,
+      "target": {
+        "target": "review"
+      },
+      "updated_at": "2024-03-01T12:00:00Z",
+      "updated_by": {
+        "kind": "human",
+        "name": "bob"
+      },
+      "updated_seq": 2,
+      "version": 0
+    },
+    {
+      "anchor": null,
+      "author": {
+        "kind": "human",
+        "name": "carol"
+      },
+      "body": "just a note",
+      "confidence": null,
+      "created_at": "2024-03-01T12:00:00Z",
+      "created_seq": 3,
+      "deleted": false,
+      "deleted_by": null,
+      "id": "00000000000000000000000003",
+      "number": 3,
+      "origin": {
+        "forge": {
+          "host": "github.com",
+          "provider": "github"
+        },
+        "id": "r3",
+        "kind": "verdict"
+      },
+      "resolved": false,
+      "resolved_by": null,
+      "target": {
+        "target": "review"
+      },
+      "updated_at": "2024-03-01T12:00:00Z",
+      "updated_by": {
+        "kind": "human",
+        "name": "carol"
+      },
+      "updated_seq": 3,
+      "version": 0
+    }
+  ],
+  "verdicts": [
+    {
+      "author": {
+        "kind": "human",
+        "name": "alice"
+      },
+      "disposition": "approve"
+    },
+    {
+      "author": {
+        "kind": "human",
+        "name": "bob"
+      },
+      "disposition": "request_changes"
+    }
+  ]
+}"#,
+    );
+}
+
+#[test]
+fn a_dismissed_review_imports_without_a_verdict() {
+    // A review dismissed upstream keeps its summary but contributes no verdict.
+    let reviews = vec![review(
+        "r1",
+        "alice",
+        "changes requested then dismissed",
+        Some(Disposition::RequestChanges),
+        true,
+    )];
+    let events = reconcile_reviews(&reviews, &[], VersionNumber(0), ids());
+    #[rustfmt::skip]
+    wince::snapshot_str!(
+        fold_reviews(events),
+        r#"{
+  "comments": [
+    {
+      "anchor": null,
+      "author": {
+        "kind": "human",
+        "name": "alice"
+      },
+      "body": "changes requested then dismissed",
+      "confidence": null,
+      "created_at": "2024-03-01T12:00:00Z",
+      "created_seq": 1,
+      "deleted": false,
+      "deleted_by": null,
+      "id": "00000000000000000000000001",
+      "number": 1,
+      "origin": {
+        "forge": {
+          "host": "github.com",
+          "provider": "github"
+        },
+        "id": "r1",
+        "kind": "verdict"
+      },
+      "resolved": false,
+      "resolved_by": null,
+      "target": {
+        "target": "review"
+      },
+      "updated_at": "2024-03-01T12:00:00Z",
+      "updated_by": {
+        "kind": "human",
+        "name": "alice"
+      },
+      "updated_seq": 1,
+      "version": 0
+    }
+  ],
+  "verdicts": []
+}"#,
+    );
+}
+
+#[test]
+fn a_later_pull_tracks_a_review_edit_and_dismissal() {
+    let first = reconcile_reviews(
+        &[review(
+            "r1",
+            "alice",
+            "please fix",
+            Some(Disposition::RequestChanges),
+            false,
+        )],
+        &[],
+        VersionNumber(0),
+        ids(),
+    );
+    let existing = fold_events(first.clone());
+
+    // The summary was revised and the review was dismissed upstream, so its
+    // verdict is withdrawn while the body edit is kept.
+    let later = vec![review(
+        "r1",
+        "alice",
+        "please fix (edited)",
+        Some(Disposition::RequestChanges),
+        true,
+    )];
+    let second = reconcile_reviews(&later, &existing, VersionNumber(0), ids());
+    let mut all = first;
+    all.extend(second);
+    #[rustfmt::skip]
+    wince::snapshot_str!(
+        fold_reviews(all),
+        r#"{
+  "comments": [
+    {
+      "anchor": null,
+      "author": {
+        "kind": "human",
+        "name": "alice"
+      },
+      "body": "please fix (edited)",
+      "confidence": null,
+      "created_at": "2024-03-01T12:00:00Z",
+      "created_seq": 1,
+      "deleted": false,
+      "deleted_by": null,
+      "id": "00000000000000000000000001",
+      "number": 1,
+      "origin": {
+        "forge": {
+          "host": "github.com",
+          "provider": "github"
+        },
+        "id": "r1",
+        "kind": "verdict"
+      },
+      "resolved": false,
+      "resolved_by": null,
+      "target": {
+        "target": "review"
+      },
+      "updated_at": "2024-03-01T12:00:00Z",
+      "updated_by": {
+        "kind": "human",
+        "name": "alice"
+      },
+      "updated_seq": 3,
+      "version": 0
+    }
+  ],
+  "verdicts": []
+}"#,
+    );
+}
+
+#[test]
+fn re_pulling_unchanged_reviews_appends_nothing() {
+    let reviews = vec![review(
+        "r1",
+        "alice",
+        "ok",
+        Some(Disposition::Approve),
+        false,
+    )];
+    let first = reconcile_reviews(&reviews, &[], VersionNumber(0), ids());
+    let existing = fold_events(first);
+    let again = reconcile_reviews(&reviews, &existing, VersionNumber(0), ids());
+    wince::assert_eq!(again, Vec::<RecordBody>::new());
+}
+
+#[test]
+fn a_review_listed_twice_is_reconciled_once() {
+    // A forge listing that repeats one review by origin imports a single
+    // verdict-level comment rather than one per repeat.
+    let approve = review("r1", "alice", "ok", Some(Disposition::Approve), false);
+    let reviews = vec![approve.clone(), approve];
+    let events = reconcile_reviews(&reviews, &[], VersionNumber(0), ids());
+    #[rustfmt::skip]
+    wince::snapshot_str!(
+        fold_reviews(events),
+        r#"{
+  "comments": [
+    {
+      "anchor": null,
+      "author": {
+        "kind": "human",
+        "name": "alice"
+      },
+      "body": "ok",
+      "confidence": null,
+      "created_at": "2024-03-01T12:00:00Z",
+      "created_seq": 1,
+      "deleted": false,
+      "deleted_by": null,
+      "disposition": "approve",
+      "id": "00000000000000000000000001",
+      "number": 1,
+      "origin": {
+        "forge": {
+          "host": "github.com",
+          "provider": "github"
+        },
+        "id": "r1",
+        "kind": "verdict"
+      },
+      "resolved": false,
+      "resolved_by": null,
+      "target": {
+        "target": "review"
+      },
+      "updated_at": "2024-03-01T12:00:00Z",
+      "updated_by": {
+        "kind": "human",
+        "name": "alice"
+      },
+      "updated_seq": 1,
+      "version": 0
+    }
+  ],
+  "verdicts": [
+    {
+      "author": {
+        "kind": "human",
+        "name": "alice"
+      },
+      "disposition": "approve"
+    }
+  ]
+}"#,
+    );
+}
+
+#[test]
+fn reconciling_comments_leaves_an_imported_verdict_untouched() {
+    // A verdict-origin comment must not be withdrawn by a comment reconcile that
+    // finds no matching review comment: the two kinds reconcile independently.
+    let verdict = reconcile_reviews(
+        &[review(
+            "r1",
+            "alice",
+            "ok",
+            Some(Disposition::Approve),
+            false,
+        )],
+        &[],
+        VersionNumber(0),
+        ids(),
+    );
+    let existing = fold_events(verdict);
+    let again = reconcile_comments(&[], &existing, &diff(), VersionNumber(0), ids());
+    wince::assert_eq!(again, Vec::<RecordBody>::new());
 }
