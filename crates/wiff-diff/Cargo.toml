@@ -9,6 +9,7 @@ workspace = true
 
 [dependencies]
 fancy-regex.workspace = true
+globset.workspace = true
 serde = { workspace = true }
 similar.workspace = true
 syntect.workspace = true

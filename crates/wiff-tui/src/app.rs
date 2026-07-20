@@ -157,6 +157,16 @@ impl Landmark {
     }
 }
 
+/// Each fold's starting collapse state, taken from the render: unchanged runs
+/// and generated files begin collapsed, a generated file with comments open.
+fn initial_collapse(document: &Document) -> Vec<bool> {
+    document
+        .folds
+        .iter()
+        .map(|fold| fold.collapsed_default)
+        .collect()
+}
+
 /// One line of the current view: a document row, or a collapsed fold shown as
 /// its marker line.
 enum ViewRow {
@@ -548,9 +558,9 @@ pub struct App {
 
 impl App {
     /// Build the view over `document`, showing `height` rows, selecting rows
-    /// with `theme`'s cursor color. Every fold starts collapsed.
+    /// with `theme`'s cursor color.
     pub fn new(document: Document, height: usize, theme: &Theme) -> Self {
-        let collapsed = vec![true; document.folds.len()];
+        let collapsed = initial_collapse(&document);
         let comment_collapsed = document
             .comments
             .iter()
@@ -810,7 +820,7 @@ impl App {
     /// cursor afterward.
     fn adopt_document(&mut self, document: Document) {
         if document.folds.len() != self.collapsed.len() {
-            self.collapsed = vec![true; document.folds.len()];
+            self.collapsed = initial_collapse(&document);
         }
         self.reconcile_comment_collapse(&document);
         self.document = document;
@@ -2331,7 +2341,7 @@ impl App {
             review.refresh(diff, comments, version, old_diff)?;
             review.document(layout)
         };
-        self.collapsed = vec![true; document.folds.len()];
+        self.collapsed = initial_collapse(&document);
         self.reconcile_comment_collapse(&document);
         self.document = document;
         self.rebuild_view();
@@ -2361,7 +2371,7 @@ impl App {
             review.show_diff(diff, comparison);
             review.document(layout)
         };
-        self.collapsed = vec![true; document.folds.len()];
+        self.collapsed = initial_collapse(&document);
         self.reconcile_comment_collapse(&document);
         self.document = document;
         self.rebuild_view();
@@ -2508,11 +2518,10 @@ impl App {
     }
 
     /// The document rows matching `pattern` in document order, skipping rows
-    /// hidden inside a collapsed fold, so the tally counts the same matches the
-    /// search steps through.
+    /// hidden from search.
     fn match_rows(&self, matcher: &Matcher) -> Vec<usize> {
         (0..self.document.rows.len())
-            .filter(|&row| !self.row_in_collapsed_fold(row))
+            .filter(|&row| !self.row_hidden_from_search(row))
             .filter(|&row| matcher.is_match(&self.document.text[row]))
             .collect()
     }
@@ -2583,11 +2592,19 @@ impl App {
         }
     }
 
-    /// Whether document `row` is hidden inside a currently collapsed fold, so a
-    /// search passes over it.
+    /// Whether document `row` is hidden inside any currently collapsed fold, for
+    /// positioning the cursor on a row that exists but may not be in view.
     fn row_in_collapsed_fold(&self, row: usize) -> bool {
         self.fold_containing(row)
             .is_some_and(|fold| self.collapsed[fold])
+    }
+
+    /// Whether `row` is hidden from search: inside a collapsed unchanged run,
+    /// whose contents stay folded. A collapsed generated file does not hide its
+    /// rows this way, since a match there reveals the file.
+    fn row_hidden_from_search(&self, row: usize) -> bool {
+        self.fold_containing(row)
+            .is_some_and(|fold| self.collapsed[fold] && !self.document.folds[fold].whole_file)
     }
 
     /// The first document row matching `pattern` scanning `direction` from row
@@ -2613,7 +2630,7 @@ impl App {
                 Direction::Forward => (from + offset) % n,
                 Direction::Backward => (from + 2 * n - offset) % n,
             };
-            if self.row_in_collapsed_fold(row) {
+            if self.row_hidden_from_search(row) {
                 continue;
             }
             if matcher.is_match(&self.document.text[row]) {
@@ -2623,13 +2640,25 @@ impl App {
         None
     }
 
-    /// Move the cursor onto document `row`, expanding its comment first when the
-    /// match sits in a collapsed comment body so the matched line is shown.
+    /// Move the cursor onto document `row`, first revealing it when the match
+    /// sits in a collapsed comment body or a collapsed generated file, so the
+    /// matched line is shown.
     fn reveal_and_focus(&mut self, row: usize) {
+        let mut revealed = false;
         if let RowKind::CommentBody { id } = self.document.rows[row].kind
             && self.is_comment_collapsed(id)
         {
             self.comment_collapsed.insert(id, false);
+            revealed = true;
+        }
+        if let Some(fold) = self.fold_containing(row)
+            && self.collapsed[fold]
+            && self.document.folds[fold].whole_file
+        {
+            self.collapsed[fold] = false;
+            revealed = true;
+        }
+        if revealed {
             self.rebuild_view();
         }
         self.focus_doc_row(row);
@@ -3274,22 +3303,28 @@ impl App {
         self.clamp_cursor_visible();
     }
 
-    /// Move the cursor to the next `landmark` row after it, if any.
+    /// Move the cursor to the next `landmark` row after it, if any. A landmark
+    /// hidden inside a collapsed generated file is reached by expanding the file,
+    /// mirroring the reveal a search performs, so a comment there stays
+    /// reachable while the file is folded.
     fn jump_forward(&mut self, landmark: Landmark) {
-        if let Some(index) = (self.cursor + 1..self.view.len())
-            .find(|&i| self.kind_at(i).is_some_and(|kind| landmark.matches(kind)))
+        let from = self.cursor_doc_row();
+        if let Some(row) = (from + 1..self.document.rows.len())
+            .find(|&row| landmark.matches(&self.document.rows[row].kind))
         {
-            self.move_to(index);
+            self.reveal_and_focus(row);
         }
     }
 
-    /// Move the cursor to the nearest `landmark` row before it, if any.
+    /// Move the cursor to the nearest `landmark` row before it, if any, expanding
+    /// a collapsed generated file that hides it as [`Self::jump_forward`] does.
     fn jump_backward(&mut self, landmark: Landmark) {
-        if let Some(index) = (0..self.cursor)
+        let from = self.cursor_doc_row();
+        if let Some(row) = (0..from)
             .rev()
-            .find(|&i| self.kind_at(i).is_some_and(|kind| landmark.matches(kind)))
+            .find(|&row| landmark.matches(&self.document.rows[row].kind))
         {
-            self.move_to(index);
+            self.reveal_and_focus(row);
         }
     }
 
@@ -4026,6 +4061,23 @@ mod tests {
             lines.iter().map(|(k, t, n)| (*k, t.as_str(), *n)).collect();
         let diff = Diff {
             files: vec![file("long.txt", FileStatus::Added, &borrowed)],
+        };
+        DiffView::new(theme()).unwrap().render(&diff)
+    }
+
+    /// A generated file (by name) whose body folds to its header by default. The
+    /// added lines include a distinctive token a search can aim inside the fold.
+    fn generated_document() -> crate::render::Document {
+        let diff = Diff {
+            files: vec![file(
+                "yarn.lock",
+                FileStatus::Added,
+                &[
+                    (LineKind::Added, "alpha 1", 1),
+                    (LineKind::Added, "beta needle", 2),
+                    (LineKind::Added, "gamma 3", 3),
+                ],
+            )],
         };
         DiffView::new(theme()).unwrap().render(&diff)
     }
@@ -6775,6 +6827,106 @@ mod tests {
             "<#7d828c|-|->  11   11   <#c0c5ce|-|->ctx10\n",
             "<#7d828c|-|->  12   12   <#c0c5ce|-|->ctx11\n",
             "<#767b84|-|->          ▸ [5 unchanged lines]  ctx16\n",
+        );
+    }
+
+    #[test]
+    fn a_generated_file_opens_folded_to_its_header_and_marker() {
+        // The generated file starts collapsed: only its badged header and the
+        // fold marker show, the body hidden behind them.
+        let app = App::new(generated_document(), 20, &theme());
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#f6f6f8|#65737e|b>added  yarn.lock  [generated]<-|#65737e|->           \n",
+            "<#767b84|-|->          ▸ [3 lines]\n",
+        );
+    }
+
+    #[test]
+    fn a_search_reveals_a_match_inside_a_collapsed_generated_file() {
+        // A term living only inside the collapsed generated file expands the file
+        // and moves the cursor onto the matched line, unlike an unchanged run
+        // whose hidden content search passes over.
+        let mut app = App::new(generated_document(), 20, &theme());
+        search_for(&mut app, Action::SearchForward, "needle");
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#c0c5ce|-|b>added  yarn.lock  [generated]\n",
+            "<#96b5b4|-|->@@ -1,3 +1,3 @@\n",
+            "<#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->alpha 1<-|#414a4a|->                     \n",
+            "<#f5f6f6|#65737e|->        2 + <#f6f6f8|#65737e|->beta <#f6f6f8|#686255|->needle<-|#65737e|->                 \n",
+            "<#9ea1a9|#414a4a|->        3 + <#c0c5ce|#414a4a|->gamma 3<-|#414a4a|->                     \n",
+        );
+        // The revealed match counts in the tally, which agrees with the step the
+        // search took to reach it.
+        wince::snapshot_display!(
+            status_text(&app),
+            "/needle  1/1 matches                 75%"
+        );
+    }
+
+    #[test]
+    fn comment_jump_reveals_a_comment_inside_a_collapsed_generated_file() {
+        // A line comment keeps a generated file open, but once the reviewer
+        // collapses it the comment's header leaves the view. NextComment expands
+        // the file and moves onto the comment, keeping it reachable while folded.
+        let diff = Diff {
+            files: vec![file(
+                "yarn.lock",
+                FileStatus::Added,
+                &[
+                    (LineKind::Added, "alpha 1", 1),
+                    (LineKind::Added, "beta 2", 2),
+                    (LineKind::Added, "gamma 3", 3),
+                ],
+            )],
+        };
+        let comments = vec![line_comment(
+            1,
+            ("wez", AuthorKind::Human),
+            "yarn.lock",
+            2,
+            "regenerate this",
+            false,
+        )];
+        let review = Review::new(
+            DiffView::new(theme()).unwrap(),
+            diff,
+            Author {
+                name: "wez".to_string(),
+                kind: AuthorKind::Human,
+            },
+            0,
+            comments,
+            None,
+        );
+        let mut app = App::reviewing(review, 20, &theme());
+        // Step onto a body row and collapse the file, hiding the comment, then
+        // jump to it.
+        app.update(Action::LineDown);
+        app.update(Action::ToggleFold);
+        app.update(Action::NextComment);
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#ebcb8b|#4f5b66|b>Review<#adb0b5|#4f5b66|-> [press c here to draft the review comment]<#adb0b5|#4f5b66|-> [press e to write the description]\n",
+            "<#c0c5ce|-|b>added  yarn.lock  [generated]\n",
+            "<#96b5b4|-|->@@ -1,3 +1,3 @@\n",
+            "<#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->alpha 1<-|#414a4a|->                     \n",
+            "<#cfd1d4|#65737e|->┌ <#f9fafb|#65737e|->#1 wez (human)<#cfd1d4|#65737e|->  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse<#cfd1d4|#65737e|-> <#cfd1d4|#65737e|->┐\n",
+            "<#767b84|-|->│<#c0c5ce|-|->regenerate this<-|-|->                       <#767b84|-|->│\n",
+            "<#767b84|-|->└──────────┬───────────────────────────┘\n",
+            "<#9ea1a9|#414a4a|->        2 +<#989ca3|#414a4a|->└<#9ea1a9|#414a4a|-><#c0c5ce|#414a4a|->beta 2<-|#414a4a|->                      \n",
+            "<#9ea1a9|#414a4a|->        3 + <#c0c5ce|#414a4a|->gamma 3<-|#414a4a|->                     \n",
+        );
+        // The cursor moves onto the revealed comment's header.
+        wince::assert_eq!(
+            app.kind_at(app.cursor()),
+            Some(&RowKind::CommentHeader {
+                id: BoxId::Comment(Ulid(1))
+            })
         );
     }
 

@@ -48,6 +48,9 @@ pub fn open(session_path: &Path, config: &Config, offer_refresh: bool) -> anyhow
     let theme = Theme::dark();
     let sections = wiff_diff::SectionMatchers::new(&config.section)
         .context("a configured section pattern is not a valid regex")?;
+    let generated =
+        wiff_diff::GeneratedMatchers::new(&config.generated.names, &config.generated.markers)
+            .context("a configured generated-file name pattern is not a valid glob")?;
     // Withdrawn comments are tombstones in the folded state; the review view
     // shows only the live ones.
     let comments: Vec<_> = state
@@ -60,6 +63,7 @@ pub fn open(session_path: &Path, config: &Config, offer_refresh: bool) -> anyhow
     let view = DiffView::new(theme.clone())?
         .with_display_context(config.display_context)
         .with_section_matchers(sections)
+        .with_generated_file_matches(generated)
         .with_key_hints(KeyHints::from_keymap(&keymap));
     // Comments authored in the TUI are attributed to the human reviewer and
     // anchored against the diff version being reviewed.

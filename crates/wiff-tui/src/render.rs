@@ -23,9 +23,9 @@ use wiff_core::LineOrigin;
 use wiff_core::record::{Author, CommentTarget, Disposition};
 use wiff_core::review::{CommentState, threads};
 use wiff_diff::{
-    Diff, DiffLine, FileDiff, FileStatus, HighlightError, HighlightedLine, Highlighter, LineKind,
-    LineNo, LiveHighlighter, ParsedSide, Parser, ReconLine, Rgb, Section, SectionMatchers, Side,
-    StyledSpan, intraline, reconstitute,
+    Diff, DiffLine, FileDiff, FileStatus, GeneratedMatchers, GeneratedReason, HighlightError,
+    HighlightedLine, Highlighter, LineKind, LineNo, LiveHighlighter, ParsedSide, Parser, ReconLine,
+    Rgb, Section, SectionMatchers, Side, StyledSpan, intraline, reconstitute,
 };
 
 use crate::action::Action;
@@ -340,7 +340,8 @@ enum FileHighlight<'a> {
     OnDemand,
 }
 
-/// A run of unchanged rows that can be collapsed behind a single marker line.
+/// A run of rows that can be collapsed behind a single marker line, either an
+/// unchanged run within a hunk or a whole generated file's body.
 pub struct Fold {
     /// The first hidden row index into [`Document::rows`].
     pub start: usize,
@@ -350,6 +351,12 @@ pub struct Fold {
     pub marker: Line<'static>,
     /// The background the marker fills its whole row width with.
     pub fill: Option<Rgb>,
+    /// Whether the fold starts collapsed. An unchanged run does; a generated
+    /// file does too, unless it has comments that keep it open.
+    pub collapsed_default: bool,
+    /// Whether the fold hides a whole generated file rather than an unchanged
+    /// run.
+    pub whole_file: bool,
 }
 
 /// What one rendered line corresponds to in the diff.
@@ -527,6 +534,7 @@ pub struct DiffView {
     theme: Theme,
     display_context: usize,
     sections: SectionMatchers,
+    generated: GeneratedMatchers,
     hints: KeyHints,
 }
 
@@ -611,13 +619,14 @@ impl DiffView {
             theme,
             display_context: DEFAULT_DISPLAY_CONTEXT,
             sections: SectionMatchers::builtins(),
+            generated: GeneratedMatchers::builtins(),
             hints: KeyHints::default(),
         })
     }
 
     /// Recolor the renderer to `theme`, swapping only the syntax highlighter's
     /// color mapping and keeping the loaded syntaxes, display context, section
-    /// matchers, and key hints already configured. Reusing a [`parse`](Self::parse)
+    /// and generated-file matchers, and key hints already configured. Reusing a [`parse`](Self::parse)
     /// of the diff, this keeps a theme change off the costly syntax parse. On an
     /// unknown syntax theme the renderer is left unchanged.
     pub fn set_theme(&mut self, theme: Theme) -> Result<(), HighlightError> {
@@ -645,6 +654,13 @@ impl DiffView {
     /// the scope the hidden lines sit in.
     pub fn with_section_matchers(mut self, sections: SectionMatchers) -> Self {
         self.sections = sections;
+        self
+    }
+
+    /// Recognise machine-generated files with `generated`, so each such file
+    /// shows a badge and folds to its header by default.
+    pub fn with_generated_file_matches(mut self, generated: GeneratedMatchers) -> Self {
+        self.generated = generated;
         self
     }
 
@@ -884,12 +900,14 @@ impl DiffView {
             layout,
         } = render;
         let width = layout.width;
+        let generated = self.generated.classify(file);
+        let content_lines = generated_fold_line_count(file);
         doc.push(
             index,
             RowKind::FileHeader,
             None,
             file.display_path().to_string(),
-            self.file_header(file),
+            self.file_header(file, generated.is_some()),
         );
         for placed in &placement.header {
             self.push_thread(
@@ -904,10 +922,15 @@ impl DiffView {
                 },
             );
         }
+        // A generated file folds everything below its whole-file comments: the
+        // hunk body and any line comments woven into it. The whole-file comments
+        // stay above the fold so they remain visible while it is collapsed.
+        let body_start = doc.rows.len();
         if layout.mode == LayoutMode::Rendered
             && let Some(rows) = self.render_after_content(file, width)
         {
             self.emit_rendered(doc, index, placement, pending, &rows, layout);
+            self.push_whole_file_fold(doc, generated, body_start, content_lines, placement);
             return;
         }
         // Paint from the cached highlight when it has arrived; render plain
@@ -957,7 +980,13 @@ impl DiffView {
                 .iter()
                 .map(|line| line_anchor(line).is_some_and(|(s, n)| placement.covers(s, n)))
                 .collect();
-            let runs = foldable_runs(&kinds, self.display_context, &anchored);
+            // A generated file folds as one unit, so its unchanged runs are not
+            // folded separately and show no fold-column glyph.
+            let runs = if generated.is_some() {
+                Vec::new()
+            } else {
+                foldable_runs(&kinds, self.display_context, &anchored)
+            };
             let fold_marks = fold_column(&runs, hunk.lines.len());
             let emission = HunkEmission {
                 index,
@@ -1003,10 +1032,44 @@ impl DiffView {
                     end: line_end[run.end - 1],
                     marker: self.fold_marker(run.end - run.start, scope),
                     fill: None,
+                    collapsed_default: true,
+                    whole_file: false,
                 });
             }
         }
         self.trace_rails(doc, placement, pending, &first_row, layout);
+        self.push_whole_file_fold(doc, generated, body_start, content_lines, placement);
+    }
+
+    /// Fold a generated file's body, from `body_start` to the last row emitted,
+    /// behind its header, labeling the marker with `content_lines`. The fold
+    /// starts collapsed unless the body holds a line comment, which keeps it
+    /// open. Does nothing for a file `generated` did not recognise, or one whose
+    /// body is empty.
+    fn push_whole_file_fold(
+        &self,
+        doc: &mut Document,
+        generated: Option<GeneratedReason>,
+        body_start: usize,
+        content_lines: usize,
+        placement: &FilePlacement,
+    ) {
+        if generated.is_none() {
+            return;
+        }
+        let end = doc.rows.len();
+        if end <= body_start {
+            return;
+        }
+        let plural = if content_lines == 1 { "" } else { "s" };
+        doc.folds.push(Fold {
+            start: body_start,
+            end,
+            marker: self.fold_marker_line(&format!("{content_lines} line{plural}"), None),
+            fill: None,
+            collapsed_default: placement.lines.is_empty(),
+            whole_file: true,
+        });
     }
 
     /// Emit one hunk's content rows in the unified layout: each diff line becomes
@@ -1671,15 +1734,19 @@ impl DiffView {
         Line::from(spans)
     }
 
-    /// The line shown in place of `hidden` collapsed rows, indented to align
-    /// under the code column and naming the enclosing `scope` when one is known.
+    /// The line shown in place of `hidden` collapsed unchanged rows, naming the
+    /// enclosing `scope` when one is known.
     fn fold_marker(&self, hidden: usize, scope: Option<&str>) -> Line<'static> {
         let plural = if hidden == 1 { "" } else { "s" };
-        // A chevron in the change-marker column marks the collapsed rows, so a
-        // fold reads as a fold from the gutter alone rather than from a tinted
-        // background that would band the view.
+        self.fold_marker_line(&format!("{hidden} unchanged line{plural}"), scope)
+    }
+
+    /// A fold marker line: a chevron in the change-marker column, then `label` in
+    /// brackets, then `scope` when one is given. The chevron in the gutter marks
+    /// a fold, rather than a tinted background that would band the view.
+    fn fold_marker_line(&self, label: &str, scope: Option<&str>) -> Line<'static> {
         let mut text = format!(
-            "{:indent$}{FOLD_COLLAPSED} [{hidden} unchanged line{plural}]",
+            "{:indent$}{FOLD_COLLAPSED} [{label}]",
             "",
             indent = GUTTER_WIDTH - 2
         );
@@ -1693,12 +1760,16 @@ impl DiffView {
         ))
     }
 
-    /// The header naming a file and how it changed.
-    fn file_header(&self, file: &FileDiff) -> Line<'static> {
-        let text = match file.status {
+    /// The header naming a file and how it changed, tagged `[generated]` when the
+    /// file was recognised as machine-generated.
+    fn file_header(&self, file: &FileDiff, generated: bool) -> Line<'static> {
+        let mut text = match file.status {
             FileStatus::Renamed => format!("renamed  {} -> {}", file.old_path, file.new_path),
             status => format!("{}  {}", status_label(status), file.display_path()),
         };
+        if generated {
+            text.push_str("  [generated]");
+        }
         Line::from(Span::styled(
             text,
             Style::default()
@@ -2085,6 +2156,28 @@ fn lineno(number: Option<wiff_diff::LineNo>) -> String {
         Some(n) => format!("{:>width$}", n.get(), width = LINENO_WIDTH),
         None => " ".repeat(LINENO_WIDTH),
     }
+}
+
+/// The line count shown on a generated file's whole-file fold marker: the
+/// after-side lines (context and additions) the fold hides, measured from the
+/// source so it is independent of wrapping and woven-in comment rows. A pure
+/// deletion has no after-side content, so its removed lines are counted instead,
+/// keeping the marker from reading as hiding nothing.
+fn generated_fold_line_count(file: &FileDiff) -> usize {
+    let after = file
+        .hunks
+        .iter()
+        .flat_map(|hunk| &hunk.lines)
+        .filter(|line| line.kind != LineKind::Removed)
+        .count();
+    if after > 0 {
+        return after;
+    }
+    file.hunks
+        .iter()
+        .flat_map(|hunk| &hunk.lines)
+        .filter(|line| line.kind == LineKind::Removed)
+        .count()
 }
 
 /// The fold-column glyph for each of a hunk's `len` lines, given its foldable
@@ -3004,6 +3097,175 @@ mod tests {
         wince::snapshot_str!(
             dump(&markers),
             "<#767b84|-|->          ▸ [3 unchanged lines]  fn draw() {\n"
+        );
+    }
+
+    /// One row per fold: its hidden range, whether it hides a whole file, and
+    /// whether it starts collapsed.
+    fn folds_repr(folds: &[super::Fold]) -> String {
+        let mut out = String::new();
+        for fold in folds {
+            out.push_str(&format!(
+                "{}..{} whole_file={} collapsed_default={}\n",
+                fold.start, fold.end, fold.whole_file, fold.collapsed_default
+            ));
+        }
+        out
+    }
+
+    #[test]
+    fn a_generated_file_badges_its_header_and_folds_its_body_by_default() {
+        // A lock file is generated by name, so its header wears the badge and its
+        // whole body folds to one marker, collapsed by default.
+        let diff = Diff {
+            files: vec![file(
+                "yarn.lock",
+                FileStatus::Added,
+                &[(LineKind::Added, "alpha", 1), (LineKind::Added, "beta", 2)],
+            )],
+        };
+        let doc = DiffView::new(theme()).unwrap().render(&diff);
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&doc.lines),
+            "<#c0c5ce|-|b>added  yarn.lock  [generated]\n",
+            "<#96b5b4|-|->@@ -1,2 +1,2 @@\n",
+            "<#9ea1a9|#414a4a|->        1 + <#c0c5ce|#414a4a|->alpha\n",
+            "<#9ea1a9|#414a4a|->        2 + <#c0c5ce|#414a4a|->beta\n",
+        );
+        wince::snapshot_str!(
+            folds_repr(&doc.folds),
+            "1..4 whole_file=true collapsed_default=true\n"
+        );
+        wince::snapshot_str!(
+            dump(
+                &doc.folds
+                    .iter()
+                    .map(|f| f.marker.clone())
+                    .collect::<Vec<_>>()
+            ),
+            "<#767b84|-|->          ▸ [2 lines]\n"
+        );
+    }
+
+    #[test]
+    fn a_deleted_generated_file_counts_its_removed_lines() {
+        // A deleted lock file has no after-side content, so the fold marker
+        // counts the removed lines it hides rather than reading as [0 lines].
+        let diff = Diff {
+            files: vec![file(
+                "yarn.lock",
+                FileStatus::Deleted,
+                &[
+                    (LineKind::Removed, "alpha", 1),
+                    (LineKind::Removed, "beta", 2),
+                    (LineKind::Removed, "gamma", 3),
+                ],
+            )],
+        };
+        let doc = DiffView::new(theme()).unwrap().render(&diff);
+        wince::snapshot_str!(
+            dump(&[doc.lines[0].clone()]),
+            "<#c0c5ce|-|b>deleted  yarn.lock  [generated]\n"
+        );
+        wince::snapshot_str!(
+            folds_repr(&doc.folds),
+            "1..5 whole_file=true collapsed_default=true\n"
+        );
+        wince::snapshot_str!(
+            dump(
+                &doc.folds
+                    .iter()
+                    .map(|f| f.marker.clone())
+                    .collect::<Vec<_>>()
+            ),
+            "<#767b84|-|->          ▸ [3 lines]\n"
+        );
+    }
+
+    #[test]
+    fn a_generation_marker_near_the_top_folds_the_file() {
+        // No name match, but a generator banner in the head marks the file
+        // generated; the badge and whole-file fold follow.
+        let banner = format!("// @{} by build.rs", "generated");
+        let diff = Diff {
+            files: vec![file(
+                "src/tables.rs",
+                FileStatus::Added,
+                &[
+                    (LineKind::Added, banner.as_str(), 1),
+                    (LineKind::Added, "pub const N: u8 = 1;", 2),
+                ],
+            )],
+        };
+        let doc = DiffView::new(theme()).unwrap().render(&diff);
+        wince::snapshot_str!(
+            dump(&[doc.lines[0].clone()]),
+            "<#c0c5ce|-|b>added  src/tables.rs  [generated]\n"
+        );
+        wince::snapshot_str!(
+            folds_repr(&doc.folds),
+            "1..4 whole_file=true collapsed_default=true\n"
+        );
+    }
+
+    #[test]
+    fn a_line_comment_keeps_a_generated_file_open_by_default() {
+        // A comment on one of a generated file's lines lives inside the folded
+        // body, so the fold starts open to keep the discussion visible.
+        let diff = Diff {
+            files: vec![file(
+                "yarn.lock",
+                FileStatus::Added,
+                &[(LineKind::Added, "alpha", 1)],
+            )],
+        };
+        let comments = vec![comment(
+            1,
+            ("wez", AuthorKind::Human),
+            on_lines("yarn.lock", 1, 1),
+            "regenerate this",
+        )];
+        let doc = DiffView::new(theme()).unwrap().render_review(
+            &diff,
+            &comments,
+            &[],
+            ViewLayout::default(),
+        );
+        wince::snapshot_str!(
+            folds_repr(&doc.folds),
+            "2..7 whole_file=true collapsed_default=false\n"
+        );
+    }
+
+    #[test]
+    fn a_whole_file_comment_stays_above_a_collapsed_generated_file() {
+        // A whole-file comment renders above the fold, so it stays visible while
+        // the body collapses by default.
+        let diff = Diff {
+            files: vec![file(
+                "yarn.lock",
+                FileStatus::Added,
+                &[(LineKind::Added, "alpha", 1)],
+            )],
+        };
+        let comments = vec![comment(
+            1,
+            ("wez", AuthorKind::Human),
+            CommentTarget::File {
+                file: "yarn.lock".to_string(),
+            },
+            "regenerate this",
+        )];
+        let doc = DiffView::new(theme()).unwrap().render_review(
+            &diff,
+            &comments,
+            &[],
+            ViewLayout::default(),
+        );
+        wince::snapshot_str!(
+            folds_repr(&doc.folds),
+            "5..7 whole_file=true collapsed_default=true\n"
         );
     }
 

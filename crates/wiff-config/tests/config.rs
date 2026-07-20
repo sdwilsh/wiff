@@ -1,6 +1,6 @@
 #![allow(missing_docs)]
 
-use wiff_config::{Config, OnExit};
+use wiff_config::{Config, GeneratedRules, OnExit};
 use wiff_core::record::{Author, AuthorKind};
 use wiff_core::{AuthorDefaults, BaseRuleset, DEFAULT_BASE_REVISION_RULES};
 use wiff_tui::keymap::KeymapOverrides;
@@ -34,6 +34,10 @@ agent = \"opus\"
 
 [section]
 kotlin = ['^ *(fun|class) .*$']
+
+[generated]
+names = [\"gen/**/*.rs\", \"!Cargo.lock\"]
+markers = [\"DO NOT EDIT\"]
 
 [keymap]
 line_down = [\"j\", \"down\"]
@@ -73,6 +77,10 @@ quit = [\"q\", \"ctrl-c\"]
             )]
             .into_iter()
             .collect(),
+            generated: GeneratedRules {
+                names: vec!["gen/**/*.rs".to_string(), "!Cargo.lock".to_string()],
+                markers: vec!["DO NOT EDIT".to_string()],
+            },
             disable_default_keymap: false,
             keymap: expected_keymap,
         }
@@ -124,7 +132,7 @@ fn an_unknown_field_is_rejected() {
         "  |\n",
         "1 | wibble = true\n",
         "  | ^^^^^^\n",
-        "unknown field `wibble`, expected one of `on_exit`, `display_context`, `tab_width`, `editor`, `wrap_lines`, `diff_mode`, `side_by_side_min_width`, `nudge_to_detach`, `author`, `base_revision_rules`, `section`, `disable_default_keymap`, `keymap`\n",
+        "unknown field `wibble`, expected one of `on_exit`, `display_context`, `tab_width`, `editor`, `wrap_lines`, `diff_mode`, `side_by_side_min_width`, `nudge_to_detach`, `author`, `base_revision_rules`, `section`, `generated`, `disable_default_keymap`, `keymap`\n",
     );
 }
 

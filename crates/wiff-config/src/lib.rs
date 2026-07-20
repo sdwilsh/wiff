@@ -73,6 +73,10 @@ pub struct Config {
     /// built-in patterns; unlisted languages keep the built-ins. Patterns follow
     /// git's `userdiff` format, a leading `!` marking an exclusion.
     pub section: BTreeMap<String, Vec<String>>,
+    /// Extra globs and markers that mark a file machine-generated, layered onto
+    /// the built-in sets. A recognised file shows a `[generated]` badge and folds
+    /// to its header by default.
+    pub generated: GeneratedRules,
     /// Start from an empty keymap so only configured bindings take effect.
     pub disable_default_keymap: bool,
     /// Per-action chord overrides layered onto the built-in defaults.
@@ -93,6 +97,7 @@ impl Default for Config {
             author: AuthorDefaults::default(),
             base_revision_rules: BaseRuleset::new(DEFAULT_BASE_REVISION_RULES),
             section: BTreeMap::new(),
+            generated: GeneratedRules::default(),
             disable_default_keymap: false,
             keymap: KeymapOverrides::default(),
         }
@@ -129,6 +134,23 @@ impl Config {
     pub fn keymap(&self) -> Result<Keymap, KeymapError> {
         Keymap::resolve_config(&self.keymap, self.disable_default_keymap)
     }
+}
+
+/// Extra generated-file globs and markers layered onto wiff's built-in sets. A
+/// plain entry adds to a set; an entry led by `!` drops a built-in equal to its
+/// remainder.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GeneratedRules {
+    /// Path globs whose match marks a file generated, checked against the
+    /// basename, or the whole path when the glob contains a `/`. `**` matches
+    /// across path separators, `*` within a segment, `?` a single character, and
+    /// `[...]` a character set (with `a-z` ranges and a leading `!` negating it).
+    pub names: Vec<String>,
+    /// Strings whose appearance near the top of a file marks it generated. A
+    /// marker is only found when the file's opening lines reach the diff, so name
+    /// globs are the reliable choice for a file changed only far from its head.
+    pub markers: Vec<String>,
 }
 
 /// The config directory: the `WIFF_CONFIG_DIR` override if set, else the

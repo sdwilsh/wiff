@@ -635,6 +635,13 @@ after the rest of v0.
   switch it within a session.
 - `editor` is a command template (`{file}`, `{line}` placeholders) for
   `open_in_editor`; when unset, `$VISUAL` then `$EDITOR` then a default is used.
+- Machine-generated files (lock files, minified bundles, files whose head holds
+  a generator marker) show a `[generated]` badge and fold to their header by
+  default, expanded with the usual fold key or by a search match inside them; a
+  comment on one of the file's lines keeps it open, and a whole-file comment
+  stays visible above the fold. `[generated] names` and `[generated] markers`
+  extend the built-in glob and marker sets, a leading `!` on an entry dropping a
+  matching built-in.
 - Where user choices are persisted back (e.g. remembered view options), use
   `toml_edit` so the user's file structure and comments are preserved.
 - Author defaults may be configured here (overridden by CLI flags).
