@@ -46,5 +46,5 @@ wiff-core = { path = "crates/wiff-core" }
 wiff-diff = { path = "crates/wiff-diff" }
 wiff-forge = { path = "crates/wiff-forge" }
 wiff-tui = { path = "crates/wiff-tui" }
-wince = "0.1.0"
+wince = "0.2.0"
 wiremock = "0.6"

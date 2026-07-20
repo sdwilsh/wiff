@@ -242,6 +242,34 @@ pub(crate) fn anchor_in_diff(
     ))
 }
 
+/// Place a forge anchor onto wiff's comment model against `diff`, captured as
+/// version `number`. Falls back to a bare `File` target on the same path when
+/// the anchored line no longer matches its side of the diff.
+pub fn place_forge_anchor(
+    diff: &Diff,
+    number: VersionNumber,
+    path: &str,
+    side: Side,
+    start_line: LineNo,
+    end_line: LineNo,
+) -> (CommentTarget, Option<Anchor>) {
+    let lines = CommentTarget::Lines {
+        file: path.to_string(),
+        side,
+        start_line,
+        end_line,
+    };
+    match anchor_in_diff(diff, number, &lines) {
+        Ok(Some(anchor)) => (lines, Some(anchor)),
+        _ => (
+            CommentTarget::File {
+                file: path.to_string(),
+            },
+            None,
+        ),
+    }
+}
+
 /// Set the resolved state of an existing comment, appending a resolve record
 /// attributed to `author`. The comment must already exist in the session.
 pub fn set_resolved(
