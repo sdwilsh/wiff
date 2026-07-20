@@ -10,14 +10,19 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+octocrab.workspace = true
 serde = { workspace = true }
 thiserror.workspace = true
 time.workspace = true
+tokio.workspace = true
 ulid.workspace = true
+url.workspace = true
 wiff-core.workspace = true
 wiff-diff.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
 tempfile.workspace = true
-tokio.workspace = true
+time = { workspace = true, features = ["macros"] }
 wince.workspace = true
+wiremock.workspace = true

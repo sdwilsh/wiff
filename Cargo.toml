@@ -21,6 +21,7 @@ directories = "6"
 fancy-regex = "0.16"
 globset = "0.4"
 nix = { version = "0.29", features = ["fs", "signal"] }
+octocrab = "0.54"
 pulldown-cmark = { version = "0.12", default-features = false }
 ratatui = { version = "0.29", default-features = false }
 serde = { version = "1", features = ["derive"] }
@@ -44,3 +45,4 @@ wiff-diff = { path = "crates/wiff-diff" }
 wiff-forge = { path = "crates/wiff-forge" }
 wiff-tui = { path = "crates/wiff-tui" }
 wince = "0.1.0"
+wiremock = "0.6"

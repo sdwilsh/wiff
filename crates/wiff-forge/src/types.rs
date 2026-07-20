@@ -42,9 +42,9 @@ impl FetchedPullRequest {
 
 /// An inline position on a pull request's diff in the forge's terms, used in
 /// both directions: where a fetched comment is anchored, and where a comment
-/// being pushed should anchor. Both ends sit on one `side`; where a forge
-/// reports a range spanning both sides, the adapter picks the side covering the
-/// most of the range. Callers uphold `start_line <= end_line`.
+/// being pushed should anchor. Both ends sit on one `side`; a forge that reports
+/// a range whose ends fall on different sides of the diff is collapsed by the
+/// adapter onto the end line's side. Callers uphold `start_line <= end_line`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForgeAnchor {
     /// The changed file's path.
@@ -103,7 +103,9 @@ pub struct FetchedReview {
     /// The review state mapped to a disposition, or `None` for a plain comment
     /// review with no verdict.
     pub disposition: Option<Disposition>,
-    /// Whether the review was later dismissed, withdrawing its verdict.
+    /// Whether the review was later dismissed. A dismissed review no longer
+    /// counts toward the verdict; the verdict it held before dismissal is not
+    /// recorded.
     pub dismissed: bool,
 }
 

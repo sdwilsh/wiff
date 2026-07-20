@@ -10,10 +10,12 @@
 
 pub mod config;
 pub mod error;
+pub mod github;
 pub mod types;
 
 pub use config::{ForgeHost, ForgeTable, TokenOverride, resolve_token};
 pub use error::Unsupported;
+pub use github::GithubForge;
 pub use types::{
     FetchedComment, FetchedPullRequest, FetchedReview, ForgeAnchor, NewPullRequest,
     OutgoingComment, OutgoingReview, Resolution, SubmittedReview,
