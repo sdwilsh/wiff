@@ -1245,7 +1245,6 @@ new file mode 100644
             },
             authored_at: None,
             origin: None,
-            synced_marker: None,
             kind: CommentEventKind::Create(CommentCreate {
                 target: CommentTarget::Lines {
                     file: "f.txt".to_string(),

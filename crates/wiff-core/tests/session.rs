@@ -38,7 +38,6 @@ fn comment() -> RecordBody {
         },
         authored_at: None,
         origin: None,
-        synced_marker: None,
         kind: CommentEventKind::Create(CommentCreate {
             target: CommentTarget::Lines {
                 file: "src/main.rs".to_string(),

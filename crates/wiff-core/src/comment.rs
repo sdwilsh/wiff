@@ -7,6 +7,7 @@
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 
+use time::OffsetDateTime;
 use ulid::Ulid;
 use wiff_diff::parse::parse;
 use wiff_diff::reconstitute::known_lines;
@@ -80,7 +81,6 @@ impl DraftComment {
             author: self.author,
             authored_at: None,
             origin: None,
-            synced_marker: None,
             kind: CommentEventKind::Create(CommentCreate {
                 target: self.target,
                 version,
@@ -324,15 +324,98 @@ pub fn link_event(id: Ulid, author: Author, forge_ref: ExternalRef) -> RecordBod
     comment_event(id, author, CommentEventKind::Link { forge_ref })
 }
 
+/// Build an imported create for a new comment `id` mirroring `origin`, the forge
+/// object it was read from, by `author` at the forge's own `authored_at`, with
+/// `create` its initial state.
+pub fn import_create(
+    id: Ulid,
+    author: Author,
+    origin: ExternalRef,
+    authored_at: OffsetDateTime,
+    create: CommentCreate,
+) -> RecordBody {
+    import_event(
+        id,
+        author,
+        origin,
+        authored_at,
+        CommentEventKind::Create(create),
+    )
+}
+
+/// Build an imported edit of comment `id` mirroring `origin` by `author` at the
+/// forge's own `authored_at`, revising its body to the upstream text.
+pub fn import_edit(
+    id: Ulid,
+    author: Author,
+    origin: ExternalRef,
+    authored_at: OffsetDateTime,
+    body: String,
+) -> RecordBody {
+    import_event(
+        id,
+        author,
+        origin,
+        authored_at,
+        CommentEventKind::Edit { body },
+    )
+}
+
+/// Build an imported resolve of comment `id` mirroring `origin` by `author` at
+/// the forge's own `authored_at`, matching the upstream thread's resolution.
+pub fn import_resolve(
+    id: Ulid,
+    author: Author,
+    origin: ExternalRef,
+    authored_at: OffsetDateTime,
+    resolved: bool,
+) -> RecordBody {
+    import_event(
+        id,
+        author,
+        origin,
+        authored_at,
+        CommentEventKind::Resolve { resolved },
+    )
+}
+
+/// Build an imported delete of comment `id` mirroring `origin` by `author` at
+/// the forge's own `authored_at`.
+pub fn import_delete(
+    id: Ulid,
+    author: Author,
+    origin: ExternalRef,
+    authored_at: OffsetDateTime,
+) -> RecordBody {
+    import_event(id, author, origin, authored_at, CommentEventKind::Delete)
+}
+
 /// Wrap a locally-authored event kind in a [`CommentEvent`] envelope: no forge
-/// origin or sync marker, and no authored-at (its time is the record's).
+/// origin, and no authored-at (its time is the record's).
 fn comment_event(id: Ulid, author: Author, kind: CommentEventKind) -> RecordBody {
     RecordBody::CommentEvent(CommentEvent {
         id,
         author,
         authored_at: None,
         origin: None,
-        synced_marker: None,
+        kind,
+    })
+}
+
+/// Wrap an imported event kind in a [`CommentEvent`] envelope, naming the forge
+/// object it mirrors and the forge's own authored time.
+fn import_event(
+    id: Ulid,
+    author: Author,
+    origin: ExternalRef,
+    authored_at: OffsetDateTime,
+    kind: CommentEventKind,
+) -> RecordBody {
+    RecordBody::CommentEvent(CommentEvent {
+        id,
+        author,
+        authored_at: Some(authored_at),
+        origin: Some(origin),
         kind,
     })
 }

@@ -3,7 +3,8 @@
 use time::OffsetDateTime;
 use ulid::Ulid;
 use wiff_core::comment::{
-    delete_event, disposition_event, edit_event, link_event, reanchor_event, resolve_event,
+    delete_event, disposition_event, edit_event, import_create, import_delete, import_edit,
+    import_resolve, link_event, reanchor_event, resolve_event,
 };
 use wiff_core::record::{
     Anchor, Author, AuthorKind, CommentCreate, CommentEvent, CommentEventKind, CommentNumber,
@@ -56,7 +57,6 @@ fn create_event(
         author,
         authored_at: None,
         origin: None,
-        synced_marker: None,
         kind: CommentEventKind::Create(CommentCreate {
             target,
             version: VersionNumber(version),
@@ -203,7 +203,6 @@ fn folds_versions_and_comment_chains() {
                 disposition: None,
                 confidence: None,
                 origin: None,
-                synced_marker: None,
                 number: Some(wiff_core::record::CommentNumber(1)),
                 created_seq: Seq(2),
                 updated_seq: Seq(6),
@@ -229,7 +228,6 @@ fn folds_versions_and_comment_chains() {
                 disposition: None,
                 confidence: Some(Confidence::Approximate),
                 origin: None,
-                synced_marker: None,
                 number: Some(wiff_core::record::CommentNumber(2)),
                 created_seq: Seq(3),
                 updated_seq: Seq(8),
@@ -253,7 +251,6 @@ fn folds_versions_and_comment_chains() {
                 disposition: None,
                 confidence: None,
                 origin: None,
-                synced_marker: None,
                 number: Some(wiff_core::record::CommentNumber(3)),
                 created_seq: Seq(9),
                 updated_seq: Seq(9),
@@ -331,7 +328,6 @@ fn an_imported_events_folded_time_comes_from_its_authored_time() {
         author: human("wez"),
         authored_at: Some(authored_create),
         origin: None,
-        synced_marker: None,
         kind: CommentEventKind::Create(CommentCreate {
             target: CommentTarget::Review,
             version: VersionNumber(0),
@@ -345,7 +341,6 @@ fn an_imported_events_folded_time_comes_from_its_authored_time() {
         author: human("dev"),
         authored_at: Some(authored_edit),
         origin: None,
-        synced_marker: None,
         kind: CommentEventKind::Edit {
             body: "imported, edited".to_string(),
         },
@@ -445,7 +440,6 @@ fn a_link_binds_a_local_comment_to_its_forge_object_without_reattributing_it() {
             disposition: None,
             confidence: None,
             origin: Some(review_comment_ref("610")),
-            synced_marker: None,
             number: Some(CommentNumber(1)),
             created_seq: Seq(2),
             updated_seq: Seq(3),
@@ -484,6 +478,139 @@ fn linking_an_already_linked_comment_is_a_corrupt_log() {
     wince::snapshot_display!(
         error,
         "inconsistent session log: record at seq 4 links comment 00000000000000000000000000 that already mirrors a forge object"
+    );
+}
+
+#[test]
+fn imported_events_mirror_their_forge_object_at_the_forges_own_times() {
+    // The folded times come from each event's authored_at, not the epoch the
+    // records were recorded at.
+    let created_at = OffsetDateTime::from_unix_timestamp(1_000_000).unwrap();
+    let edited_at = OffsetDateTime::from_unix_timestamp(2_000_000).unwrap();
+    let resolved_at = OffsetDateTime::from_unix_timestamp(3_000_000).unwrap();
+    let origin = review_comment_ref("610");
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            import_create(
+                comment_a(),
+                human("dev"),
+                origin.clone(),
+                created_at,
+                CommentCreate {
+                    target: CommentTarget::Review,
+                    version: VersionNumber(0),
+                    anchor: None,
+                    body: "needs a test".to_string(),
+                    disposition: None,
+                },
+            ),
+        ),
+        rec(
+            3,
+            import_edit(
+                comment_a(),
+                human("dev"),
+                origin.clone(),
+                edited_at,
+                "needs a unit test".to_string(),
+            ),
+        ),
+        rec(
+            4,
+            import_resolve(comment_a(), human("wez"), origin.clone(), resolved_at, true),
+        ),
+    ];
+
+    let state = fold(&records).unwrap();
+
+    wince::assert_eq!(
+        state.comments,
+        vec![CommentState {
+            id: comment_a(),
+            author: human("dev"),
+            target: CommentTarget::Review,
+            version: VersionNumber(0),
+            anchor: None,
+            body: "needs a unit test".to_string(),
+            created_at,
+            updated_at: resolved_at,
+            updated_by: human("wez"),
+            resolved: true,
+            resolved_by: Some(human("wez")),
+            resolved_at: Some(resolved_at),
+            deleted: false,
+            deleted_by: None,
+            deleted_at: None,
+            disposition: None,
+            confidence: None,
+            origin: Some(origin),
+            number: Some(CommentNumber(1)),
+            created_seq: Seq(2),
+            updated_seq: Seq(4),
+        }]
+    );
+}
+
+#[test]
+fn an_imported_delete_tombstones_a_comment_removed_upstream() {
+    let created_at = OffsetDateTime::from_unix_timestamp(1_000_000).unwrap();
+    let deleted_at = OffsetDateTime::from_unix_timestamp(4_000_000).unwrap();
+    let origin = review_comment_ref("610");
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            import_create(
+                comment_a(),
+                human("dev"),
+                origin.clone(),
+                created_at,
+                CommentCreate {
+                    target: CommentTarget::Review,
+                    version: VersionNumber(0),
+                    anchor: None,
+                    body: "stray thought".to_string(),
+                    disposition: None,
+                },
+            ),
+        ),
+        rec(
+            3,
+            import_delete(comment_a(), human("dev"), origin.clone(), deleted_at),
+        ),
+    ];
+
+    let state = fold(&records).unwrap();
+
+    wince::assert_eq!(
+        state.comments,
+        vec![CommentState {
+            id: comment_a(),
+            author: human("dev"),
+            target: CommentTarget::Review,
+            version: VersionNumber(0),
+            anchor: None,
+            body: "stray thought".to_string(),
+            created_at,
+            updated_at: deleted_at,
+            updated_by: human("dev"),
+            resolved: false,
+            resolved_by: None,
+            resolved_at: None,
+            deleted: true,
+            deleted_by: Some(human("dev")),
+            deleted_at: Some(deleted_at),
+            disposition: None,
+            confidence: None,
+            origin: Some(origin),
+            number: Some(CommentNumber(1)),
+            created_seq: Seq(2),
+            updated_seq: Seq(3),
+        }]
     );
 }
 
@@ -655,7 +782,6 @@ fn a_reply_folds_with_its_parent_recorded_and_threads_under_it() {
             disposition: None,
             confidence: None,
             origin: None,
-            synced_marker: None,
             number: Some(wiff_core::record::CommentNumber(1)),
             created_seq: Seq(2),
             updated_seq: Seq(2),
@@ -679,7 +805,6 @@ fn a_reply_folds_with_its_parent_recorded_and_threads_under_it() {
             disposition: None,
             confidence: None,
             origin: None,
-            synced_marker: None,
             number: Some(wiff_core::record::CommentNumber(2)),
             created_seq: Seq(3),
             updated_seq: Seq(3),
@@ -1111,7 +1236,6 @@ fn create_verdict_event(
         author,
         authored_at: None,
         origin: None,
-        synced_marker: None,
         kind: CommentEventKind::Create(CommentCreate {
             target: CommentTarget::Review,
             version: VersionNumber(0),

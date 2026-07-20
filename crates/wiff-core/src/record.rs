@@ -680,10 +680,6 @@ pub struct CommentEvent {
     /// event. Unpopulated until a later phase mirrors forge state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<ExternalRef>,
-    /// The upstream version this event reconciled with, opaque and
-    /// adapter-interpreted. Unpopulated until a later phase mirrors forge state.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub synced_marker: Option<String>,
     /// What the event does.
     #[serde(flatten)]
     pub kind: CommentEventKind,
@@ -925,7 +921,6 @@ mod tests {
             },
             authored_at: None,
             origin: None,
-            synced_marker: None,
             kind: CommentEventKind::Create(CommentCreate {
                 target: CommentTarget::Review,
                 version: VersionNumber(0),

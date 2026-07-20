@@ -605,7 +605,6 @@ mod tests {
                 },
                 authored_at: None,
                 origin: None,
-                synced_marker: None,
                 kind: CommentEventKind::Delete,
             }),
         }

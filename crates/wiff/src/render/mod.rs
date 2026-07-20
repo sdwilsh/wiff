@@ -133,7 +133,6 @@ mod fixture {
             disposition: None,
             confidence: None,
             origin: None,
-            synced_marker: None,
             number: None,
             created_seq: Seq(seq),
             updated_seq: Seq(seq),

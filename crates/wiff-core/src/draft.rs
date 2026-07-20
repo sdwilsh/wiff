@@ -429,7 +429,6 @@ pub fn draft_create(
         author,
         authored_at: None,
         origin: None,
-        synced_marker: None,
         kind: CommentEventKind::Create(CommentCreate {
             target,
             version,
@@ -505,7 +504,6 @@ mod tests {
             disposition: None,
             confidence: None,
             origin: None,
-            synced_marker: None,
             number: None,
             created_seq: Seq(3),
             updated_seq: Seq(3),

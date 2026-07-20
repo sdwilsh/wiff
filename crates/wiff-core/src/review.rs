@@ -224,10 +224,6 @@ pub struct CommentState {
     /// object for a local comment, or on a comment imported without one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<ExternalRef>,
-    /// The upstream version last reconciled with, once synced. Unpopulated until
-    /// a later phase mirrors forge state.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub synced_marker: Option<String>,
     /// This comment's review-scoped human handle, assigned by the fold from its
     /// create-order. `None` on a comment not yet committed (a TUI draft preview)
     /// or a synthesized render-only comment, neither of which has a stable
@@ -271,7 +267,6 @@ impl CommentState {
             disposition: create.disposition,
             confidence: None,
             origin: event.origin.clone(),
-            synced_marker: event.synced_marker.clone(),
             number: None,
             created_seq: seq,
             updated_seq: seq,
@@ -313,18 +308,14 @@ impl CommentState {
     }
 
     /// Stamp the time and sequence of the latest record to touch this comment,
-    /// and fold an imported event's `origin`/`synced_marker` forward when
-    /// present, leaving a local event's `None` untouched. Attribution of a
-    /// substantive change is set by the caller; a reanchor deliberately leaves
-    /// `updated_by` alone.
+    /// and fold an imported event's `origin` forward when present, leaving a
+    /// local event's `None` untouched. Attribution of a substantive change is
+    /// set by the caller; a reanchor deliberately leaves `updated_by` alone.
     fn touch(&mut self, event: &CommentEvent, at: OffsetDateTime, seq: Seq) {
         self.updated_at = at;
         self.updated_seq = seq;
         if event.origin.is_some() {
             self.origin = event.origin.clone();
-        }
-        if event.synced_marker.is_some() {
-            self.synced_marker = event.synced_marker.clone();
         }
     }
 }

@@ -186,7 +186,6 @@ fn expected_comment(
         disposition: None,
         confidence,
         origin: None,
-        synced_marker: None,
         number: Some(wiff_core::record::CommentNumber(1)),
         created_seq: Seq(2),
         updated_seq: Seq(updated_seq),
