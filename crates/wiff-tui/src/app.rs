@@ -171,8 +171,10 @@ enum ViewRow {
 /// from the [`RowKind`] under the cursor, it survives a rebuild that renumbers
 /// rows.
 struct CursorSpot {
-    /// The path of the file the cursor was in.
-    file: String,
+    /// The path of the file the cursor was in, or `None` for a review-level row
+    /// (the summary, description, or a review-wide comment) that belongs to no
+    /// file.
+    file: Option<String>,
     /// The row within, or across, that file to return to.
     place: SpotPlace,
 }
@@ -2646,10 +2648,10 @@ impl App {
         }
     }
 
-    /// Where the cursor is, to return to after the document is rebuilt. Absent
-    /// when the cursor is on no file.
+    /// Where the cursor is, to return to after the document is rebuilt. A fold
+    /// marker, which has no row kind, returns to its file's header; a
+    /// review-level row belongs to no file, so its spot has no file path.
     fn cursor_spot(&self) -> Option<CursorSpot> {
-        let file = self.document.files.get(self.cursor_file()?)?.clone();
         let place = match self.kind_at(self.cursor) {
             Some(kind) if kind.content_addr().is_some() => {
                 let (side, lineno) = kind.content_addr()?;
@@ -2662,6 +2664,10 @@ impl App {
             ) => SpotPlace::Comment(*id),
             _ => SpotPlace::Header,
         };
+        let file = self
+            .cursor_file()
+            .and_then(|index| self.document.files.get(index))
+            .cloned();
         Some(CursorSpot { file, place })
     }
 
@@ -2684,7 +2690,11 @@ impl App {
         {
             return Some(row);
         }
-        let file = self.document.files.iter().position(|f| *f == spot.file)?;
+        let file = self
+            .document
+            .files
+            .iter()
+            .position(|f| Some(f) == spot.file.as_ref())?;
         let line = match spot.place {
             SpotPlace::Line(side, lineno) => Some((side, lineno)),
             _ => None,
@@ -3885,6 +3895,14 @@ mod tests {
             number: Some(CommentNumber(id as u32)),
             created_seq: Seq(0),
             updated_seq: Seq(0),
+        }
+    }
+
+    /// A committed review-level comment by `author`, addressed to no file.
+    fn review_comment(id: u128, author: (&str, AuthorKind), body: &str) -> CommentState {
+        CommentState {
+            target: CommentTarget::Review,
+            ..line_comment(id, author, "src/lib.rs", 1, body, false)
         }
     }
 
@@ -7124,6 +7142,117 @@ mod tests {
 
         wince::assert_eq!(app.cursor(), before_cursor);
         wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), before);
+    }
+
+    #[test]
+    fn reloading_review_comments_keeps_the_cursor_on_a_review_comment() {
+        // A review-level comment belongs to no file. When a concurrent actor
+        // adds another review comment, the reload must return the cursor to the
+        // comment it was resting on rather than dropping it at the top of the
+        // document.
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[
+                    (LineKind::Context, "let x = 1;", 1),
+                    (LineKind::Added, "let y = 2;", 2),
+                ],
+            )],
+        };
+        let existing = review_comment(1, ("wez", AuthorKind::Human), "first thought");
+        let review = Review::new(
+            DiffView::new(theme()).unwrap(),
+            diff,
+            Author {
+                name: "wez".to_string(),
+                kind: AuthorKind::Human,
+            },
+            0,
+            vec![existing.clone()],
+            None,
+        );
+        let mut app = App::reviewing(review, 14, &theme());
+        app.set_width(TEST_WIDTH);
+        // Rest the cursor on the review-level comment's box.
+        app.update(Action::NextComment);
+        let before_cursor = app.cursor();
+
+        // Another actor appends a second review comment below the first.
+        let added = review_comment(2, ("opus", AuthorKind::Agent), "second thought");
+        app.reload_comments(vec![existing, added], None);
+
+        // The reload leaves the cursor on the first comment, which renders in
+        // the same place, rather than jumping it to the top of the document.
+        wince::assert_eq!(app.cursor(), before_cursor);
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            plain(&app, TEST_WIDTH),
+            "Review [press c here to draft the review comment] [press e to write the description]\n",
+            "┌ #1 wez (human)  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse ┐\n",
+            "│first thought                         │\n",
+            "└──────────────────────────────────────┘\n",
+            "┌ #2 opus (agent)  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse ┐\n",
+            "│second thought                        │\n",
+            "└──────────────────────────────────────┘\n",
+            "modified  src/lib.rs\n",
+            "@@ -1,2 +1,2 @@\n",
+            "   1    1   let x = 1;\n",
+            "        2 + let y = 2;\n",
+        );
+    }
+
+    #[test]
+    fn reloading_with_the_cursor_on_a_fold_marker_returns_it_to_the_file() {
+        // A collapsed fold marker has no row kind of its own. When a concurrent
+        // reload rebuilds the document, the cursor must return to the fold's
+        // file rather than snapping to the top of the document.
+        let mut lines: Vec<(LineKind, String, u32)> = (1..=20)
+            .map(|n| (LineKind::Context, format!("ctx{n:02}"), n))
+            .collect();
+        lines.push((LineKind::Added, "change!".to_string(), 21));
+        let borrowed: Vec<(LineKind, &str, u32)> =
+            lines.iter().map(|(k, t, n)| (*k, t.as_str(), *n)).collect();
+        let diff = Diff {
+            files: vec![file("notes.txt", FileStatus::Modified, &borrowed)],
+        };
+        let review = Review::new(
+            DiffView::new(theme()).unwrap(),
+            diff,
+            Author {
+                name: "wez".to_string(),
+                kind: AuthorKind::Human,
+            },
+            0,
+            Vec::new(),
+            None,
+        );
+        let mut app = App::reviewing(review, 24, &theme());
+        app.set_width(TEST_WIDTH);
+        // The file header sits just below the review summary, and the leading
+        // fold marker sits two rows below that, past the hunk header.
+        app.update(Action::Top);
+        app.update(Action::NextFile);
+        let file_header = app.cursor();
+        app.update(Action::LineDown);
+        app.update(Action::LineDown);
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            plain(&app, TEST_WIDTH),
+            "Review [press c here to draft the review comment] [press e to write the description]\n",
+            "modified  notes.txt\n",
+            "@@ -1,21 +1,21 @@\n",
+            "          ▸ [17 unchanged lines]  ctx17\n",
+            "  18   18   ctx18\n",
+            "  19   19   ctx19\n",
+            "  20   20   ctx20\n",
+            "       21 + change!\n",
+        );
+
+        // A concurrent reload with the same comments rebuilds the document in
+        // place, returning the cursor to the file header rather than to row 0.
+        app.reload_comments(Vec::new(), None);
+        wince::assert_eq!(app.cursor(), file_header);
     }
 
     #[test]
