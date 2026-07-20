@@ -1297,7 +1297,7 @@ impl App {
     /// arrow past the editor's edge when nudging is enabled, floats the editor
     /// and hands the cursor to the diff; every other press edits the body.
     fn compose_key_editing(&mut self, press: KeyPress) {
-        let width = self.width.saturating_sub(2);
+        let width = self.editor_wrap_width();
         match self.keymap.resolve(std::slice::from_ref(&press)) {
             Resolution::Action(Action::SubmitComment) => self.submit_compose(),
             Resolution::Action(Action::CancelComment) => self.cancel_compose(),
@@ -1327,9 +1327,10 @@ impl App {
                 self.update(action);
             }
             _ => {
+                let width = self.editor_wrap_width();
                 self.reenter_editor();
                 if let (Key::Char(_), Some(compose)) = (press.key, self.compose.as_mut()) {
-                    compose.input(press, self.width.saturating_sub(2));
+                    compose.input(press, width);
                 }
             }
         }
@@ -1482,6 +1483,30 @@ impl App {
         self.focus_comment(id);
     }
 
+    /// The interior column width the inline editor's body wraps to at viewport
+    /// `width`, matching the width `compose_view` renders it at: in a side-by-
+    /// side layout an editor scoped to a column wraps to that column's interior
+    /// rather than the full viewport. `compose_view` and the editor's vertical
+    /// navigation both wrap through here, so they cannot drift apart.
+    fn editor_interior(&self, width: usize) -> usize {
+        let editor_width = match self.compose_column() {
+            Some(side) => column_bounds(width, side).1,
+            None => width,
+        };
+        editor_width.saturating_sub(2)
+    }
+
+    /// The width the editor's vertical navigation wraps to, matching the width
+    /// it renders at so a wrapped body's visual rows are the same on screen as
+    /// under an arrow key. A detached editor wraps to the full-viewport
+    /// interior, the widest layout `compose_float` draws.
+    fn editor_wrap_width(&self) -> usize {
+        if self.detach.is_some() {
+            return self.width.saturating_sub(2);
+        }
+        self.editor_interior(self.width)
+    }
+
     /// The viewport split around the inline editor, when composing: the document
     /// lines above the editor, the editor widget, and the lines below it,
     /// together filling the viewport. The editor renders where its comment will,
@@ -1505,8 +1530,9 @@ impl App {
             Some(side) => column_bounds(width, side),
             None => (0, width),
         };
-        // The border takes a column on each side; the body wraps into the rest.
-        let interior = editor_width.saturating_sub(2);
+        // The border takes a column on each side; the body wraps into the rest,
+        // through the same derivation the editor's navigation wraps to.
+        let interior = self.editor_interior(width);
         let max_interior = self.editor_max_interior();
         let editor = compose.layout(interior, max_interior);
         let editor_height = editor.rows.len() + 2;
@@ -5572,6 +5598,38 @@ mod tests {
             "<#c0c5ce|-|->lazy dog\n",
         );
         wince::assert_eq!(view.editor_cursor, Some((8, 0)));
+    }
+
+    #[test]
+    fn moving_up_in_a_side_by_side_column_editor_follows_the_column_wrap() {
+        // A side-by-side editor wraps to its column's interior, not the full
+        // viewport. Navigation must follow that same wrap: from the last of
+        // three column-wrapped rows, Up steps onto the middle row rather than
+        // skipping to the first, which is what happened when navigation wrapped
+        // to the full width and saw only two rows.
+        let mut app =
+            App::reviewing(plain_review(), 20, &theme()).with_diff_mode(DiffMode::SideBySide, 0);
+        app.set_width(52);
+        for _ in 0..4 {
+            app.update(Action::LineDown);
+        }
+        app.update(Action::AddComment);
+        typed(&mut app, "the quick brown fox jumps over the very lazy dog");
+        let view = app.compose_view(52).expect("composing");
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&view.editor_rows),
+            "<#c0c5ce|-|->the quick brown fox \n",
+            "<#c0c5ce|-|->jumps over the very \n",
+            "<#c0c5ce|-|->lazy dog\n",
+        );
+        // The cursor rests at the end of the third row.
+        wince::assert_eq!(view.editor_cursor, Some((8, 2)));
+
+        app.compose_key(KeyPress::new(Key::Up));
+        let view = app.compose_view(52).expect("composing");
+        // Up moves onto the middle row, keeping the goal column.
+        wince::assert_eq!(view.editor_cursor, Some((8, 1)));
     }
 
     #[test]
