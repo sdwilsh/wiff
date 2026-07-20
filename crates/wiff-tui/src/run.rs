@@ -493,12 +493,13 @@ fn event_loop<B: Backend>(
     loop {
         // A modal view -- the comment editor, search prompt, or picker (the
         // file, comment, theme, or exit list) -- owns a spot or buffer that
-        // folding a document change in would disturb.
+        // folding another actor's committed change in would disturb.
         let modal =
             app.composing() || app.searching() || app.picking() || app.helping() || app.noticing();
-        // Reveal files as their background highlight arrives, repainting
-        // immediately only when the change is on screen.
-        if !modal && app.poll_highlights() {
+        // Fold in arrived highlights even under a modal. A highlight recolors
+        // the document without changing its structure; it cannot disturb a spot
+        // a modal holds. Repaint immediately only when the change is on screen.
+        if app.poll_highlights() {
             dirty = true;
         }
         if dirty {
@@ -507,7 +508,7 @@ fn event_loop<B: Backend>(
         }
         // A wait bounded by the poll interval between key presses, or
         // HIGHLIGHT_POLL_INTERVAL while background highlighting runs.
-        let timeout = if app.highlighting() && !modal {
+        let timeout = if app.highlighting() {
             HIGHLIGHT_POLL_INTERVAL
         } else {
             POLL_INTERVAL
