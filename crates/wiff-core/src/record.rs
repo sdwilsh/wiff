@@ -548,9 +548,6 @@ pub enum ExternalKind {
 /// A stable name for an object on a forge, kept opaque so a new forge needs no
 /// schema change. `(forge, kind, id)` names the object; `url` is a presentation
 /// link to it.
-///
-/// Unused until a later phase mirrors forge state; defined now so the record
-/// schema is fixed at the format break.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ExternalRef {
     /// The forge instance the object lives on.
@@ -692,12 +689,18 @@ pub struct CommentEvent {
     pub kind: CommentEventKind,
 }
 
-/// What a [`CommentEvent`] does. A later phase adds `Link`.
+/// What a [`CommentEvent`] does.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum CommentEventKind {
     /// Introduce a new comment.
     Create(CommentCreate),
+    /// Bind a locally authored comment to the forge object a push created for
+    /// it, recording that reference as the comment's `origin`.
+    Link {
+        /// The forge object the push created for the comment.
+        forge_ref: ExternalRef,
+    },
     /// Revise a comment's body.
     Edit {
         /// The new body text.

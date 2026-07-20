@@ -15,7 +15,7 @@ use wiff_diff::{Diff, FileDiff, LineNo, Side};
 use crate::error::{Error, Result};
 use crate::record::{
     Anchor, Author, CommentCreate, CommentEvent, CommentEventKind, CommentReanchor, CommentTarget,
-    DiffVersionRecord, Disposition, Record, RecordBody, Seq, VersionNumber,
+    DiffVersionRecord, Disposition, ExternalRef, Record, RecordBody, Seq, VersionNumber,
 };
 use crate::review::{CommentState, fold};
 use crate::session::{LockWait, SessionLog};
@@ -316,6 +316,12 @@ pub fn disposition_event(id: Ulid, author: Author, disposition: Option<Dispositi
 /// confidence.
 pub fn reanchor_event(id: Ulid, author: Author, reanchor: CommentReanchor) -> RecordBody {
     comment_event(id, author, CommentEventKind::Reanchor(reanchor))
+}
+
+/// Build a link event binding comment `id` to `forge_ref`, the forge object a
+/// push created for it, by `author`.
+pub fn link_event(id: Ulid, author: Author, forge_ref: ExternalRef) -> RecordBody {
+    comment_event(id, author, CommentEventKind::Link { forge_ref })
 }
 
 /// Wrap a locally-authored event kind in a [`CommentEvent`] envelope: no forge

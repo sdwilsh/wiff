@@ -3,7 +3,7 @@
 use time::OffsetDateTime;
 use ulid::Ulid;
 use wiff_core::comment::{
-    delete_event, disposition_event, edit_event, reanchor_event, resolve_event,
+    delete_event, disposition_event, edit_event, link_event, reanchor_event, resolve_event,
 };
 use wiff_core::record::{
     Anchor, Author, AuthorKind, CommentCreate, CommentEvent, CommentEventKind, CommentNumber,
@@ -378,6 +378,112 @@ fn an_imported_events_folded_time_comes_from_its_authored_time() {
     wince::assert_eq!(
         times,
         vec![(authored_create, authored_edit), (recorded, recorded),]
+    );
+}
+
+fn review_comment_ref(id: &str) -> ExternalRef {
+    ExternalRef {
+        forge: ForgeId {
+            provider: "github".to_string(),
+            host: "github.com".to_string(),
+        },
+        kind: ExternalKind::ReviewComment,
+        id: id.to_string(),
+        url: Some(format!(
+            "https://github.com/octo/demo/pull/7#discussion_r{id}"
+        )),
+    }
+}
+
+#[test]
+fn a_link_binds_a_local_comment_to_its_forge_object_without_reattributing_it() {
+    // A link sets origin and stamps the time forward while preserving
+    // authorship. The link record has a later time than the create, so a folded
+    // updated_at that moved to it proves the link stamped the comment.
+    let linked_at = OffsetDateTime::from_unix_timestamp(3_000_000).unwrap();
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            create_event(
+                comment_a(),
+                human("wez"),
+                CommentTarget::Review,
+                0,
+                None,
+                "needs a test",
+            ),
+        ),
+        Record {
+            seq: Seq(3),
+            at: linked_at,
+            body: link_event(comment_a(), human("wez"), review_comment_ref("610")),
+        },
+    ];
+
+    let state = fold(&records).unwrap();
+
+    wince::assert_eq!(
+        state.comments,
+        vec![CommentState {
+            id: comment_a(),
+            author: human("wez"),
+            target: CommentTarget::Review,
+            version: VersionNumber(0),
+            anchor: None,
+            body: "needs a test".to_string(),
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: linked_at,
+            updated_by: human("wez"),
+            resolved: false,
+            resolved_by: None,
+            resolved_at: None,
+            deleted: false,
+            deleted_by: None,
+            deleted_at: None,
+            disposition: None,
+            confidence: None,
+            origin: Some(review_comment_ref("610")),
+            synced_marker: None,
+            number: Some(CommentNumber(1)),
+            created_seq: Seq(2),
+            updated_seq: Seq(3),
+        }]
+    );
+}
+
+#[test]
+fn linking_an_already_linked_comment_is_a_corrupt_log() {
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            create_event(
+                comment_a(),
+                human("wez"),
+                CommentTarget::Review,
+                0,
+                None,
+                "needs a test",
+            ),
+        ),
+        rec(
+            3,
+            link_event(comment_a(), human("wez"), review_comment_ref("610")),
+        ),
+        rec(
+            4,
+            link_event(comment_a(), human("wez"), review_comment_ref("611")),
+        ),
+    ];
+
+    let error = fold(&records).unwrap_err();
+    wince::assert_eq!(matches!(error, Error::InconsistentLog(_)), true);
+    wince::snapshot_display!(
+        error,
+        "inconsistent session log: record at seq 4 links comment 00000000000000000000000000 that already mirrors a forge object"
     );
 }
 

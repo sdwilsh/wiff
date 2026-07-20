@@ -220,8 +220,8 @@ pub struct CommentState {
     pub disposition: Option<Disposition>,
     /// How confidently it was last re-anchored, once it has been.
     pub confidence: Option<Confidence>,
-    /// The forge object it mirrors, once linked. Unpopulated until a later phase
-    /// mirrors forge state.
+    /// The forge object it mirrors, once linked. `None` until a push creates the
+    /// object for a local comment, or on a comment imported without one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<ExternalRef>,
     /// The upstream version last reconciled with, once synced. Unpopulated until
@@ -516,6 +516,25 @@ fn fold_comment_event(
                 event.id,
                 CommentState::from_create(event, create, authored, seq),
             );
+        }
+        CommentEventKind::Link { forge_ref } => {
+            let comment = require_comment(comments, event.id, seq)?;
+            // A comment binds to one forge object for its whole life; a second
+            // link, or a link over an imported comment that already mirrors an
+            // object, conflicts with the binding in place rather than re-points
+            // it, so the log is corrupt.
+            if comment.origin.is_some() {
+                return Err(Error::InconsistentLog(format!(
+                    "record at seq {seq} links comment {} that already mirrors a forge object",
+                    event.id
+                )));
+            }
+            // Binding is bookkeeping, not a substantive change, so like a
+            // reanchor it stamps the time without reattributing the comment. The
+            // link's own forge_ref is authoritative and set after touch, so it
+            // wins over any origin the envelope folds forward.
+            comment.touch(event, event.authored_at.unwrap_or(at), seq);
+            comment.origin = Some(forge_ref.clone());
         }
         CommentEventKind::Edit { body } => {
             let comment = require_comment(comments, event.id, seq)?;
