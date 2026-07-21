@@ -2,16 +2,18 @@
 
 use std::path::Path;
 
+use ulid::Ulid;
 use wiff_core::hash::SidebandHash;
 use wiff_core::record::{
     Author, AuthorKind, Description, DescriptionRecord, DiffVersionRecord, FORMAT_VERSION,
-    FileSummary, Record, RecordBody, SessionHeader, SourceKind, VersionNumber,
+    FileSummary, ForgeUrl, Record, RecordBody, RevisionId, SessionHeader, SourceKind,
+    VersionNumber,
 };
 use wiff_core::review::DescriptionState;
 use wiff_core::session::read_records;
 use wiff_core::{
-    CapturedDiff, DiffSource, LockWait, ProjectIdentity, ReviewState, create_session,
-    set_description,
+    CapturedDiff, DiffSource, LockWait, ProjectIdentity, ReviewState, create_forge_session,
+    create_session, set_description,
 };
 use wiff_diff::FileStatus;
 
@@ -121,6 +123,113 @@ fn create_session_writes_header_version_and_sideband() {
     let sideband = log.sideband_dir().join("v0.diff");
     let written = std::fs::read_to_string(&sideband).unwrap();
     wince::assert_eq!(written, DIFF.to_string());
+}
+
+#[test]
+fn create_forge_session_binds_the_pull_request_under_the_chosen_ulid() {
+    let base = tempfile::tempdir().unwrap();
+    let forge = ForgeUrl::parse("https://github.com/octo/demo/pull/7").unwrap();
+    let session = Ulid::new();
+    let captured = CapturedDiff {
+        text: DIFF.to_string(),
+        source: SourceKind::Forge,
+        base_revision: Some(RevisionId("base".to_string())),
+        base_tip_relative: false,
+        head_revision: Some(RevisionId("head".to_string())),
+    };
+    let log = create_forge_session(
+        base.path(),
+        &identity(),
+        Path::new("/work"),
+        forge.clone(),
+        session,
+        &captured,
+        None,
+    )
+    .unwrap();
+
+    // The header takes the chosen ULID and records the bound pull request; the
+    // v0 version keeps the fetched base and head the diff was captured between.
+    wince::assert_eq!(log.ulid(), session);
+    let records = read_records(log.path()).unwrap();
+    let bodies: Vec<(u64, RecordBody)> = records
+        .iter()
+        .map(|Record { seq, body, .. }| (seq.get(), body.clone()))
+        .collect();
+    let expected = vec![
+        (
+            0,
+            RecordBody::Session(SessionHeader {
+                ulid: session,
+                version: FORMAT_VERSION,
+                project: "demo".to_string(),
+                repo_root: None,
+                cwd: "/work".to_string(),
+                source: SourceKind::Forge,
+                forge: Some(forge),
+            }),
+        ),
+        (
+            1,
+            RecordBody::DiffVersion(DiffVersionRecord {
+                number: VersionNumber(0),
+                diff_hash: SidebandHash::of(DIFF.as_bytes()),
+                base_revision: Some(RevisionId("base".to_string())),
+                base_tip_relative: false,
+                head_revision: Some(RevisionId("head".to_string())),
+                files: vec![
+                    FileSummary {
+                        old_path: "added.txt".to_string(),
+                        new_path: "added.txt".to_string(),
+                        status: FileStatus::Added,
+                        hunk_count: 1,
+                    },
+                    FileSummary {
+                        old_path: "src/main.rs".to_string(),
+                        new_path: "src/main.rs".to_string(),
+                        status: FileStatus::Modified,
+                        hunk_count: 1,
+                    },
+                ],
+            }),
+        ),
+    ];
+    wince::assert_eq!(bodies, expected);
+}
+
+#[test]
+fn create_forge_session_rejects_an_id_that_already_names_a_session() {
+    let base = tempfile::tempdir().unwrap();
+    let forge = ForgeUrl::parse("https://github.com/octo/demo/pull/7").unwrap();
+    let session = Ulid::new();
+    let captured = CapturedDiff {
+        text: DIFF.to_string(),
+        source: SourceKind::Forge,
+        base_revision: Some(RevisionId("base".to_string())),
+        base_tip_relative: false,
+        head_revision: Some(RevisionId("head".to_string())),
+    };
+    let make = || {
+        create_forge_session(
+            base.path(),
+            &identity(),
+            Path::new("/work"),
+            forge.clone(),
+            session,
+            &captured,
+            None,
+        )
+    };
+    make().expect("first import succeeds");
+
+    // A second import under the same id reports the collision as a distinct,
+    // matchable error rather than an opaque io failure.
+    let error = make().expect_err("the id is already taken");
+    wince::assert_eq!(
+        error.to_string(),
+        format!("session {session} already exists")
+    );
+    assert!(matches!(error, wiff_core::error::Error::SessionExists(id) if id == session));
 }
 
 #[test]

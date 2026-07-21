@@ -7,27 +7,77 @@
 
 use std::path::Path;
 
+use ulid::Ulid;
 use wiff_diff::parse::parse;
 
 use crate::error::{Error, Result};
 use crate::hash::SidebandHash;
 use crate::identity::ProjectIdentity;
 use crate::record::{
-    Author, Description, DiffVersionRecord, FORMAT_VERSION, FileSummary, RecordBody, RevisionId,
-    Seq, SessionHeader, VersionNumber,
+    Author, Description, DiffVersionRecord, FORMAT_VERSION, FileSummary, ForgeUrl, RecordBody,
+    RevisionId, Seq, SessionHeader, VersionNumber,
 };
 use crate::session::{SessionLock, SessionLog};
 use crate::source::CapturedDiff;
 
 /// Create a session for `identity` under `base`, capturing `captured` as its
 /// first diff version (`v0`) and, when given, an initial description with its
-/// author. The header, diff, and description are written under one held lock, in
-/// that order, so a concurrent reader never sees a partial session. Returns the
-/// open log positioned after the records written.
+/// author. Returns the open log positioned after the records written.
 pub fn create_session(
     base: &Path,
     identity: &ProjectIdentity,
     cwd: &Path,
+    captured: &CapturedDiff,
+    description: Option<(Author, Description)>,
+) -> Result<SessionLog> {
+    write_new_session(
+        base,
+        identity,
+        cwd,
+        None,
+        Ulid::new(),
+        captured,
+        description,
+    )
+}
+
+/// Create a session bound to the forge pull request at `forge`, like
+/// [`create_session`] but recording the binding and taking the caller-chosen
+/// `session` id that the forge import has already keyed its fetched pins on. The
+/// binding does not constrain `captured.source`: a repo-less import captures a
+/// [`Forge`](crate::record::SourceKind::Forge) diff, while an in-repo import
+/// binds a pull request to an [`Scm`](crate::record::SourceKind::Scm) source
+/// that refreshes against the local repository.
+pub fn create_forge_session(
+    base: &Path,
+    identity: &ProjectIdentity,
+    cwd: &Path,
+    forge: ForgeUrl,
+    session: Ulid,
+    captured: &CapturedDiff,
+    description: Option<(Author, Description)>,
+) -> Result<SessionLog> {
+    write_new_session(
+        base,
+        identity,
+        cwd,
+        Some(forge),
+        session,
+        captured,
+        description,
+    )
+}
+
+/// Write a new session's header, first diff version, and optional initial
+/// description under one held lock, in that order, so a concurrent reader never
+/// sees a partial session. `forge` records the bound pull request when the
+/// session is a forge import.
+fn write_new_session(
+    base: &Path,
+    identity: &ProjectIdentity,
+    cwd: &Path,
+    forge: Option<ForgeUrl>,
+    session: Ulid,
     captured: &CapturedDiff,
     description: Option<(Author, Description)>,
 ) -> Result<SessionLog> {
@@ -37,17 +87,18 @@ pub fn create_session(
         .map(|root| root.to_string_lossy().into_owned());
     let cwd_text = cwd.to_string_lossy().into_owned();
     let source = captured.source.clone();
-    let (mut log, mut lock) = SessionLog::create(base, &identity.canonical, |ulid| {
-        RecordBody::Session(SessionHeader {
-            ulid,
-            version: FORMAT_VERSION,
-            project: identity.canonical.clone(),
-            repo_root,
-            cwd: cwd_text,
-            source,
-            forge: None,
-        })
-    })?;
+    let (mut log, mut lock) =
+        SessionLog::create_with_ulid(base, &identity.canonical, session, |ulid| {
+            RecordBody::Session(SessionHeader {
+                ulid,
+                version: FORMAT_VERSION,
+                project: identity.canonical.clone(),
+                repo_root,
+                cwd: cwd_text,
+                source,
+                forge,
+            })
+        })?;
     write_diff_version(
         &mut log,
         &mut lock,

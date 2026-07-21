@@ -132,7 +132,21 @@ impl SessionLog {
         project: &str,
         build_header: impl FnOnce(Ulid) -> RecordBody,
     ) -> Result<(Self, SessionLock)> {
-        let ulid = Ulid::new();
+        Self::create_with_ulid(base, project, Ulid::new(), build_header)
+    }
+
+    /// Create a new session under a caller-chosen `ulid`, for a flow that keys
+    /// state on the session id before the session file exists: a forge import
+    /// writes its pins under the session's ULID, and must fetch into them before
+    /// the captured diff that the session is created from is in hand. An id that
+    /// already names a session is reported as [`Error::SessionExists`], which a
+    /// caller reusing the existing session can match on.
+    pub fn create_with_ulid(
+        base: &Path,
+        project: &str,
+        ulid: Ulid,
+        build_header: impl FnOnce(Ulid) -> RecordBody,
+    ) -> Result<(Self, SessionLock)> {
         let dir = sessions_root(base).join(project);
         std::fs::create_dir_all(&dir).map_err(|source| Error::io(&dir, source))?;
         let path = dir.join(format!("{ulid}.jsonl"));
@@ -140,7 +154,10 @@ impl SessionLog {
             .create_new(true)
             .append(true)
             .open(&path)
-            .map_err(|source| Error::io(&path, source))?;
+            .map_err(|source| match source.kind() {
+                std::io::ErrorKind::AlreadyExists => Error::SessionExists(ulid),
+                _ => Error::io(&path, source),
+            })?;
         let locked = Flock::lock(file, FlockArg::LockExclusive)
             .map_err(|(_, errno)| Error::io(&path, errno.into()))?;
         let mut lock = SessionLock {

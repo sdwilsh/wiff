@@ -75,6 +75,12 @@ pub enum Error {
     #[error("no session found for project {0}")]
     NoSession(String),
 
+    /// A session was created under an id that already names one. Reachable only
+    /// through the caller-chosen-id path, where a resync that re-imports a pull
+    /// request can detect the existing session and reuse it rather than fail.
+    #[error("session {0} already exists")]
+    SessionExists(Ulid),
+
     /// A session's records lacked the leading header, so it cannot be folded.
     #[error("session has no header record")]
     MissingHeader,
