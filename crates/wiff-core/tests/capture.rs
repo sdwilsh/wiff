@@ -246,6 +246,7 @@ fn create_session_writes_an_initial_description_after_the_diff() {
             }),
             comments: Vec::new(),
             verdicts: Vec::new(),
+            pushed_verdicts: Vec::new(),
         }
     );
 }

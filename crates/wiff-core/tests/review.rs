@@ -4,7 +4,7 @@ use time::OffsetDateTime;
 use ulid::Ulid;
 use wiff_core::comment::{
     delete_event, disposition_event, edit_event, import_create, import_delete, import_edit,
-    import_resolve, link_event, reanchor_event, resolve_event,
+    import_resolve, link_event, reanchor_event, resolve_event, sync_marker_event,
 };
 use wiff_core::record::{
     Anchor, Author, AuthorKind, CommentCreate, CommentEvent, CommentEventKind, CommentNumber,
@@ -263,6 +263,7 @@ fn folds_versions_and_comment_chains() {
             },
         ],
         verdicts: Vec::new(),
+        pushed_verdicts: Vec::new(),
     };
     wince::assert_eq!(state, expected);
     wince::assert_eq!(state.latest_version(), Some(&version(1, "src/lib.rs")));
@@ -503,6 +504,126 @@ fn linking_an_already_linked_comment_is_a_corrupt_log() {
     wince::snapshot_display!(
         error,
         "inconsistent session log: record at seq 4 links comment 00000000000000000000000000 that already mirrors a forge object"
+    );
+}
+
+#[test]
+fn a_marker_advance_records_a_pushed_edit_and_resolve_as_synced() {
+    // A comment linked at "first wording", then edited and resolved locally, has
+    // a synced marker that no longer matches its body or resolution: those are
+    // the unpushed changes push finds. Push publishes the edit and the resolve
+    // as separate writes and appends a marker-advance for each, advancing that
+    // one field alone. Once both have run the divergence is gone, without
+    // disturbing the body, resolution, or the resolve's attribution.
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            create_event(
+                comment_a(),
+                human("wez"),
+                CommentTarget::Review,
+                0,
+                None,
+                "first wording",
+            ),
+        ),
+        rec(
+            3,
+            link_event(
+                comment_a(),
+                human("wez"),
+                review_comment_ref("610"),
+                comment_body_marker("first wording"),
+            ),
+        ),
+        rec(
+            4,
+            edit_event(comment_a(), human("wez"), "sharper wording".to_string()),
+        ),
+        rec(5, resolve_event(comment_a(), human("wez"), true)),
+        rec(
+            6,
+            sync_marker_event(
+                comment_a(),
+                human("wez"),
+                Some(comment_body_marker("sharper wording")),
+                None,
+            ),
+        ),
+        rec(
+            7,
+            sync_marker_event(comment_a(), human("wez"), None, Some(true)),
+        ),
+    ];
+
+    let state = fold(&records).unwrap();
+
+    wince::assert_eq!(
+        state.comments,
+        vec![CommentState {
+            id: comment_a(),
+            author: human("wez"),
+            target: CommentTarget::Review,
+            version: VersionNumber(0),
+            anchor: None,
+            body: "sharper wording".to_string(),
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+            updated_by: human("wez"),
+            resolved: true,
+            resolved_by: Some(human("wez")),
+            resolved_at: Some(OffsetDateTime::UNIX_EPOCH),
+            deleted: false,
+            deleted_by: None,
+            deleted_at: None,
+            disposition: None,
+            confidence: None,
+            origin: Some(review_comment_ref("610")),
+            synced: Some(SyncedState {
+                body_marker: comment_body_marker("sharper wording"),
+                resolved: true,
+            }),
+            number: Some(CommentNumber(1)),
+            created_seq: Seq(2),
+            updated_seq: Seq(5),
+        }]
+    );
+}
+
+#[test]
+fn advancing_the_marker_of_an_unlinked_comment_is_a_corrupt_log() {
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            create_event(
+                comment_a(),
+                human("wez"),
+                CommentTarget::Review,
+                0,
+                None,
+                "never linked",
+            ),
+        ),
+        rec(
+            3,
+            sync_marker_event(
+                comment_a(),
+                human("wez"),
+                Some(comment_body_marker("never linked")),
+                Some(false),
+            ),
+        ),
+    ];
+
+    let error = fold(&records).unwrap_err();
+    wince::assert_eq!(matches!(error, Error::InconsistentLog(_)), true);
+    wince::snapshot_display!(
+        error,
+        "inconsistent session log: record at seq 3 advances the synced marker of comment 00000000000000000000000000 that mirrors no forge object"
     );
 }
 

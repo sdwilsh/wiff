@@ -3,12 +3,12 @@
 use time::OffsetDateTime;
 use time::macros::datetime;
 use ulid::Ulid;
-use wiff_core::comment::{edit_event, link_event, resolve_event};
+use wiff_core::comment::{disposition_event, edit_event, link_event, resolve_event};
 use wiff_core::record::{
     Author, AuthorKind, CommentCreate, CommentEvent, CommentEventKind, CommentTarget, Description,
     DescriptionRecord, DiffVersionRecord, Disposition, ExternalKind, ExternalRef, FORMAT_VERSION,
     ForgeId, Record, RecordBody, RevisionId, ScmSource, Seq, SessionHeader, SourceKind, TipRule,
-    VersionNumber, comment_body_marker,
+    VerdictSyncRecord, VersionNumber, comment_body_marker,
 };
 use wiff_core::review::{ReviewState, fold};
 use wiff_core::{BaseRuleset, ScmType};
@@ -453,5 +453,138 @@ fn a_description_matching_its_synced_marker_plans_nothing() {
         "    resolves: [],\n",
         "    description: None,\n",
         "}",
+    );
+}
+
+#[test]
+fn a_verdict_never_pushed_submits_a_review_with_no_fresh_inline_comments() {
+    // wez's only verdict is on an already-linked comment, so there is no fresh
+    // inline comment to batch. With no pushed-verdict marker the verdict counts
+    // as unsent, so a review submits on its own with the disposition and no
+    // comments.
+    let events = vec![
+        create_with(
+            1,
+            "wez",
+            CommentTarget::Review,
+            "looks good",
+            Some(Disposition::Approve),
+        ),
+        link_event(
+            Ulid::from(1u128),
+            human("wez"),
+            origin("903"),
+            comment_body_marker("looks good"),
+        ),
+    ];
+
+    #[rustfmt::skip]
+    wince::snapshot_str!(
+        format!("{:#?}", plan(events)),
+        r#"PushPlan {
+    review: Some(
+        OutgoingReview {
+            disposition: Some(
+                Approve,
+            ),
+            body: "",
+            comments: [],
+        },
+    ),
+    posts: [],
+    edits: [],
+    resolves: [],
+    description: None,
+}"#,
+    );
+}
+
+#[test]
+fn a_verdict_matching_its_pushed_marker_plans_nothing() {
+    // The same approve, now recorded as already pushed. Current and last-pushed
+    // agree, and there is no other work, so the plan is empty.
+    let events = vec![
+        create_with(
+            1,
+            "wez",
+            CommentTarget::Review,
+            "looks good",
+            Some(Disposition::Approve),
+        ),
+        link_event(
+            Ulid::from(1u128),
+            human("wez"),
+            origin("903"),
+            comment_body_marker("looks good"),
+        ),
+        RecordBody::VerdictSync(VerdictSyncRecord {
+            author: human("wez"),
+            disposition: Disposition::Approve,
+        }),
+    ];
+    let plan = plan(events);
+    wince::assert_eq!(plan.is_empty(), true);
+    #[rustfmt::skip]
+    wince::snapshot_str!(
+        format!("{plan:#?}"),
+        "PushPlan {\n",
+        "    review: None,\n",
+        "    posts: [],\n",
+        "    edits: [],\n",
+        "    resolves: [],\n",
+        "    description: None,\n",
+        "}",
+    );
+}
+
+#[test]
+fn a_verdict_changed_since_it_was_pushed_replans_a_review_with_the_new_disposition() {
+    // wez pushed an approve, then changed their mind to request changes. The
+    // current verdict differs from the pushed one, so a review re-plans with the
+    // new disposition and no fresh inline comments (the comment is already
+    // linked).
+    let events = vec![
+        create_with(
+            1,
+            "wez",
+            CommentTarget::Review,
+            "looks good",
+            Some(Disposition::Approve),
+        ),
+        link_event(
+            Ulid::from(1u128),
+            human("wez"),
+            origin("903"),
+            comment_body_marker("looks good"),
+        ),
+        RecordBody::VerdictSync(VerdictSyncRecord {
+            author: human("wez"),
+            disposition: Disposition::Approve,
+        }),
+        disposition_event(
+            Ulid::from(1u128),
+            human("wez"),
+            Some(Disposition::RequestChanges),
+        ),
+    ];
+
+    #[rustfmt::skip]
+    wince::snapshot_str!(
+        format!("{:#?}", plan(events)),
+        r#"PushPlan {
+    review: Some(
+        OutgoingReview {
+            disposition: Some(
+                RequestChanges,
+            ),
+            body: "",
+            comments: [],
+        },
+    ),
+    posts: [],
+    edits: [],
+    resolves: [],
+    description: None,
+}"#,
     );
 }

@@ -335,6 +335,26 @@ pub fn delete_event(id: Ulid, author: Author) -> RecordBody {
     comment_event(id, author, CommentEventKind::Delete)
 }
 
+/// Build a marker-advance event for the already-linked comment `id` by
+/// `author`, recording that its body and resolution match the forge after push
+/// published them. Pass `body_marker` or `resolved` only for the write that
+/// reached the forge, leaving the other `None` so its marker stays put.
+pub fn sync_marker_event(
+    id: Ulid,
+    author: Author,
+    body_marker: Option<BodyMarker>,
+    resolved: Option<bool>,
+) -> RecordBody {
+    comment_event(
+        id,
+        author,
+        CommentEventKind::Synced {
+            body_marker,
+            resolved,
+        },
+    )
+}
+
 /// Build a set-verdict event for `id` by `author`, or a clear when `disposition`
 /// is `None`.
 pub fn disposition_event(id: Ulid, author: Author, disposition: Option<Disposition>) -> RecordBody {

@@ -304,6 +304,7 @@ mod fixture {
                     disposition: Disposition::RequestChanges,
                 },
             ],
+            pushed_verdicts: Vec::new(),
         }
     }
 }

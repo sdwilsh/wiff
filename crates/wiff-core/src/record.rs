@@ -263,10 +263,23 @@ pub enum RecordBody {
     CommentEvent(CommentEvent),
     /// A revision of the review's description.
     Description(DescriptionRecord),
+    /// A record that a push submitted an actor's verdict to the forge.
+    VerdictSync(VerdictSyncRecord),
     /// An unrecognized record type. A compatible-version log should never
     /// contain one, so folding rejects it as corrupt.
     #[serde(other)]
     Unknown,
+}
+
+/// An actor's verdict as a push last submitted it to the forge. A verdict is
+/// derived from an actor's comments and has no forge object of its own to bind,
+/// so this stands in for a comment's synced marker.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VerdictSyncRecord {
+    /// Whose verdict was submitted.
+    pub author: Author,
+    /// The verdict that was submitted for this author.
+    pub disposition: Disposition,
 }
 
 /// The first record of a session: format version, project, and how the diff was
@@ -744,6 +757,24 @@ pub enum CommentEventKind {
     Resolve {
         /// The new resolved state.
         resolved: bool,
+    },
+    /// Advance an already-linked comment's synced marker after push publishes
+    /// its body or resolution. Moves the marker alone; the body, resolution, and
+    /// attribution are untouched. Unlike an imported `Edit` or `Resolve`, which
+    /// advance the marker as a side effect of mirroring a forge-side change,
+    /// this makes no change of its own. Body and resolution advance
+    /// independently: a push publishes the edit and the resolve as separate
+    /// writes, either of which can succeed alone, so each field is set only when
+    /// that write reached the forge and left `None` otherwise.
+    Synced {
+        /// Fingerprint of the body now on the forge, from [`comment_body_marker`],
+        /// or `None` when this event does not advance the body marker.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        body_marker: Option<BodyMarker>,
+        /// The resolution now on the forge, or `None` when this event does not
+        /// advance the resolution marker.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resolved: Option<bool>,
     },
     /// Withdraw a comment (a tombstone).
     Delete,

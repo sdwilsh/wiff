@@ -10,9 +10,10 @@
 
 use ulid::Ulid;
 use wiff_core::record::{
-    Author, CommentTarget, Description, DiffVersionRecord, ExternalRef, RevisionId, VersionNumber,
-    comment_body_marker,
+    Author, CommentTarget, Description, DiffVersionRecord, Disposition, ExternalRef, RevisionId,
+    VersionNumber, comment_body_marker,
 };
+use wiff_core::review::ActorVerdict;
 use wiff_core::{CommentState, ReviewState};
 
 use crate::types::{ForgeAnchor, OutgoingComment, OutgoingReview};
@@ -24,8 +25,9 @@ use crate::types::{ForgeAnchor, OutgoingComment, OutgoingReview};
 /// once that write is folded in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PushPlan {
-    /// The batched review to submit, present when there are fresh inline
-    /// comments to anchor; the pusher's verdict is submitted with it.
+    /// The review to submit, present when there are fresh inline comments to
+    /// anchor or the pusher's verdict differs from the one last pushed. It
+    /// submits the pusher's verdict together with any fresh inline comments.
     pub review: Option<OutgoingReview>,
     /// Standalone comments to post one at a time: fresh review-level comments
     /// and replies whose parent is already linked.
@@ -132,12 +134,18 @@ pub fn plan_push(state: &ReviewState, author: &Author) -> PushPlan {
         }
     }
 
-    let review = (!inline.is_empty()).then(|| OutgoingReview {
-        disposition: state
-            .verdicts
-            .iter()
-            .find(|verdict| &verdict.author == author)
-            .map(|verdict| verdict.disposition),
+    let my_verdict = author_disposition(&state.verdicts, author);
+    // A verdict that has changed since it was last submitted must go up even
+    // with no fresh inline comments to batch; an unchanged one already sent by
+    // an earlier push does not resubmit. Submitting a verdict is one-way: a
+    // verdict cleared or withdrawn after being pushed is not retracted from the
+    // forge, since a review submission can only add a verdict, never rescind
+    // one. The `is_some` guard holds that line until a forge that can express
+    // retraction needs it.
+    let verdict_unsent =
+        my_verdict.is_some() && my_verdict != author_disposition(&state.pushed_verdicts, author);
+    let review = (!inline.is_empty() || verdict_unsent).then(|| OutgoingReview {
+        disposition: my_verdict,
         body: String::new(),
         comments: inline,
     });
@@ -149,6 +157,15 @@ pub fn plan_push(state: &ReviewState, author: &Author) -> PushPlan {
         resolves,
         description: unsent_description(state),
     }
+}
+
+/// The disposition `author` holds among `verdicts`, or `None` when they hold
+/// none.
+fn author_disposition(verdicts: &[ActorVerdict], author: &Author) -> Option<Disposition> {
+    verdicts
+        .iter()
+        .find(|verdict| &verdict.author == author)
+        .map(|verdict| verdict.disposition)
 }
 
 /// Returns the outgoing form of `comment` placed per `anchor` and `reply_to`.

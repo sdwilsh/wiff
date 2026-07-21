@@ -39,6 +39,10 @@ pub struct ReviewState {
     /// dispositions. An actor without an active verdict is absent.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub verdicts: Vec<ActorVerdict>,
+    /// Each actor's verdict as a push last submitted it to the forge. An actor
+    /// whose verdict has never been pushed is absent.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pushed_verdicts: Vec<ActorVerdict>,
 }
 
 /// The body fingerprint and resolution a comment last synced with the forge.
@@ -378,6 +382,7 @@ pub fn fold(records: &[Record]) -> Result<ReviewState> {
     let mut description: Option<DescriptionState> = None;
     let mut order: Vec<Ulid> = Vec::new();
     let mut comments: HashMap<Ulid, CommentState> = HashMap::new();
+    let mut pushed_verdicts: Vec<ActorVerdict> = Vec::new();
 
     for record in records {
         let seq = record.seq;
@@ -403,6 +408,18 @@ pub fn fold(records: &[Record]) -> Result<ReviewState> {
             }
             RecordBody::CommentEvent(event) => {
                 fold_comment_event(&mut comments, &mut order, event, at, seq)?;
+            }
+            RecordBody::VerdictSync(record) => {
+                match pushed_verdicts
+                    .iter_mut()
+                    .find(|verdict| verdict.author == record.author)
+                {
+                    Some(verdict) => verdict.disposition = record.disposition,
+                    None => pushed_verdicts.push(ActorVerdict {
+                        author: record.author.clone(),
+                        disposition: record.disposition,
+                    }),
+                }
             }
             RecordBody::Unknown => {
                 return Err(Error::InconsistentLog(format!(
@@ -433,6 +450,7 @@ pub fn fold(records: &[Record]) -> Result<ReviewState> {
         description,
         comments,
         verdicts,
+        pushed_verdicts,
     })
 }
 
@@ -607,6 +625,27 @@ fn fold_comment_event(
             // a local one leaves it for push to send.
             if event.origin.is_some() {
                 comment.mark_synced_resolved(*resolved);
+            }
+        }
+        CommentEventKind::Synced {
+            body_marker,
+            resolved,
+        } => {
+            let comment = require_comment(comments, event.id, seq)?;
+            // Only a comment that mirrors a forge object has a marker to move;
+            // advancing one on an unlinked comment is a corrupt log rather than
+            // a no-op.
+            let Some(synced) = &mut comment.synced else {
+                return Err(Error::InconsistentLog(format!(
+                    "record at seq {seq} advances the synced marker of comment {} that mirrors no forge object",
+                    event.id
+                )));
+            };
+            if let Some(body_marker) = body_marker {
+                synced.body_marker = body_marker.clone();
+            }
+            if let Some(resolved) = resolved {
+                synced.resolved = *resolved;
             }
         }
         CommentEventKind::Delete => {
