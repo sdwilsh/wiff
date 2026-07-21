@@ -12,12 +12,14 @@ pub mod config;
 pub mod error;
 pub mod github;
 pub mod pull;
+pub mod push;
 pub mod types;
 
 pub use config::{ForgeHost, ForgeTable, TokenOverride, resolve_token};
 pub use error::Unsupported;
 pub use github::GithubForge;
 pub use pull::{reconcile_comments, reconcile_description, reconcile_reviews};
+pub use push::{PushEdit, PushPlan, PushResolve, plan_push};
 pub use types::{
     FetchedComment, FetchedDescription, FetchedPullRequest, FetchedReview, ForgeAnchor,
     NewPullRequest, OutgoingComment, OutgoingReview, Resolution, SubmittedReview,
