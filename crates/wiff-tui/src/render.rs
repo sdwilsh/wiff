@@ -2707,6 +2707,7 @@ mod tests {
             disposition: None,
             confidence: None,
             origin: None,
+            synced: None,
             // This hand-built state feeds rendering directly, so the number is
             // whatever the snapshot asserts, not a fold's output. Fixtures pass
             // ids in create order, so reusing the id as the number reads

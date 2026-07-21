@@ -15,8 +15,9 @@ use wiff_diff::{Diff, FileDiff, LineNo, Side};
 
 use crate::error::{Error, Result};
 use crate::record::{
-    Anchor, Author, CommentCreate, CommentEvent, CommentEventKind, CommentReanchor, CommentTarget,
-    DiffVersionRecord, Disposition, ExternalRef, Record, RecordBody, Seq, VersionNumber,
+    Anchor, Author, BodyMarker, CommentCreate, CommentEvent, CommentEventKind, CommentReanchor,
+    CommentTarget, DiffVersionRecord, Disposition, ExternalRef, Record, RecordBody, Seq,
+    VersionNumber,
 };
 use crate::review::{CommentState, fold};
 use crate::session::{LockWait, SessionLog};
@@ -347,9 +348,22 @@ pub fn reanchor_event(id: Ulid, author: Author, reanchor: CommentReanchor) -> Re
 }
 
 /// Build a link event binding comment `id` to `forge_ref`, the forge object a
-/// push created for it, by `author`.
-pub fn link_event(id: Ulid, author: Author, forge_ref: ExternalRef) -> RecordBody {
-    comment_event(id, author, CommentEventKind::Link { forge_ref })
+/// push created for it, by `author`. `synced_marker` fingerprints the body the
+/// forge echoed back, recorded as the comment's synced marker.
+pub fn link_event(
+    id: Ulid,
+    author: Author,
+    forge_ref: ExternalRef,
+    synced_marker: BodyMarker,
+) -> RecordBody {
+    comment_event(
+        id,
+        author,
+        CommentEventKind::Link {
+            forge_ref,
+            synced_marker,
+        },
+    )
 }
 
 /// Build an imported create for a new comment `id` mirroring `origin`, the forge

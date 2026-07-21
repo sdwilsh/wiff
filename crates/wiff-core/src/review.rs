@@ -16,9 +16,10 @@ use ulid::Ulid;
 
 use crate::error::{Error, Result};
 use crate::record::{
-    Anchor, Author, CommentCreate, CommentEvent, CommentEventKind, CommentNumber, CommentRef,
-    CommentTarget, Confidence, Description, DescriptionRecord, DiffVersionRecord, Disposition,
-    ExternalRef, FORMAT_VERSION, Record, RecordBody, Seq, SessionHeader, VersionNumber,
+    Anchor, Author, BodyMarker, CommentCreate, CommentEvent, CommentEventKind, CommentNumber,
+    CommentRef, CommentTarget, Confidence, Description, DescriptionRecord, DiffVersionRecord,
+    Disposition, ExternalRef, FORMAT_VERSION, Record, RecordBody, Seq, SessionHeader,
+    VersionNumber, comment_body_marker,
 };
 use crate::session::read_records;
 
@@ -38,6 +39,15 @@ pub struct ReviewState {
     /// dispositions. An actor without an active verdict is absent.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub verdicts: Vec<ActorVerdict>,
+}
+
+/// The body fingerprint and resolution a comment last synced with the forge.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SyncedState {
+    /// Fingerprint of the last-synced body, from [`comment_body_marker`].
+    pub body_marker: BodyMarker,
+    /// The last-synced resolution.
+    pub resolved: bool,
 }
 
 /// An actor's current verdict across the review.
@@ -224,6 +234,12 @@ pub struct CommentState {
     /// object for a local comment, or on a comment imported without one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<ExternalRef>,
+    /// The forge state this comment last synced with, present once it mirrors a
+    /// forge object. A reconcile compares the forge's current state against this
+    /// rather than against the local state, so an unpushed local edit is told
+    /// apart from a genuine forge-side change and preserved for push to send.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synced: Option<SyncedState>,
     /// This comment's review-scoped human handle, assigned by the fold from its
     /// create-order. `None` on a comment not yet committed (a TUI draft preview)
     /// or a synthesized render-only comment, neither of which has a stable
@@ -267,6 +283,13 @@ impl CommentState {
             disposition: create.disposition,
             confidence: None,
             origin: event.origin.clone(),
+            // An imported create fingerprints the forge body it mirrors as the
+            // comment's first synced marker; a locally authored create has no
+            // forge state yet.
+            synced: event.origin.as_ref().map(|_| SyncedState {
+                body_marker: comment_body_marker(&create.body),
+                resolved: false,
+            }),
             number: None,
             created_seq: seq,
             updated_seq: seq,
@@ -305,6 +328,26 @@ impl CommentState {
         let already_named = (self.deleted && self.deleted_by.as_ref() == Some(&self.updated_by))
             || (self.resolved && self.resolved_by.as_ref() == Some(&self.updated_by));
         (!already_named).then_some(&self.updated_by)
+    }
+
+    /// Advance the synced marker's body to `body`, recording that the body now
+    /// matches the forge. Only a comment that already mirrors a forge object is
+    /// synced, so a comment without a marker is left as is rather than seeded
+    /// from local state; the next reconcile then re-imports rather than dropping
+    /// an unpushed edit.
+    fn mark_synced_body(&mut self, body: &str) {
+        if let Some(sync) = &mut self.synced {
+            sync.body_marker = comment_body_marker(body);
+        }
+    }
+
+    /// Advance the synced marker's resolution to `resolved`, recording that the
+    /// resolution now matches the forge. Left as is when the comment has no
+    /// marker, for the same reason as [`mark_synced_body`](Self::mark_synced_body).
+    fn mark_synced_resolved(&mut self, resolved: bool) {
+        if let Some(sync) = &mut self.synced {
+            sync.resolved = resolved;
+        }
     }
 
     /// Stamp the time and sequence of the latest record to touch this comment,
@@ -508,7 +551,10 @@ fn fold_comment_event(
                 CommentState::from_create(event, create, authored, seq),
             );
         }
-        CommentEventKind::Link { forge_ref } => {
+        CommentEventKind::Link {
+            forge_ref,
+            synced_marker,
+        } => {
             let comment = require_comment(comments, event.id, seq)?;
             // A comment binds to one forge object for its whole life; a second
             // link, or a link over an imported comment that already mirrors an
@@ -526,12 +572,28 @@ fn fold_comment_event(
             // wins over any origin the envelope folds forward.
             comment.touch(event, event.authored_at.unwrap_or(at), seq);
             comment.origin = Some(forge_ref.clone());
+            // The forge echoes the created body, which it may have normalized;
+            // record that echo's fingerprint, not the local text's. Push creates
+            // a fresh, unresolved thread, so the synced resolution is false; a
+            // comment resolved locally before it was linked keeps that unpushed
+            // resolution for push to send rather than having it reverted on the
+            // next pull.
+            comment.synced = Some(SyncedState {
+                body_marker: synced_marker.clone(),
+                resolved: false,
+            });
         }
         CommentEventKind::Edit { body } => {
             let comment = require_comment(comments, event.id, seq)?;
             comment.body = body.clone();
             comment.updated_by = event.author.clone();
             comment.touch(event, event.authored_at.unwrap_or(at), seq);
+            // An imported edit mirrors the forge's body; advance the synced
+            // marker so a later reconcile does not re-import it. A local edit
+            // leaves the marker, keeping the unpushed change for push to send.
+            if event.origin.is_some() {
+                comment.mark_synced_body(body);
+            }
         }
         CommentEventKind::Resolve { resolved } => {
             let comment = require_comment(comments, event.id, seq)?;
@@ -541,6 +603,11 @@ fn fold_comment_event(
             comment.resolved_at = Some(when);
             comment.updated_by = event.author.clone();
             comment.touch(event, when, seq);
+            // As with an edit, an imported resolve advances the synced marker;
+            // a local one leaves it for push to send.
+            if event.origin.is_some() {
+                comment.mark_synced_resolved(*resolved);
+            }
         }
         CommentEventKind::Delete => {
             let comment = require_comment(comments, event.id, seq)?;

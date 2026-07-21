@@ -3,10 +3,12 @@
 use time::OffsetDateTime;
 use time::macros::datetime;
 use ulid::Ulid;
+use wiff_core::comment::{edit_event, link_event, resolve_event};
 use wiff_core::record::{
-    Author, AuthorKind, Description, DescriptionRecord, Disposition, ExternalKind, ExternalRef,
-    FORMAT_VERSION, ForgeId, Record, RecordBody, RevisionId, ScmSource, Seq, SessionHeader,
-    SourceKind, TipRule, VersionNumber,
+    Author, AuthorKind, CommentCreate, CommentEvent, CommentEventKind, CommentTarget, Description,
+    DescriptionRecord, Disposition, ExternalKind, ExternalRef, FORMAT_VERSION, ForgeId, Record,
+    RecordBody, RevisionId, ScmSource, Seq, SessionHeader, SourceKind, TipRule, VersionNumber,
+    comment_body_marker,
 };
 use wiff_core::review::{CommentState, DescriptionState, ReviewState, fold};
 use wiff_core::{BaseRuleset, ScmType};
@@ -72,6 +74,24 @@ fn inline(path: &str, side: Side, line: u32) -> ForgeAnchor {
         end_line: LineNo::new(line).unwrap(),
         commit: RevisionId("cafe".to_string()),
     }
+}
+
+/// A locally authored review-level comment `id` by `author`, the kind push
+/// later links to the forge object it creates.
+fn local_comment(id: u128, author: &str, body: &str) -> RecordBody {
+    RecordBody::CommentEvent(CommentEvent {
+        id: Ulid::from(id),
+        author: human(author),
+        authored_at: None,
+        origin: None,
+        kind: CommentEventKind::Create(CommentCreate {
+            target: CommentTarget::Review,
+            version: VersionNumber(0),
+            anchor: None,
+            body: body.to_string(),
+            disposition: None,
+        }),
+    })
 }
 
 fn comment(id: &str, author: &str, body: &str) -> FetchedComment {
@@ -256,6 +276,10 @@ fn a_fresh_pull_imports_every_comment_placement() {
       "kind": "review_comment",
       "id": "c1"
     },
+    "synced": {
+      "body_marker": "d75a9870640dfd28f183fc10c0974860b223fd3b0ee31caa3ca25b346a62fbb1",
+      "resolved": false
+    },
     "number": 1,
     "created_seq": 1,
     "updated_seq": 1
@@ -290,6 +314,10 @@ fn a_fresh_pull_imports_every_comment_placement() {
       },
       "kind": "review_comment",
       "id": "c2"
+    },
+    "synced": {
+      "body_marker": "930f07b2b6f657214b6b0544d98aa6f14dc7dc977410ea41edbf9162c60bf422",
+      "resolved": false
     },
     "number": 2,
     "created_seq": 2,
@@ -326,6 +354,10 @@ fn a_fresh_pull_imports_every_comment_placement() {
       },
       "kind": "review_comment",
       "id": "c3"
+    },
+    "synced": {
+      "body_marker": "5f903bcb5c42acde7fbb14f34653fa059acd33d1abac9595b7578b1a2a59e643",
+      "resolved": false
     },
     "number": 3,
     "created_seq": 3,
@@ -381,6 +413,10 @@ fn a_fresh_pull_imports_every_comment_placement() {
       "kind": "review_comment",
       "id": "c4"
     },
+    "synced": {
+      "body_marker": "51fb362af78f2a2904e7ff682a0bfd35216597fe290c6c9fa48f44bc4c4b4984",
+      "resolved": true
+    },
     "number": 4,
     "created_seq": 4,
     "updated_seq": 5
@@ -417,6 +453,10 @@ fn a_fresh_pull_imports_every_comment_placement() {
       "kind": "review_comment",
       "id": "c5"
     },
+    "synced": {
+      "body_marker": "2c27a12863176efe1eb7e80b7f76542666e9470ed02f071c00ec155a77dcc5d6",
+      "resolved": false
+    },
     "number": 5,
     "created_seq": 6,
     "updated_seq": 6
@@ -431,6 +471,125 @@ fn re_pulling_an_unchanged_request_appends_nothing() {
     let existing = fold_events(first);
     let again = reconcile_comments(&fetched(), &existing, &diff(), VersionNumber(0), ids());
     wince::assert_eq!(again, Vec::<RecordBody>::new());
+}
+
+#[test]
+fn a_local_edit_of_a_linked_comment_survives_an_unchanged_pull() {
+    let first = reconcile_comments(&fetched(), &[], &diff(), VersionNumber(0), ids());
+
+    // Edit and resolve an imported comment locally, without pushing it; the
+    // forge still holds the original body and an unresolved thread.
+    let imported = fold_events(first.clone());
+    let target = imported[0].id;
+    let mut local = first;
+    local.push(edit_event(
+        target,
+        human("wez"),
+        "sharper local wording".to_string(),
+    ));
+    local.push(resolve_event(target, human("wez"), true));
+    let existing = fold_events(local);
+
+    // Re-pulling the unchanged request must not import the forge's stale body or
+    // resolution over the unpushed local change; it leaves the comment for push
+    // to send, so reconcile appends nothing.
+    let again = reconcile_comments(&fetched(), &existing, &diff(), VersionNumber(0), ids());
+    wince::assert_eq!(again, Vec::<RecordBody>::new());
+}
+
+#[test]
+fn a_local_resolve_of_a_freshly_linked_comment_survives_an_unchanged_pull() {
+    // A locally authored comment, resolved before it was pushed, then linked to
+    // the forge object push created for it. Push opens a fresh, unresolved
+    // thread, so the local resolution is not yet on the forge.
+    let body = "needs a test";
+    let id = 1u128;
+    let local = vec![
+        local_comment(id, "wez", body),
+        resolve_event(Ulid::from(id), human("wez"), true),
+        link_event(
+            Ulid::from(id),
+            human("wez"),
+            origin("c1"),
+            comment_body_marker(body),
+        ),
+    ];
+    let existing = fold_events(local);
+
+    // The forge holds the same body and an unresolved thread. Re-pulling must
+    // not import a resolve back to unresolved over the unpushed local one; it
+    // leaves the resolution for push to send, so reconcile appends nothing.
+    let forge = vec![comment("c1", "wez", body)];
+    let again = reconcile_comments(&forge, &existing, &diff(), VersionNumber(0), ids());
+    wince::assert_eq!(again, Vec::<RecordBody>::new());
+}
+
+#[test]
+fn a_concurrent_forge_edit_wins_over_an_unpushed_local_edit() {
+    // Import a review-level comment, then edit it locally without pushing.
+    let forge = vec![comment("c2", "bob", "overall this looks fine")];
+    let first = reconcile_comments(&forge, &[], &diff(), VersionNumber(0), ids());
+    let target = fold_events(first.clone())[0].id;
+    let local_edit = edit_event(target, human("wez"), "local rewording".to_string());
+    let mut existing_events = first.clone();
+    existing_events.push(local_edit.clone());
+    let existing = fold_events(existing_events);
+
+    // The forge's copy of that comment also changed since the last sync. Both
+    // sides diverged from the marker, so the forge wins: its edit imports over
+    // the unpushed local one and folding the whole history leaves the comment
+    // holding the forge's body.
+    let changed = vec![comment("c2", "bob", "on reflection, needs work")];
+    let second = reconcile_comments(&changed, &existing, &diff(), VersionNumber(0), ids());
+    let mut all = first;
+    all.push(local_edit);
+    all.extend(second);
+    let comments = fold_events(all);
+    #[rustfmt::skip]
+    wince::snapshot_str!(
+        as_json(&comments),
+        r#"[
+  {
+    "id": "00000000000000000000000001",
+    "author": {
+      "name": "bob",
+      "kind": "human"
+    },
+    "target": {
+      "target": "review"
+    },
+    "version": 0,
+    "anchor": null,
+    "body": "on reflection, needs work",
+    "created_at": "2024-03-01T12:00:00Z",
+    "updated_at": "2024-03-01T12:00:00Z",
+    "updated_by": {
+      "name": "bob",
+      "kind": "human"
+    },
+    "resolved": false,
+    "resolved_by": null,
+    "deleted": false,
+    "deleted_by": null,
+    "confidence": null,
+    "origin": {
+      "forge": {
+        "provider": "github",
+        "host": "github.com"
+      },
+      "kind": "review_comment",
+      "id": "c2"
+    },
+    "synced": {
+      "body_marker": "9b6ea62cc395b2a1764c1f18b3893fc3fa9cf2fd6ea3da3181385c76a3138b2e",
+      "resolved": false
+    },
+    "number": 1,
+    "created_seq": 1,
+    "updated_seq": 3
+  }
+]"#,
+    );
 }
 
 #[test]
@@ -501,6 +660,10 @@ fn a_later_pull_edits_resolves_and_withdraws() {
       "kind": "review_comment",
       "id": "c1"
     },
+    "synced": {
+      "body_marker": "d75a9870640dfd28f183fc10c0974860b223fd3b0ee31caa3ca25b346a62fbb1",
+      "resolved": false
+    },
     "number": 1,
     "created_seq": 1,
     "updated_seq": 1
@@ -540,6 +703,10 @@ fn a_later_pull_edits_resolves_and_withdraws() {
       "kind": "review_comment",
       "id": "c2"
     },
+    "synced": {
+      "body_marker": "12a42d035cad7d132837fd3fde8dd6181214941741e8ba249530b38785a9016a",
+      "resolved": true
+    },
     "number": 2,
     "created_seq": 2,
     "updated_seq": 8
@@ -575,6 +742,10 @@ fn a_later_pull_edits_resolves_and_withdraws() {
       },
       "kind": "review_comment",
       "id": "c3"
+    },
+    "synced": {
+      "body_marker": "5f903bcb5c42acde7fbb14f34653fa059acd33d1abac9595b7578b1a2a59e643",
+      "resolved": false
     },
     "number": 3,
     "created_seq": 3,
@@ -630,6 +801,10 @@ fn a_later_pull_edits_resolves_and_withdraws() {
       "kind": "review_comment",
       "id": "c4"
     },
+    "synced": {
+      "body_marker": "51fb362af78f2a2904e7ff682a0bfd35216597fe290c6c9fa48f44bc4c4b4984",
+      "resolved": true
+    },
     "number": 4,
     "created_seq": 4,
     "updated_seq": 5
@@ -669,6 +844,10 @@ fn a_later_pull_edits_resolves_and_withdraws() {
       },
       "kind": "review_comment",
       "id": "c5"
+    },
+    "synced": {
+      "body_marker": "2c27a12863176efe1eb7e80b7f76542666e9470ed02f071c00ec155a77dcc5d6",
+      "resolved": false
     },
     "number": 5,
     "created_seq": 6,
@@ -738,6 +917,10 @@ fn a_duplicate_origin_is_reconciled_once() {
       "kind": "review_comment",
       "id": "c1"
     },
+    "synced": {
+      "body_marker": "1f20d14ec1b5b23da694632053a2f457ef554d1a1a18d6fd54dff67489939575",
+      "resolved": false
+    },
     "number": 1,
     "created_seq": 1,
     "updated_seq": 1
@@ -792,6 +975,10 @@ fn a_reply_listed_before_its_parent_still_threads() {
       "kind": "review_comment",
       "id": "c1"
     },
+    "synced": {
+      "body_marker": "4a0143360099394e49911f524fe30f8b2d53ba464c3ed3710afde8bdac6c8c2e",
+      "resolved": false
+    },
     "number": 1,
     "created_seq": 1,
     "updated_seq": 1
@@ -827,6 +1014,10 @@ fn a_reply_listed_before_its_parent_still_threads() {
       },
       "kind": "review_comment",
       "id": "c2"
+    },
+    "synced": {
+      "body_marker": "91f31fc63cae4e6b3abbc13d903403f55fccce337f7d14353e693e9b644b29df",
+      "resolved": false
     },
     "number": 2,
     "created_seq": 2,
@@ -889,6 +1080,10 @@ fn a_fresh_pull_imports_each_review_verdict() {
       },
       "resolved": false,
       "resolved_by": null,
+      "synced": {
+        "body_marker": "858aa9275d62f2d05c2b57be7f02ad28b385f6c799be4d889b73f43deef3ea6e",
+        "resolved": false
+      },
       "target": {
         "target": "review"
       },
@@ -925,6 +1120,10 @@ fn a_fresh_pull_imports_each_review_verdict() {
       },
       "resolved": false,
       "resolved_by": null,
+      "synced": {
+        "body_marker": "363a624f921a61249eda7c59c6b08489803fcbdb15ff6fdd8b496078acf66be7",
+        "resolved": false
+      },
       "target": {
         "target": "review"
       },
@@ -960,6 +1159,10 @@ fn a_fresh_pull_imports_each_review_verdict() {
       },
       "resolved": false,
       "resolved_by": null,
+      "synced": {
+        "body_marker": "c341290416ce3092349ad422614e6bd50cef1c930e349d63af6a1354a4701c73",
+        "resolved": false
+      },
       "target": {
         "target": "review"
       },
@@ -1032,6 +1235,10 @@ fn a_dismissed_review_imports_without_a_verdict() {
       },
       "resolved": false,
       "resolved_by": null,
+      "synced": {
+        "body_marker": "9768b57272ce4a068cf672fc6f3ab5c13bddb943e1ee6c6e65393eece00ac722",
+        "resolved": false
+      },
       "target": {
         "target": "review"
       },
@@ -1106,6 +1313,10 @@ fn a_later_pull_tracks_a_review_edit_and_dismissal() {
       },
       "resolved": false,
       "resolved_by": null,
+      "synced": {
+        "body_marker": "08a1bbf5819a253262b6ed8f4e0515c31539bc5413a034a9fa3c8c5aab6359e8",
+        "resolved": false
+      },
       "target": {
         "target": "review"
       },
@@ -1175,6 +1386,10 @@ fn a_review_listed_twice_is_reconciled_once() {
       },
       "resolved": false,
       "resolved_by": null,
+      "synced": {
+        "body_marker": "d3cbd74709bf071c75cd0fd3a51e33486798101704e83ce228c7d53d11355fd1",
+        "resolved": false
+      },
       "target": {
         "target": "review"
       },

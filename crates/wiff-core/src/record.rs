@@ -499,6 +499,21 @@ impl Description {
     }
 }
 
+/// A fingerprint of a comment body, recorded as a comment's synced marker to
+/// tell an upstream edit from an unpushed local one. A reconcile fingerprints
+/// the forge's body with [`comment_body_marker`] and compares it against the
+/// marker a prior sync recorded; equal markers mean the body is unchanged. On
+/// disk it is the plain fingerprint string; the newtype keeps it from being
+/// confused with a raw body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct BodyMarker(String);
+
+/// Fingerprint `body` as its [`BodyMarker`].
+pub fn comment_body_marker(body: &str) -> BodyMarker {
+    BodyMarker(blake3::hash(body.as_bytes()).to_hex().to_string())
+}
+
 /// Who authored an annotation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Author {
@@ -712,6 +727,13 @@ pub enum CommentEventKind {
     Link {
         /// The forge object the push created for the comment.
         forge_ref: ExternalRef,
+        /// Fingerprint of the body the forge echoed back for the created
+        /// object, recorded as the comment's synced marker. A later reconcile
+        /// compares the forge's body against this to tell an upstream edit from
+        /// an unpushed local one; taking it from the forge's echo rather than
+        /// the local text keeps a body the forge normalized from reimporting on
+        /// the next pull.
+        synced_marker: BodyMarker,
     },
     /// Revise a comment's body.
     Edit {

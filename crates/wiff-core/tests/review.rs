@@ -11,8 +11,11 @@ use wiff_core::record::{
     CommentReanchor, CommentRef, CommentTarget, Confidence, Description, DescriptionRecord,
     DiffVersionRecord, Disposition, ExternalKind, ExternalRef, FORMAT_VERSION, FileSummary,
     ForgeId, Record, RecordBody, ScmSource, Seq, SessionHeader, SourceKind, TipRule, VersionNumber,
+    comment_body_marker,
 };
-use wiff_core::review::{ActorVerdict, CommentState, DescriptionState, ReviewState, fold, threads};
+use wiff_core::review::{
+    ActorVerdict, CommentState, DescriptionState, ReviewState, SyncedState, fold, threads,
+};
 use wiff_core::{BaseRuleset, Error, ScmType, SidebandHash};
 use wiff_diff::{FileStatus, LineNo, Side};
 
@@ -203,6 +206,7 @@ fn folds_versions_and_comment_chains() {
                 disposition: None,
                 confidence: None,
                 origin: None,
+                synced: None,
                 number: Some(wiff_core::record::CommentNumber(1)),
                 created_seq: Seq(2),
                 updated_seq: Seq(6),
@@ -228,6 +232,7 @@ fn folds_versions_and_comment_chains() {
                 disposition: None,
                 confidence: Some(Confidence::Approximate),
                 origin: None,
+                synced: None,
                 number: Some(wiff_core::record::CommentNumber(2)),
                 created_seq: Seq(3),
                 updated_seq: Seq(8),
@@ -251,6 +256,7 @@ fn folds_versions_and_comment_chains() {
                 disposition: None,
                 confidence: None,
                 origin: None,
+                synced: None,
                 number: Some(wiff_core::record::CommentNumber(3)),
                 created_seq: Seq(9),
                 updated_seq: Seq(9),
@@ -413,7 +419,12 @@ fn a_link_binds_a_local_comment_to_its_forge_object_without_reattributing_it() {
         Record {
             seq: Seq(3),
             at: linked_at,
-            body: link_event(comment_a(), human("wez"), review_comment_ref("610")),
+            body: link_event(
+                comment_a(),
+                human("wez"),
+                review_comment_ref("610"),
+                comment_body_marker("needs a test"),
+            ),
         },
     ];
 
@@ -440,6 +451,10 @@ fn a_link_binds_a_local_comment_to_its_forge_object_without_reattributing_it() {
             disposition: None,
             confidence: None,
             origin: Some(review_comment_ref("610")),
+            synced: Some(SyncedState {
+                body_marker: comment_body_marker("needs a test"),
+                resolved: false,
+            }),
             number: Some(CommentNumber(1)),
             created_seq: Seq(2),
             updated_seq: Seq(3),
@@ -465,11 +480,21 @@ fn linking_an_already_linked_comment_is_a_corrupt_log() {
         ),
         rec(
             3,
-            link_event(comment_a(), human("wez"), review_comment_ref("610")),
+            link_event(
+                comment_a(),
+                human("wez"),
+                review_comment_ref("610"),
+                comment_body_marker("needs a test"),
+            ),
         ),
         rec(
             4,
-            link_event(comment_a(), human("wez"), review_comment_ref("611")),
+            link_event(
+                comment_a(),
+                human("wez"),
+                review_comment_ref("611"),
+                comment_body_marker("needs a test"),
+            ),
         ),
     ];
 
@@ -547,6 +572,10 @@ fn imported_events_mirror_their_forge_object_at_the_forges_own_times() {
             disposition: None,
             confidence: None,
             origin: Some(origin),
+            synced: Some(SyncedState {
+                body_marker: comment_body_marker("needs a unit test"),
+                resolved: true,
+            }),
             number: Some(CommentNumber(1)),
             created_seq: Seq(2),
             updated_seq: Seq(4),
@@ -607,6 +636,10 @@ fn an_imported_delete_tombstones_a_comment_removed_upstream() {
             disposition: None,
             confidence: None,
             origin: Some(origin),
+            synced: Some(SyncedState {
+                body_marker: comment_body_marker("stray thought"),
+                resolved: false,
+            }),
             number: Some(CommentNumber(1)),
             created_seq: Seq(2),
             updated_seq: Seq(3),
@@ -782,6 +815,7 @@ fn a_reply_folds_with_its_parent_recorded_and_threads_under_it() {
             disposition: None,
             confidence: None,
             origin: None,
+            synced: None,
             number: Some(wiff_core::record::CommentNumber(1)),
             created_seq: Seq(2),
             updated_seq: Seq(2),
@@ -805,6 +839,7 @@ fn a_reply_folds_with_its_parent_recorded_and_threads_under_it() {
             disposition: None,
             confidence: None,
             origin: None,
+            synced: None,
             number: Some(wiff_core::record::CommentNumber(2)),
             created_seq: Seq(3),
             updated_seq: Seq(3),

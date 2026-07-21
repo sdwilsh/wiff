@@ -16,7 +16,7 @@ use wiff_core::comment::{
 use wiff_core::description::mirrored_description;
 use wiff_core::record::{
     Anchor, Author, AuthorKind, CommentCreate, CommentTarget, Disposition, ExternalKind,
-    ExternalRef, RecordBody, VersionNumber,
+    ExternalRef, RecordBody, VersionNumber, comment_body_marker,
 };
 use wiff_core::{CommentState, DescriptionState};
 use wiff_diff::Diff;
@@ -66,7 +66,24 @@ pub fn reconcile_comments(
     for comment in order.iter().filter(|c| updates.contains(&c.origin)) {
         let id = id_by_origin[&comment.origin];
         let current = by_id[&id];
-        if current.body != comment.body {
+        // Compare the forge against the marker the last sync recorded, not
+        // against the current local state: an unpushed local edit differs from
+        // the forge but must survive to be pushed, so only a forge-side change
+        // (the forge's body no longer matching the marker) imports. When both
+        // sides changed since the last sync the forge wins: its edit imports
+        // over the unpushed local one and advances the marker past it. That is
+        // the same last-writer-wins policy the description reconcile follows,
+        // and it keeps a linked comment convergent with the forge across
+        // machines rather than diverging silently.
+        //
+        // A comment reconciled here always has an origin and so was seeded a
+        // marker at its imported create or its link; the comparisons key off
+        // that marker. Were a marker ever absent both comparisons read as
+        // changed and this pull re-imports the forge's body and resolution,
+        // which is redundant but not lossy.
+        let synced = current.synced.as_ref();
+        let forge_body_marker = comment_body_marker(&comment.body);
+        if synced.map(|sync| &sync.body_marker) != Some(&forge_body_marker) {
             events.push(import_edit(
                 id,
                 comment.author.clone(),
@@ -76,7 +93,7 @@ pub fn reconcile_comments(
             ));
         }
         let resolved = comment.resolution.is_some();
-        if current.resolved != resolved {
+        if synced.map(|sync| sync.resolved) != Some(resolved) {
             events.push(import_resolve(
                 id,
                 resolver(comment),
