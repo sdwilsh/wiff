@@ -5,7 +5,9 @@
 use time::OffsetDateTime;
 
 use crate::error::Result;
-use crate::record::{Author, Description, DescriptionRecord, ExternalRef, RecordBody};
+use crate::record::{
+    Author, Description, DescriptionRecord, DescriptionSyncRecord, ExternalRef, RecordBody,
+};
 use crate::session::{LockWait, SessionLog};
 
 /// Set `log`'s description to `description`, attributed to `author`, by
@@ -31,6 +33,13 @@ pub(crate) fn local_description(author: Author, description: Description) -> Rec
         synced_marker: None,
         description,
     })
+}
+
+/// Build a record advancing the description's synced marker to `synced_marker`
+/// after a push published the current content. It sets no new revision, so the
+/// current content and its author stay put while the marker moves.
+pub fn synced_description(synced_marker: String) -> RecordBody {
+    RecordBody::DescriptionSync(DescriptionSyncRecord { synced_marker })
 }
 
 /// Build a [`DescriptionRecord`] mirroring a forge's description: bound to the

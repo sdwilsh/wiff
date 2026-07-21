@@ -8,6 +8,7 @@
 //! keeping the layers above forge-agnostic. Sequencing a pull or a push is left
 //! to the orchestration above this trait.
 
+pub mod apply;
 pub mod config;
 pub mod error;
 pub mod github;
@@ -15,6 +16,7 @@ pub mod pull;
 pub mod push;
 pub mod types;
 
+pub use apply::{DeclinedWrite, PushOutcome, push};
 pub use config::{ForgeHost, ForgeTable, TokenOverride, resolve_token};
 pub use error::Unsupported;
 pub use github::GithubForge;

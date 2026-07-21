@@ -406,6 +406,14 @@ pub fn fold(records: &[Record]) -> Result<ReviewState> {
             RecordBody::Description(record) => {
                 fold_description(&mut description, record, at);
             }
+            RecordBody::DescriptionSync(record) => {
+                let Some(state) = &mut description else {
+                    return Err(Error::InconsistentLog(format!(
+                        "record at seq {seq} advances the synced marker of a description that was never set"
+                    )));
+                };
+                state.synced_marker = Some(record.synced_marker.clone());
+            }
             RecordBody::CommentEvent(event) => {
                 fold_comment_event(&mut comments, &mut order, event, at, seq)?;
             }

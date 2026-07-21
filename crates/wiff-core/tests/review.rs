@@ -9,9 +9,9 @@ use wiff_core::comment::{
 use wiff_core::record::{
     Anchor, Author, AuthorKind, CommentCreate, CommentEvent, CommentEventKind, CommentNumber,
     CommentReanchor, CommentRef, CommentTarget, Confidence, Description, DescriptionRecord,
-    DiffVersionRecord, Disposition, ExternalKind, ExternalRef, FORMAT_VERSION, FileSummary,
-    ForgeId, Record, RecordBody, ScmSource, Seq, SessionHeader, SourceKind, TipRule, VersionNumber,
-    comment_body_marker,
+    DescriptionSyncRecord, DiffVersionRecord, Disposition, ExternalKind, ExternalRef,
+    FORMAT_VERSION, FileSummary, ForgeId, Record, RecordBody, ScmSource, Seq, SessionHeader,
+    SourceKind, TipRule, VersionNumber, comment_body_marker,
 };
 use wiff_core::review::{
     ActorVerdict, CommentState, DescriptionState, ReviewState, SyncedState, fold, threads,
@@ -1338,6 +1338,74 @@ fn a_local_description_edit_keeps_the_forge_binding_of_the_revision_it_replaces(
             origin: Some(pull_body_ref()),
             synced_marker: Some("etag-1".to_string()),
         })
+    );
+}
+
+#[test]
+fn a_description_sync_advances_only_the_marker_and_keeps_a_later_edits_content() {
+    // A push publishes the description and records a sync marker, but a local
+    // edit was appended between the push reading state and recording the sync.
+    // The sync must advance only the marker, leaving the newer edit's content
+    // and author intact rather than reverting to what push sent.
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            description_record(
+                human("wez"),
+                "Published title",
+                "published body",
+                None,
+                None,
+            ),
+        ),
+        rec(
+            3,
+            description_record(human("dev"), "Edited mid-push", "newer body", None, None),
+        ),
+        rec(
+            4,
+            RecordBody::DescriptionSync(DescriptionSyncRecord {
+                synced_marker: "published-marker".to_string(),
+            }),
+        ),
+    ];
+
+    let state = fold(&records).unwrap();
+    wince::assert_eq!(
+        state.description,
+        Some(DescriptionState {
+            content: Description {
+                title: "Edited mid-push".to_string(),
+                body: "newer body".to_string(),
+            },
+            author: human("dev"),
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+            origin: None,
+            synced_marker: Some("published-marker".to_string()),
+        })
+    );
+}
+
+#[test]
+fn a_description_sync_before_any_description_is_a_corrupt_log() {
+    let records = vec![
+        rec(0, RecordBody::Session(header())),
+        rec(1, RecordBody::DiffVersion(version(0, "src/main.rs"))),
+        rec(
+            2,
+            RecordBody::DescriptionSync(DescriptionSyncRecord {
+                synced_marker: "published-marker".to_string(),
+            }),
+        ),
+    ];
+
+    let error = fold(&records).unwrap_err();
+    wince::assert_eq!(
+        error.to_string(),
+        "inconsistent session log: record at seq 2 advances the synced marker of a description that was never set"
+            .to_string()
     );
 }
 

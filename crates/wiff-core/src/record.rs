@@ -263,6 +263,9 @@ pub enum RecordBody {
     CommentEvent(CommentEvent),
     /// A revision of the review's description.
     Description(DescriptionRecord),
+    /// A record that a push advanced the description's synced marker after
+    /// publishing its content to the forge, without setting a new revision.
+    DescriptionSync(DescriptionSyncRecord),
     /// A record that a push submitted an actor's verdict to the forge.
     VerdictSync(VerdictSyncRecord),
     /// An unrecognized record type. A compatible-version log should never
@@ -459,6 +462,17 @@ pub struct DescriptionRecord {
     /// The description text this revision sets.
     #[serde(flatten)]
     pub description: Description,
+}
+
+/// A record that a push published the current description and the forge now
+/// holds this content. It advances the description's synced marker without
+/// setting a new revision, so a local edit made during the push round-trip keeps
+/// its content and attribution while the marker still moves to what push sent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DescriptionSyncRecord {
+    /// The content push published, opaque and adapter-interpreted, matching a
+    /// [`DescriptionRecord::synced_marker`].
+    pub synced_marker: String,
 }
 
 /// A review's description: a one-line title and an optional body, the same shape
