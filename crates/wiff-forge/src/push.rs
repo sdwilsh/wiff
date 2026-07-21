@@ -65,6 +65,22 @@ pub struct PushResolve {
     pub resolved: bool,
 }
 
+/// A local review that cannot be published as it stands, refused before any
+/// forge write rather than sent in a degraded form.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PlanError {
+    /// A line comment whose diff version has no forge commit, refused rather
+    /// than published without its location.
+    #[error(
+        "comment {comment} is on lines of a diff captured from uncommitted work, which the forge has no commit for; commit the reviewed changes, then push"
+    )]
+    UnanchorableLineComment {
+        /// The offending comment, named by its review number, or its full id
+        /// when it has not been numbered.
+        comment: String,
+    },
+}
+
 impl PushPlan {
     /// Whether this plan has no work, the signal for the push loop to stop.
     pub fn is_empty(&self) -> bool {
@@ -77,8 +93,17 @@ impl PushPlan {
 }
 
 /// Plan the forge writes sendable now for `author`, publishing only that
-/// author's own comments.
-pub fn plan_push(state: &ReviewState, author: &Author) -> PushPlan {
+/// author's own comments. Fails with [`PlanError`] when the review holds a
+/// comment that cannot be published in any form.
+///
+/// The failure refuses the whole push, not just the offending comment: scanning
+/// every comment to build a plan aborts on the first that cannot be published,
+/// before the driver executes any write. A comment is unpublishable only for a
+/// reason that does not change while a push runs (its diff version has no forge
+/// commit, and nothing re-pulls mid-push), so the first plan pass is a preflight
+/// over the whole review: once it succeeds no later re-plan can newly fail, and
+/// the push never publishes part of a review and then aborts.
+pub fn plan_push(state: &ReviewState, author: &Author) -> Result<PushPlan, PlanError> {
     let parent_origin = |id: &Ulid| {
         state
             .comments
@@ -107,10 +132,18 @@ pub fn plan_push(state: &ReviewState, author: &Author) -> PushPlan {
                         posts.push(outgoing(comment, None, Some(parent)));
                     }
                 }
-                _ => match outgoing_anchor(comment, &state.versions) {
-                    Some(anchor) => inline.push(outgoing(comment, Some(anchor), None)),
-                    None => posts.push(outgoing(comment, None, None)),
-                },
+                CommentTarget::Lines { .. } => {
+                    // Refuse a line comment whose version has no forge commit
+                    // rather than degrading it to a locationless review-level
+                    // post; the reviewer commits the work and pushes again.
+                    let Some(anchor) = outgoing_anchor(comment, &state.versions) else {
+                        return Err(PlanError::UnanchorableLineComment {
+                            comment: comment_label(comment),
+                        });
+                    };
+                    inline.push(outgoing(comment, Some(anchor), None));
+                }
+                _ => posts.push(outgoing(comment, None, None)),
             },
             Some(at) => {
                 let synced = comment.synced.as_ref();
@@ -150,13 +183,22 @@ pub fn plan_push(state: &ReviewState, author: &Author) -> PushPlan {
         comments: inline,
     });
 
-    PushPlan {
+    Ok(PushPlan {
         review,
         posts,
         edits,
         resolves,
         description: unsent_description(state),
-    }
+    })
+}
+
+/// A label naming `comment` in an error a reviewer reads: its review number
+/// when it has one, falling back to its full id before it has been numbered.
+fn comment_label(comment: &CommentState) -> String {
+    comment
+        .number
+        .map(|number| number.to_string())
+        .unwrap_or_else(|| comment.id.to_string())
 }
 
 /// The disposition `author` holds among `verdicts`, or `None` when they hold
@@ -184,8 +226,7 @@ fn outgoing(
 }
 
 /// The inline anchor for `comment`, or `None` when it is not a line-range
-/// comment or the version it anchors to has no head commit to place it against,
-/// in which case it posts at review level instead.
+/// comment or the version it anchors to has no head commit to place it against.
 fn outgoing_anchor(comment: &CommentState, versions: &[DiffVersionRecord]) -> Option<ForgeAnchor> {
     let CommentTarget::Lines {
         file,

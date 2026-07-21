@@ -138,7 +138,7 @@ fn fold_state(events: Vec<RecordBody>) -> ReviewState {
 }
 
 fn plan(events: Vec<RecordBody>) -> PushPlan {
-    plan_push(&fold_state(events), &human("wez"))
+    plan_push(&fold_state(events), &human("wez")).expect("a plan without refused comments")
 }
 
 #[test]
@@ -586,5 +586,44 @@ fn a_verdict_changed_since_it_was_pushed_replans_a_review_with_the_new_dispositi
     resolves: [],
     description: None,
 }"#,
+    );
+}
+
+#[test]
+fn a_line_comment_on_an_uncommitted_version_is_refused() {
+    // Version 0 here is captured from uncommitted work: it has no head commit.
+    // A line comment against it is refused by name rather than degraded to a
+    // locationless review-level post.
+    let headless = DiffVersionRecord {
+        number: VersionNumber(0),
+        diff_hash: wiff_core::SidebandHash::of(b"f.txt"),
+        base_revision: None,
+        base_tip_relative: false,
+        head_revision: None,
+        files: Vec::new(),
+    };
+    let records = vec![
+        Record {
+            seq: Seq(0),
+            at: OffsetDateTime::UNIX_EPOCH,
+            body: RecordBody::Session(header()),
+        },
+        Record {
+            seq: Seq(1),
+            at: OffsetDateTime::UNIX_EPOCH,
+            body: RecordBody::DiffVersion(headless),
+        },
+        Record {
+            seq: Seq(2),
+            at: datetime!(2024-06-01 09:00 UTC),
+            body: create(1, "wez", lines("f.txt", 3), "off-by-one here"),
+        },
+    ];
+    let state = fold(&records).expect("fold review events");
+
+    let error = plan_push(&state, &human("wez")).unwrap_err();
+    wince::snapshot_display!(
+        error,
+        "comment #1 is on lines of a diff captured from uncommitted work, which the forge has no commit for; commit the reviewed changes, then push"
     );
 }
