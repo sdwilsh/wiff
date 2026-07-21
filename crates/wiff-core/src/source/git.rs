@@ -17,7 +17,7 @@ use crate::base_ruleset::{BaseRuleset, parse_ruleset};
 use crate::error::{Error, Result};
 use crate::identity::ScmType;
 use crate::record::{RevisionId, ScmSource, SourceKind, TipRule};
-use crate::source::{CapturedDiff, DiffSource, FetchSource, HeadBranch, ScmRepo};
+use crate::source::{CapturedDiff, DiffSource, FetchSource, HeadBranch, ScmRepo, TrackingBranch};
 
 /// The context wiff asks git for around each hunk. A large window means a hunk
 /// holds most or all of its file, so highlighting and rebasing have more to work
@@ -473,11 +473,15 @@ impl GitRepo {
             .and_then(|full| full.strip_prefix("refs/heads/").map(str::to_string)))
     }
 
-    /// Whether git config holds a value for `key`. `git config --get` exits 1
-    /// for a key that is simply absent; any other nonzero exit (a multi-valued
-    /// key, an unreadable or corrupt config) is reported as a genuine failure
-    /// rather than mistaken for "unset".
     async fn config_is_set(&self, key: &str) -> Result<bool> {
+        Ok(self.config_get(key).await?.is_some())
+    }
+
+    /// The value git config holds for `key`, or `None` when the key is unset.
+    /// `git config --get` exits 1 for a key that is simply absent; any other
+    /// nonzero exit (a multi-valued key, an unreadable or corrupt config) is a
+    /// genuine failure rather than "unset".
+    async fn config_get(&self, key: &str) -> Result<Option<String>> {
         let output = self
             .spawn(
                 &["config".into(), "--get".into(), OsString::from(key)],
@@ -485,8 +489,13 @@ impl GitRepo {
             )
             .await?;
         match output.status.code() {
-            Some(0) => Ok(true),
-            Some(1) => Ok(false),
+            Some(0) => {
+                let text = String::from_utf8(output.stdout).map_err(|source| {
+                    Error::Repo(format!("git printed a non-UTF-8 config value: {source}"))
+                })?;
+                Ok(Some(text.trim().to_string()))
+            }
+            Some(1) => Ok(None),
             _ => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 Err(Error::Repo(format!(
@@ -603,6 +612,88 @@ impl ScmRepo for GitRepo {
         }
         self.update_ref(&pin_ref(session, PinSlot::Base), commit)
             .await
+    }
+
+    async fn working_tree_is_clean(&self) -> Result<bool> {
+        // A non-ignored untracked file counts as unclean, matching what a
+        // worktree review captures: it records such files as intent-to-add
+        // additions, so publishing a HEAD that omits them would send something
+        // other than what was reviewed. Porcelain's default untracked mode
+        // respects .gitignore, the same exclusion the capture applies.
+        // --ignore-submodules=all excludes a submodule whose own state has
+        // moved: that is not part of the superproject commit publishing sends.
+        // Porcelain output is one line per changed path, so clean is no output.
+        let output = self
+            .git(
+                [
+                    OsString::from("status"),
+                    "--porcelain".into(),
+                    "--ignore-submodules=all".into(),
+                ],
+                GitEnv::default(),
+            )
+            .await?;
+        let report = String::from_utf8(output.stdout)
+            .map_err(|source| Error::Repo(format!("git printed a non-UTF-8 status: {source}")))?;
+        Ok(report.trim().is_empty())
+    }
+
+    async fn remote_branch(&self, remote: &str, branch: &str) -> Result<Option<RevisionId>> {
+        // --heads restricts the listing to branches, excluding tags. The ref
+        // pattern is an fnmatch glob rather than a literal name, so each printed
+        // "<sha>\trefs/heads/<name>" line is matched exactly against the wanted
+        // ref: a `branch` bearing glob metacharacters must not report an
+        // unrelated branch as the one asked for.
+        let output = self
+            .git(
+                [
+                    "ls-remote".into(),
+                    "--heads".into(),
+                    OsString::from(remote),
+                    OsString::from(format!("refs/heads/{branch}")),
+                ],
+                GitEnv::default(),
+            )
+            .await?;
+        let listing = String::from_utf8(output.stdout)
+            .map_err(|source| Error::Repo(format!("git printed a non-UTF-8 ref: {source}")))?;
+        let wanted = format!("refs/heads/{branch}");
+        for line in listing.lines() {
+            let Some((sha, refname)) = line.split_once('\t') else {
+                return Err(Error::Repo(format!(
+                    "git ls-remote printed an unreadable line: {line:?}"
+                )));
+            };
+            if refname.trim() == wanted {
+                return Ok(Some(RevisionId(sha.trim().to_string())));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn current_upstream(&self) -> Result<Option<TrackingBranch>> {
+        let Some(branch_name) = self.current_branch_name().await? else {
+            return Ok(None);
+        };
+        // An upstream is the pair `.remote` + `.merge`; a branch counts as
+        // tracking only when both are present.
+        let Some(remote) = self
+            .config_get(&format!("branch.{branch_name}.remote"))
+            .await?
+        else {
+            return Ok(None);
+        };
+        let Some(merge) = self
+            .config_get(&format!("branch.{branch_name}.merge"))
+            .await?
+        else {
+            return Ok(None);
+        };
+        let branch = merge
+            .strip_prefix("refs/heads/")
+            .unwrap_or(&merge)
+            .to_string();
+        Ok(Some(TrackingBranch { remote, branch }))
     }
 
     async fn publish_branch(&self, remote: &str, branch: &str, commit: &RevisionId) -> Result<()> {
@@ -880,7 +971,7 @@ mod tests {
     use crate::base_ruleset::{BaseRuleset, parse_ruleset};
     use crate::identity::ScmType;
     use crate::record::{RevisionId, ScmSource, SourceKind, TipRule};
-    use crate::source::{DiffSource, FetchSource, ScmRepo};
+    use crate::source::{DiffSource, FetchSource, ScmRepo, TrackingBranch};
 
     /// Run `git` with `args` in `repo` under a laundered environment so neither
     /// the setup nor the capture under test can pick up host or per-user git
@@ -1819,6 +1910,121 @@ index HASHES
         wince::assert_eq!(
             (remote, merge),
             ("origin".to_string(), "refs/heads/my-feature".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn working_tree_is_clean_tracks_staged_unstaged_and_untracked() {
+        let repo_dir = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        let (r, h) = (repo_dir.path(), home.path());
+        git(r, h, &["init", "-q", "-b", "main"]);
+        std::fs::write(r.join("f.txt"), "a\n").expect("write");
+        std::fs::write(r.join(".gitignore"), "ignored.txt\n").expect("write");
+        git(r, h, &["add", "f.txt", ".gitignore"]);
+        git(r, h, &["commit", "-q", "-m", "c"]);
+        let repo = GitRepo::new(r);
+
+        let committed = repo.working_tree_is_clean().await.expect("clean check");
+
+        // An ignored file leaves the tree clean: a worktree review excludes it,
+        // so it is not part of what publishing would send.
+        std::fs::write(r.join("ignored.txt"), "junk\n").expect("write");
+        let with_ignored = repo.working_tree_is_clean().await.expect("clean check");
+
+        // A non-ignored untracked file makes it dirty: a worktree review would
+        // capture it as a new-file addition absent from HEAD.
+        std::fs::write(r.join("scratch.txt"), "new\n").expect("write");
+        let with_untracked = repo.working_tree_is_clean().await.expect("clean check");
+        std::fs::remove_file(r.join("scratch.txt")).expect("remove");
+
+        // An unstaged edit to a tracked file makes it dirty.
+        std::fs::write(r.join("f.txt"), "a\nb\n").expect("write");
+        let with_unstaged = repo.working_tree_is_clean().await.expect("clean check");
+
+        // Staging the edit keeps it dirty.
+        git(r, h, &["add", "f.txt"]);
+        let with_staged = repo.working_tree_is_clean().await.expect("clean check");
+
+        wince::assert_eq!(
+            (
+                committed,
+                with_ignored,
+                with_untracked,
+                with_unstaged,
+                with_staged
+            ),
+            (true, true, false, false, false)
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_branch_reports_a_present_branchs_commit_and_none_when_absent() {
+        let bare = tempfile::tempdir().expect("tempdir");
+        let work = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        let (b, w, h) = (bare.path(), work.path(), home.path());
+        git(b, h, &["init", "-q", "--bare"]);
+        git(w, h, &["init", "-q", "-b", "main"]);
+        git(w, h, &["remote", "add", "origin", &b.to_string_lossy()]);
+        std::fs::write(w.join("f.txt"), "a\n").expect("write");
+        git(w, h, &["add", "f.txt"]);
+        git(w, h, &["commit", "-q", "-m", "work"]);
+        git(w, h, &["push", "-q", "origin", "HEAD:refs/heads/published"]);
+        let commit = RevisionId(git_out(w, h, &["rev-parse", "HEAD"]));
+        let repo = GitRepo::new(w);
+
+        let present = repo
+            .remote_branch("origin", "published")
+            .await
+            .expect("query present");
+        let absent = repo
+            .remote_branch("origin", "never-pushed")
+            .await
+            .expect("query absent");
+        // A name bearing glob metacharacters is matched literally: ls-remote
+        // would glob "publishe?" onto "published", but the exact refname check
+        // rejects it rather than reporting a different branch as this one.
+        let globbed = repo
+            .remote_branch("origin", "publishe?")
+            .await
+            .expect("query glob");
+
+        wince::assert_eq!((present, absent, globbed), (Some(commit), None, None));
+    }
+
+    #[tokio::test]
+    async fn current_upstream_reports_the_tracked_branch_and_none_when_unset() {
+        let repo_dir = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        let (r, h) = (repo_dir.path(), home.path());
+        git(r, h, &["init", "-q", "-b", "main"]);
+        std::fs::write(r.join("f.txt"), "a\n").expect("write");
+        git(r, h, &["add", "f.txt"]);
+        git(r, h, &["commit", "-q", "-m", "c"]);
+        let repo = GitRepo::new(r);
+
+        let unset = repo.current_upstream().await.expect("query unset");
+
+        // A configured upstream is reported as its remote and plain branch name.
+        git(r, h, &["config", "branch.main.remote", "origin"]);
+        git(r, h, &["config", "branch.main.merge", "refs/heads/trunk"]);
+        let tracking = repo.current_upstream().await.expect("query set");
+
+        // A half-configured branch (only `.merge`) is reported as no upstream.
+        git(r, h, &["config", "--unset", "branch.main.remote"]);
+        let half = repo.current_upstream().await.expect("query half");
+
+        wince::assert_eq!(
+            (unset, tracking, half),
+            (
+                None,
+                Some(TrackingBranch {
+                    remote: "origin".to_string(),
+                    branch: "trunk".to_string(),
+                }),
+                None,
+            )
         );
     }
 }

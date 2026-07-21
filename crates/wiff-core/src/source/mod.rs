@@ -121,6 +121,16 @@ impl FetchSource {
     }
 }
 
+/// The remote branch a local branch tracks, as its remote's local name paired
+/// with the branch name on that remote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackingBranch {
+    /// The local name of the remote, such as `origin`.
+    pub remote: String,
+    /// The branch name on that remote, such as `main`, without any ref prefix.
+    pub branch: String,
+}
+
 /// Local repository operations forge support needs beyond producing diff text:
 /// fetching a forge's commits, publishing a branch, and managing pins.
 #[async_trait]
@@ -135,6 +145,20 @@ pub trait ScmRepo {
     /// is the pull request's target-branch tip, which the repo usually already
     /// holds.
     async fn pin_base(&self, commit: &RevisionId, session: Ulid) -> Result<()>;
+
+    /// Whether the working tree matches its committed state, with no staged or
+    /// unstaged changes to tracked files. Untracked files are ignored, since
+    /// they belong to no commit and do not change what publishing a branch
+    /// sends.
+    async fn working_tree_is_clean(&self) -> Result<bool>;
+
+    /// The commit `branch` resolves to on `remote`, or `None` when the remote
+    /// has no branch of that name.
+    async fn remote_branch(&self, remote: &str, branch: &str) -> Result<Option<RevisionId>>;
+
+    /// The remote branch the checked-out branch tracks, or `None` when it has no
+    /// upstream or the head is detached.
+    async fn current_upstream(&self) -> Result<Option<TrackingBranch>>;
 
     /// Publish `commit` to `remote` (the local name of the repository's remote
     /// for the forge host) as branch `branch`. Records tracking to the published
