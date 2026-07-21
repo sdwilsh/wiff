@@ -1,12 +1,154 @@
-//! Naming the branch `push --create` publishes.
+//! Opening a pull request for a reviewed branch that has no forge yet.
 //!
-//! Opening a pull request needs a head branch, and wiff names it from the
-//! review's description title rather than asking the user to invent one. The
-//! name is derived deterministically so the same review always publishes to the
-//! same branch, and a suffix drawn from the session keeps two reviews whose
-//! titles slugify alike from colliding on one remote branch.
+//! `push --create` publishes the reviewed commit as a branch and opens a pull
+//! request from it, so the reviewer never has to push and name a branch by hand
+//! before wiff can mirror the review. The branch is named from the review's
+//! description title, derived so the same review always publishes to the same
+//! branch, with a suffix drawn from the session to keep two reviews whose titles
+//! slugify alike from colliding on one remote branch. Preflight checks refuse
+//! before anything is published, leaving the remote untouched when the review is
+//! not ready to open.
 
+use anyhow::Result;
 use ulid::Ulid;
+use wiff_core::ReviewState;
+use wiff_core::record::{ForgeUrl, RevisionId};
+use wiff_core::source::ScmRepo;
+
+use crate::Forge;
+use crate::types::NewPullRequest;
+
+/// The inputs for opening a pull request from a reviewed branch that has no
+/// forge yet.
+pub struct OpenRequest<'a> {
+    /// The repository to open the pull request in.
+    pub repo: &'a ForgeUrl,
+    /// The local name of the remote to publish the branch to.
+    pub remote: &'a str,
+    /// The reviewed commit to publish as the pull request's head.
+    pub head_commit: &'a RevisionId,
+    /// The branch the pull request merges into.
+    pub base_branch: &'a str,
+}
+
+/// A pull request opened by [`open_pull_request`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenedPullRequest {
+    /// The new pull request's URL.
+    pub url: ForgeUrl,
+    /// The branch published to hold the reviewed commit.
+    pub branch: String,
+}
+
+/// A reason [`open_pull_request`] refuses, reported before anything is
+/// published so the remote is left untouched.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum OpenRefusal {
+    /// The working tree has changes that are not in the reviewed commit, so the
+    /// published branch would not hold what was reviewed.
+    #[error(
+        "the working tree has uncommitted changes; commit or discard them before opening a pull request"
+    )]
+    DirtyWorkingTree,
+    /// No description is set to name the branch and fill the pull request.
+    #[error(
+        "the review has no description to name the branch and fill the pull request; set one before opening it"
+    )]
+    NoDescription,
+    /// The description's title has no letters or digits, so it can neither name
+    /// a branch nor fill the pull request's title.
+    #[error(
+        "the description title {title:?} has no letters or digits to name a branch or fill the pull request; give it a usable title before opening it"
+    )]
+    UnusableTitle {
+        /// The title that yielded no usable branch name.
+        title: String,
+    },
+    /// The current branch already tracks an upstream other than the branch this
+    /// would publish, so the local branch would keep tracking there rather than
+    /// the published branch, and a later plain push would go to the wrong place.
+    #[error(
+        "the current branch already tracks {remote}/{branch}; a later push would go there rather than the pull request branch, so clear the upstream before opening it"
+    )]
+    UpstreamAlreadySet {
+        /// The remote the current branch tracks.
+        remote: String,
+        /// The branch on that remote.
+        branch: String,
+    },
+}
+
+/// Publish the reviewed commit as a branch and open a pull request from it,
+/// naming the branch from `state`'s description.
+///
+/// `req.head_commit` must be the tip of the checked-out branch: publishing
+/// points that branch at the published one as its upstream, so a `head_commit`
+/// that is not the current tip fails inside the SCM with a repository error
+/// rather than an [`OpenRefusal`].
+///
+/// Refuses with [`OpenRefusal`], before any publish, when no description is set,
+/// its title yields no usable branch name, the working tree is dirty, or the
+/// checked-out branch already tracks an upstream other than the branch this
+/// would publish. Reusing a branch that already holds `head_commit` lets a
+/// re-run recover from an earlier partial failure rather than orphaning a branch
+/// or opening a duplicate pull request.
+pub async fn open_pull_request(
+    forge: &dyn Forge,
+    repo: &dyn ScmRepo,
+    state: &ReviewState,
+    req: &OpenRequest<'_>,
+) -> Result<OpenedPullRequest> {
+    let Some(description) = &state.description else {
+        return Err(OpenRefusal::NoDescription.into());
+    };
+    let slug = branch_slug(&description.content.title);
+    if slug.is_empty() {
+        return Err(OpenRefusal::UnusableTitle {
+            title: description.content.title.clone(),
+        }
+        .into());
+    }
+    if !repo.working_tree_is_clean().await? {
+        return Err(OpenRefusal::DirtyWorkingTree.into());
+    }
+
+    // Reuse the plain slug across re-runs of the same review, including recovery
+    // after an earlier run published the branch but failed to open the pull
+    // request; disambiguate with a session-derived suffix only when the slug is
+    // already taken on the remote by a different commit.
+    let branch = match repo.remote_branch(req.remote, &slug).await? {
+        Some(commit) if &commit != req.head_commit => {
+            disambiguated_branch(&slug, state.session.ulid)
+        }
+        _ => slug,
+    };
+
+    // An upstream already pointing at the branch being published is the end
+    // state publishing aims for -- a prior run set it -- not a blocker; one
+    // pointing elsewhere would leave a later plain push going to the wrong
+    // place, so refuse it.
+    if let Some(upstream) = repo.current_upstream().await?
+        && (upstream.remote != req.remote || upstream.branch != branch)
+    {
+        return Err(OpenRefusal::UpstreamAlreadySet {
+            remote: upstream.remote,
+            branch: upstream.branch,
+        }
+        .into());
+    }
+
+    repo.publish_branch(req.remote, &branch, req.head_commit)
+        .await?;
+    let url = forge
+        .create_pull_request(&NewPullRequest {
+            repo: req.repo.clone(),
+            description: description.content.clone(),
+            head_branch: branch.clone(),
+            base_branch: req.base_branch.to_string(),
+        })
+        .await?;
+    Ok(OpenedPullRequest { url, branch })
+}
 
 /// Turn a description title into a git branch name: lowercase, with each run of
 /// characters that cannot appear in a readable branch name collapsed to a single
@@ -26,7 +168,7 @@ pub fn branch_slug(title: &str) -> String {
 }
 
 /// Append a suffix drawn from `session` to `slug`, for when the plain slug is
-/// already taken by a different branch on the remote. The suffix is the tail of
+/// already taken on the remote by a different commit. The suffix is the tail of
 /// the session's ULID, whose random component gives two same-titled reviews
 /// distinct branches. An empty `slug` (from a title with no usable
 /// characters) becomes the suffix alone.

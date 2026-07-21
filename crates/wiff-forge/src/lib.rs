@@ -19,7 +19,10 @@ pub mod types;
 
 pub use apply::{DeclinedWrite, PushOutcome, push};
 pub use config::{ForgeHost, ForgeTable, TokenOverride, resolve_token};
-pub use create::{branch_slug, disambiguated_branch};
+pub use create::{
+    OpenRefusal, OpenRequest, OpenedPullRequest, branch_slug, disambiguated_branch,
+    open_pull_request,
+};
 pub use error::Unsupported;
 pub use github::GithubForge;
 pub use pull::{reconcile_comments, reconcile_description, reconcile_reviews};
