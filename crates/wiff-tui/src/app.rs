@@ -3155,9 +3155,9 @@ impl App {
         match self.view[self.cursor] {
             ViewRow::Fold(fold) => {
                 self.collapsed[fold] = false;
-                let first = self.document.folds[fold].start;
+                let target = self.fold_landing_row(fold);
                 self.rebuild_view();
-                if let Some(index) = self.view_index_of_row(first) {
+                if let Some(index) = self.view_index_of_row(target) {
                     self.move_to(index);
                 }
             }
@@ -3170,6 +3170,32 @@ impl App {
                     }
                 }
             }
+        }
+    }
+
+    /// The document row the cursor moves to when `fold` is expanded from its
+    /// marker at the cursor. An unchanged-context run sits between two changed
+    /// hunks; when more of the viewport lies below the marker than above and the
+    /// run is too tall to fit on screen below it, the cursor moves to the run's
+    /// tail to keep the change below in view, otherwise to its head. A
+    /// whole-file fold has no adjacent hunk, so it always opens at its head.
+    fn fold_landing_row(&self, fold: usize) -> usize {
+        let run = &self.document.folds[fold];
+        if self.height == 0 || run.whole_file {
+            return run.start;
+        }
+        let above = self.cursor.saturating_sub(self.top);
+        let below = self
+            .view
+            .len()
+            .min(self.top + self.height)
+            .saturating_sub(self.cursor + 1);
+        let expanded_rows = run.end - run.start;
+        let fits_below = expanded_rows <= self.height.saturating_sub(above);
+        if below > above && !fits_below {
+            run.end - 1
+        } else {
+            run.start
         }
     }
 
@@ -5055,10 +5081,11 @@ mod tests {
 
     #[test]
     fn expanding_a_fold_reveals_its_hidden_rows() {
-        // The leading fold marker is the third view row; expand it there.
+        // The leading fold marker is the third view row; expand it there. The
+        // whole run fits below the marker, so the cursor stays on its head.
         let (cursor, top, visible) = drive(
             folded_document(),
-            6,
+            8,
             &[Action::LineDown, Action::LineDown, Action::ToggleFold],
         );
         wince::assert_eq!(cursor, 2);
@@ -5072,6 +5099,33 @@ mod tests {
             "<#7d828c|-|->   2    2 │ <#c0c5ce|-|->ctx02\n",
             "<#7d828c|-|->   3    3 │ <#c0c5ce|-|->ctx03\n",
             "<#7d828c|-|->   4    4 │ <#c0c5ce|-|->ctx04\n",
+            "<#7d828c|-|->   5    5 │ <#c0c5ce|-|->ctx05\n",
+            "<#7d828c|-|->   6    6   <#c0c5ce|-|->ctx06\n",
+        );
+    }
+
+    #[test]
+    fn expanding_a_large_fold_lands_on_its_tail_when_the_change_is_below() {
+        // With the leading fold near the top of a short viewport, most of the
+        // screen shows what follows it, and the run is taller than the space
+        // below the marker. The cursor moves to the run's tail, next to the
+        // context leading into the change, rather than to its distant head.
+        let (cursor, top, visible) = drive(
+            folded_document(),
+            6,
+            &[Action::LineDown, Action::LineDown, Action::ToggleFold],
+        );
+        wince::assert_eq!(cursor, 6);
+        wince::assert_eq!(top, 3);
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            visible,
+            "<#7d828c|-|->   2    2 │ <#c0c5ce|-|->ctx02\n",
+            "<#7d828c|-|->   3    3 │ <#c0c5ce|-|->ctx03\n",
+            "<#7d828c|-|->   4    4 │ <#c0c5ce|-|->ctx04\n",
+            "<#d8dadd|#65737e|->   5    5 │ <#f6f6f8|#65737e|->ctx05<-|#65737e|->                       \n",
+            "<#7d828c|-|->   6    6   <#c0c5ce|-|->ctx06\n",
+            "<#7d828c|-|->   7    7   <#c0c5ce|-|->ctx07\n",
         );
     }
 
