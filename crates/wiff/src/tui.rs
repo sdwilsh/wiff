@@ -442,9 +442,6 @@ fn commit_drafts(
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-    use std::process::Command;
-
     use ulid::Ulid;
     use wiff_core::comment::{delete_event, resolve_event};
     use wiff_core::record::{
@@ -466,6 +463,7 @@ mod tests {
         reload_committed, save_in_place, source_changed, sync_report,
     };
     use crate::command::{DiffSelection, capture_scm_diff};
+    use crate::testutil::git;
 
     /// The human reviewer these tests attribute drafts to.
     fn wez() -> Author {
@@ -701,24 +699,6 @@ mod tests {
             "base moved oldbase -> newbase; captured v3; rebased 1 comment: 1 exact, 0 shifted, \
              0 moved, 0 outdated"
                 .to_string()
-        );
-    }
-
-    /// Run `git` with `args` in `repo`, failing loudly on a nonzero status. Uses
-    /// a fixed identity and disables signing so the setup is deterministic and
-    /// independent of the host's git configuration.
-    fn git(repo: &Path, args: &[&str]) {
-        let output = Command::new("git")
-            .args(["-c", "user.name=wez", "-c", "user.email=wez@example.com"])
-            .args(["-c", "commit.gpgsign=false"])
-            .args(args)
-            .current_dir(repo)
-            .output()
-            .expect("run git");
-        assert!(
-            output.status.success(),
-            "git {args:?} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
         );
     }
 

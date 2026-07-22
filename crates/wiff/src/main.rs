@@ -4,6 +4,9 @@ mod command;
 mod render;
 mod tui;
 
+#[cfg(test)]
+pub(crate) mod testutil;
+
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
