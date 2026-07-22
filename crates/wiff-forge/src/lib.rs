@@ -16,6 +16,7 @@ pub mod github;
 pub mod import;
 pub mod pull;
 pub mod push;
+pub mod resync;
 pub mod types;
 
 pub use apply::{DeclinedWrite, PushOutcome, push};
@@ -29,6 +30,7 @@ pub use github::GithubForge;
 pub use import::{ImportOutcome, ImportRequest, import_pull_request};
 pub use pull::{reconcile_comments, reconcile_description, reconcile_reviews};
 pub use push::{PlanError, PushEdit, PushPlan, PushResolve, plan_push};
+pub use resync::{ResyncOutcome, resync_pull_request};
 pub use types::{
     FetchedComment, FetchedDescription, FetchedPullRequest, FetchedReview, ForgeAnchor,
     NewPullRequest, OutgoingComment, OutgoingReview, Resolution, SubmittedReview,
