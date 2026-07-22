@@ -271,6 +271,10 @@ impl Forge for FakeForge {
     async fn create_pull_request(&self, _req: &NewPullRequest) -> Result<ForgeUrl> {
         unreachable!("push does not open a pull request")
     }
+
+    fn pull_request_url(&self, _remote_url: &str, _id: &str) -> Result<ForgeUrl> {
+        unreachable!("push does not resolve a pull request by id")
+    }
 }
 
 /// A linked comment `id` by `author`: a create followed by the link push would

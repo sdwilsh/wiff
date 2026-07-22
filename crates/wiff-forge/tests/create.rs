@@ -143,6 +143,10 @@ impl Forge for FakeForge {
         ));
         Ok(ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("valid url"))
     }
+
+    fn pull_request_url(&self, _remote_url: &str, _id: &str) -> Result<ForgeUrl> {
+        unreachable!("opening a pull request does not resolve one by id")
+    }
 }
 
 /// A repository whose preflight answers are fixed by construction, recording the

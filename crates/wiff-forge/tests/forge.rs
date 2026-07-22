@@ -145,6 +145,10 @@ impl Forge for FakeForge {
     async fn create_pull_request(&self, _req: &NewPullRequest) -> Result<ForgeUrl> {
         ForgeUrl::parse("https://github.com/o/r/pull/2").map_err(|e| anyhow::anyhow!("{e}"))
     }
+
+    fn pull_request_url(&self, _remote_url: &str, _id: &str) -> Result<ForgeUrl> {
+        unreachable!("this fake resolves no pull request by id")
+    }
 }
 
 #[tokio::test]

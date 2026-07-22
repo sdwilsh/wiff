@@ -73,4 +73,10 @@ pub trait Forge: Send + Sync {
 
     /// Open a new pull request from an already-pushed branch.
     async fn create_pull_request(&self, req: &NewPullRequest) -> Result<ForgeUrl>;
+
+    /// Build the canonical web URL of the pull request `id` in the repository
+    /// the clone URL `remote_url` points at. `id` is opaque: a forge names its
+    /// pull requests however it likes, wiff never parses it, and it is
+    /// percent-encoded into the URL as-is.
+    fn pull_request_url(&self, remote_url: &str, id: &str) -> Result<ForgeUrl>;
 }

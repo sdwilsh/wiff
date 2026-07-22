@@ -534,6 +534,17 @@ impl crate::Forge for GithubForge {
         self.fetch(pr).await
     }
 
+    fn pull_request_url(&self, remote_url: &str, id: &str) -> Result<ForgeUrl> {
+        let (mut url, owner, repo) = parse_remote(remote_url)?;
+        // Extend the path through url::Url so an id holding a URL-reserved
+        // character (the caller treats it as opaque) is percent-encoded rather
+        // than corrupting the path.
+        url.path_segments_mut()
+            .expect("a scheme/host web base is always a base URL")
+            .extend([owner.as_str(), repo.as_str(), "pull", id]);
+        Ok(ForgeUrl::parse(url.as_str())?)
+    }
+
     async fn submit_review(
         &self,
         pr: &ForgeUrl,
@@ -642,6 +653,60 @@ fn head_source(
         git_ref: format!("refs/pull/{}/head", meta.number),
         commit: RevisionId(meta.head.sha.clone()),
     }
+}
+
+/// Read a git remote's clone URL, in either `https://host/owner/repo(.git)` or
+/// scp-style `[user@]host:owner/repo(.git)` form, into the web base that serves
+/// its repository together with the owner and repository names. An http(s)
+/// remote keeps its scheme and port, so a self-hosted instance answering the
+/// web on a non-default port stays reachable; any other transport (ssh, git)
+/// resolves to https on the bare host, whose transport port is not the web
+/// port. A path that is not exactly an owner and a repository (a GitLab-style
+/// subgroup, say) is rejected rather than guessed at, since GitHub addresses a
+/// repository by those two segments alone.
+fn parse_remote(remote_url: &str) -> Result<(Url, String, String)> {
+    // git's scp-style `[user@]host:owner/repo` is not a URL on its own but means
+    // the same as `ssh://[user@]host/owner/repo`. Rewriting it into that ssh URL
+    // lets url::Url parse both forms.
+    let normalized = if remote_url.contains("://") {
+        remote_url.to_string()
+    } else {
+        let (authority, path) = remote_url
+            .split_once(':')
+            .with_context(|| format!("{remote_url} is not a git remote URL"))?;
+        format!("ssh://{authority}/{path}")
+    };
+    let url = Url::parse(&normalized).with_context(|| format!("parsing remote {remote_url}"))?;
+    let host = url
+        .host_str()
+        .with_context(|| format!("remote {remote_url} has no host"))?;
+    let mut segments = url
+        .path_segments()
+        .into_iter()
+        .flatten()
+        .filter(|segment| !segment.is_empty());
+    let owner = segments.next().unwrap_or_default().to_string();
+    let repo = segments.next().unwrap_or_default();
+    let repo = repo.strip_suffix(".git").unwrap_or(repo).to_string();
+    if owner.is_empty() || repo.is_empty() || segments.next().is_some() {
+        bail!("{remote_url} is not a github repository remote URL");
+    }
+    let (scheme, authority) = if matches!(url.scheme(), "http" | "https") {
+        let authority = match url.port() {
+            Some(port) => format!("{host}:{port}"),
+            None => host.to_string(),
+        };
+        (url.scheme(), authority)
+    } else {
+        // An ssh or git remote names a transport, not a web location, so keep
+        // only its host and address the web over https on the default port:
+        // `ssh://git@ghe.corp:2222/octo/demo` gives the web base
+        // `https://ghe.corp/`.
+        ("https", host.to_string())
+    };
+    let web = Url::parse(&format!("{scheme}://{authority}/"))
+        .with_context(|| format!("deriving the web base for remote {remote_url}"))?;
+    Ok((web, owner, repo))
 }
 
 /// Reconstruct the base repository's git URL from the pull request URL, keeping
@@ -1285,5 +1350,79 @@ mod graphql {
         /// and `User` for a person. Defaulted for a response that omits it.
         #[serde(default, rename = "__typename")]
         pub typename: String,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wiff_core::record::ForgeUrl;
+
+    use super::GithubForge;
+    use crate::Forge;
+
+    // Building the octocrab client spawns a background service, so constructing
+    // the adapter needs a tokio runtime even though the URL build is offline.
+    #[tokio::test]
+    async fn pull_request_url_builds_from_https_and_scp_remotes() {
+        let forge = GithubForge::new("t", None).expect("adapter");
+        let expected = ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("url");
+        // An https remote and its scp-style twin, with and without the .git
+        // suffix, all address the same repository.
+        for remote in [
+            "https://github.com/octo/demo.git",
+            "https://github.com/octo/demo",
+            "git@github.com:octo/demo.git",
+            "git@github.com:octo/demo",
+        ] {
+            wince::assert_eq!(
+                forge.pull_request_url(remote, "7").expect("url"),
+                expected.clone()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn pull_request_url_keeps_an_http_remote_scheme_and_port() {
+        let forge = GithubForge::new("t", None).expect("adapter");
+        // A self-hosted instance answering the web on a non-default port keeps
+        // both scheme and port; an ssh remote to the same host resolves to
+        // https on the default port, since ssh's port is not the web port.
+        wince::assert_eq!(
+            forge
+                .pull_request_url("http://ghe.example.com:8080/octo/demo.git", "7")
+                .expect("url"),
+            ForgeUrl::parse("http://ghe.example.com:8080/octo/demo/pull/7").expect("url")
+        );
+        wince::assert_eq!(
+            forge
+                .pull_request_url("ssh://git@ghe.example.com:2222/octo/demo.git", "7")
+                .expect("url"),
+            ForgeUrl::parse("https://ghe.example.com/octo/demo/pull/7").expect("url")
+        );
+    }
+
+    #[tokio::test]
+    async fn pull_request_url_percent_encodes_a_reserved_id() {
+        let forge = GithubForge::new("t", None).expect("adapter");
+        // The id is opaque to wiff; a reserved character is encoded into a
+        // single path segment rather than splitting or truncating the path.
+        wince::assert_eq!(
+            forge
+                .pull_request_url("https://github.com/octo/demo.git", "a/b c")
+                .expect("url"),
+            ForgeUrl::parse("https://github.com/octo/demo/pull/a%2Fb%20c").expect("url")
+        );
+    }
+
+    #[tokio::test]
+    async fn pull_request_url_rejects_a_remote_that_is_not_owner_and_repo() {
+        let forge = GithubForge::new("t", None).expect("adapter");
+        let error = forge
+            .pull_request_url("https://gitlab.com/group/sub/demo.git", "7")
+            .unwrap_err();
+        wince::assert_eq!(
+            error.to_string(),
+            "https://gitlab.com/group/sub/demo.git is not a github repository remote URL"
+        );
     }
 }
