@@ -144,7 +144,7 @@ fn create_forge_session_binds_the_pull_request_under_the_chosen_ulid() {
         forge.clone(),
         session,
         &captured,
-        None,
+        Vec::new(),
     )
     .unwrap();
 
@@ -217,7 +217,7 @@ fn create_forge_session_rejects_an_id_that_already_names_a_session() {
             forge.clone(),
             session,
             &captured,
-            None,
+            Vec::new(),
         )
     };
     make().expect("first import succeeds");
