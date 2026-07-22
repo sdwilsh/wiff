@@ -9,7 +9,6 @@ use std::path::PathBuf;
 use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
 use wiff_config::Config;
-use wiff_core::record::ForgeUrl;
 use wiff_forge::{Forge, GithubForge, TokenOverride, resolve_token};
 
 /// Arguments for `wiff forge`.
@@ -48,8 +47,7 @@ struct ForgeToken {
 }
 
 impl ForgeToken {
-    /// The command-line token overrides these arguments express. Consumed by the
-    /// `pull` and `push` handlers, which arrive in the following steps.
+    /// The command-line token overrides these arguments express.
     #[allow(dead_code)]
     fn overrides(&self) -> TokenOverride {
         TokenOverride {
@@ -68,19 +66,18 @@ enum ForgeCommand {
     Push,
 }
 
-/// Build the forge adapter for the pull request at `url`: look its host up in
-/// the effective forge table, resolve the token from the command-line overrides
-/// or the host's configured variables, and construct the adapter the host's
-/// provider names. Consumed by the `pull` and `push` handlers, which arrive in
-/// the following steps.
+/// Build the forge adapter for `host`: look it up in the effective forge table,
+/// resolve the token from the command-line overrides or the host's configured
+/// variables, and construct the adapter the host's provider names. The `<url>`
+/// caller passes the bound URL's host and the `<number>` caller the chosen
+/// remote's host.
 #[allow(dead_code)]
 pub(crate) fn connect_forge(
     config: &Config,
-    url: &ForgeUrl,
+    host: &str,
     cli: &TokenOverride,
 ) -> anyhow::Result<Box<dyn Forge>> {
-    let host = url.host();
-    let row = config.forge.host(&host).with_context(|| {
+    let row = config.forge.host(host).with_context(|| {
         format!(
             "no forge is configured for {host}; add a [forge.\"{host}\"] entry naming its provider"
         )
@@ -130,15 +127,13 @@ mod tests {
     #[tokio::test]
     async fn a_github_host_builds_an_adapter() {
         let config = config_with(ForgeTable::default());
-        let url = ForgeUrl::parse("https://github.com/octo/demo/pull/7").unwrap();
-        connect_forge(&config, &url, &direct_token("t")).expect("github adapter");
+        connect_forge(&config, "github.com", &direct_token("t")).expect("github adapter");
     }
 
     #[test]
     fn an_unconfigured_host_is_reported_with_its_name() {
         let config = config_with(ForgeTable::default());
-        let url = ForgeUrl::parse("https://git.example.org/octo/demo/pull/7").unwrap();
-        let error = connect_forge(&config, &url, &TokenOverride::default())
+        let error = connect_forge(&config, "git.example.org", &TokenOverride::default())
             .map(|_| ())
             .unwrap_err();
         wince::assert_eq!(
@@ -151,10 +146,9 @@ mod tests {
     #[test]
     fn a_forgejo_host_reports_the_adapter_is_unavailable() {
         let config = config_with(ForgeTable::default());
-        let url = ForgeUrl::parse("https://codeberg.org/octo/demo/pulls/7").unwrap();
         // No token is supplied: an adapter wiff cannot build is reported before
         // any credential is demanded.
-        let error = connect_forge(&config, &url, &TokenOverride::default())
+        let error = connect_forge(&config, "codeberg.org", &TokenOverride::default())
             .map(|_| ())
             .unwrap_err();
         wince::assert_eq!(
@@ -173,8 +167,7 @@ mod tests {
             },
         )]);
         let config = config_with(table);
-        let url = ForgeUrl::parse("https://git.example.org/octo/demo/pull/7").unwrap();
-        let error = connect_forge(&config, &url, &TokenOverride::default())
+        let error = connect_forge(&config, "git.example.org", &TokenOverride::default())
             .map(|_| ())
             .unwrap_err();
         wince::assert_eq!(

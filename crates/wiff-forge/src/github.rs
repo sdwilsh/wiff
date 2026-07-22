@@ -19,6 +19,7 @@ use wiff_core::record::{
 use wiff_core::source::FetchSource;
 use wiff_diff::{LineNo, Side};
 
+use crate::clone_url::parse_clone_url;
 use crate::types::{
     FetchedComment, FetchedDescription, FetchedPullRequest, FetchedReview, ForgeAnchor,
     NewPullRequest, OutgoingComment, OutgoingReview, Resolution, SubmittedReview,
@@ -665,18 +666,8 @@ fn head_source(
 /// subgroup, say) is rejected rather than guessed at, since GitHub addresses a
 /// repository by those two segments alone.
 fn parse_remote(remote_url: &str) -> Result<(Url, String, String)> {
-    // git's scp-style `[user@]host:owner/repo` is not a URL on its own but means
-    // the same as `ssh://[user@]host/owner/repo`. Rewriting it into that ssh URL
-    // lets url::Url parse both forms.
-    let normalized = if remote_url.contains("://") {
-        remote_url.to_string()
-    } else {
-        let (authority, path) = remote_url
-            .split_once(':')
-            .with_context(|| format!("{remote_url} is not a git remote URL"))?;
-        format!("ssh://{authority}/{path}")
-    };
-    let url = Url::parse(&normalized).with_context(|| format!("parsing remote {remote_url}"))?;
+    let url = parse_clone_url(remote_url)
+        .with_context(|| format!("{remote_url} is not a git remote URL"))?;
     let host = url
         .host_str()
         .with_context(|| format!("remote {remote_url} has no host"))?;
