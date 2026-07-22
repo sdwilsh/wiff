@@ -25,6 +25,7 @@ ulid.workspace = true
 wiff-config.workspace = true
 wiff-core.workspace = true
 wiff-diff.workspace = true
+wiff-forge.workspace = true
 wiff-tui.workspace = true
 
 [dev-dependencies]

@@ -4,6 +4,7 @@
 
 mod comment;
 mod description;
+mod forge;
 mod new;
 mod refresh;
 mod render;
@@ -26,6 +27,7 @@ use wiff_core::{BaseRuleset, CapturedDiff, DiffSource, GitSource, ProjectIdentit
 
 use self::comment::CommentArgs;
 use self::description::DescriptionArgs;
+use self::forge::ForgeArgs;
 use self::new::NewArgs;
 use self::refresh::RefreshArgs;
 use self::render::RenderArgs;
@@ -49,6 +51,8 @@ pub enum Command {
     Description(DescriptionArgs),
     /// Render the review state for consumption.
     Render(RenderArgs),
+    /// Mirror a pull request into a session and publish the review back.
+    Forge(ForgeArgs),
     /// Write the agent skill file and print its path.
     SkillPath,
 }
@@ -74,6 +78,7 @@ impl Command {
             Command::Session(args) => args.run(),
             Command::Refresh(args) => args.run().await,
             Command::Resume(args) => args.run(),
+            Command::Forge(args) => args.run().await,
             Command::SkillPath => skill::run(),
         }
     }

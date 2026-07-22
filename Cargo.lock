@@ -3068,6 +3068,7 @@ dependencies = [
  "wiff-config",
  "wiff-core",
  "wiff-diff",
+ "wiff-forge",
  "wiff-tui",
  "wince",
 ]
