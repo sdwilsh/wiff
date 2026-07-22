@@ -121,6 +121,18 @@ impl FetchSource {
     }
 }
 
+/// A remote of the local repository: its local name paired with the clone URL
+/// it points at. The URL is the scm's own text, left whole; decomposing it into
+/// a host, owner, and repository is the forge layer's concern.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Remote {
+    /// The local name of the remote, such as `origin`.
+    pub name: String,
+    /// The clone URL configured for the remote, in whatever form the user set
+    /// it (an `https://` URL or an scp-style `git@host:owner/repo.git`).
+    pub url: String,
+}
+
 /// The remote branch a local branch tracks, as its remote's local name paired
 /// with the branch name on that remote.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,6 +157,10 @@ pub trait ScmRepo {
     /// is the pull request's target-branch tip, which the repo usually already
     /// holds.
     async fn pin_base(&self, commit: &RevisionId, session: Ulid) -> Result<()>;
+
+    /// List the repository's remotes, one per remote name with the URL git
+    /// fetches from (a remote configured with several URLs reports its first).
+    async fn remotes(&self) -> Result<Vec<Remote>>;
 
     /// Whether the working tree matches its committed state, with no staged or
     /// unstaged changes to tracked files. Untracked files are ignored, since

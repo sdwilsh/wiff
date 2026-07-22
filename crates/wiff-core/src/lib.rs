@@ -41,4 +41,6 @@ pub use rebase::{RebaseOutcome, rebase_line_comment};
 pub use refresh::{BaseShift, RefreshOutcome, refresh_session};
 pub use review::{CommentState, DescriptionState, ReviewState, fold};
 pub use session::{LockWait, SessionLock, SessionLog};
-pub use source::{CapturedDiff, DiffSource, FetchSource, GitSource, ScmRepo, TrackingBranch};
+pub use source::{
+    CapturedDiff, DiffSource, FetchSource, GitSource, Remote, ScmRepo, TrackingBranch,
+};

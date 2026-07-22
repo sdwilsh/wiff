@@ -13,7 +13,7 @@ use wiff_core::record::{
 };
 use wiff_core::review::ReviewState;
 use wiff_core::session::{LockWait, SessionLog};
-use wiff_core::source::{FetchSource, ScmRepo, TrackingBranch};
+use wiff_core::source::{FetchSource, Remote, ScmRepo, TrackingBranch};
 use wiff_core::{BaseRuleset, ScmType};
 use wiff_forge::{
     FetchedPullRequest, Forge, NewPullRequest, OpenRefusal, OpenRequest, OpenedPullRequest,
@@ -180,6 +180,10 @@ impl ScmRepo for FakeRepo {
 
     async fn pin_base(&self, _commit: &RevisionId, _session: Ulid) -> CoreResult<()> {
         unreachable!("opening a pull request does not pin")
+    }
+
+    async fn remotes(&self) -> CoreResult<Vec<Remote>> {
+        unreachable!("opening a pull request does not enumerate remotes")
     }
 
     async fn working_tree_is_clean(&self) -> CoreResult<bool> {

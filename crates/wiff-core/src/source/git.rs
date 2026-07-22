@@ -17,7 +17,9 @@ use crate::base_ruleset::{BaseRuleset, parse_ruleset};
 use crate::error::{Error, Result};
 use crate::identity::ScmType;
 use crate::record::{RevisionId, ScmSource, SourceKind, TipRule};
-use crate::source::{CapturedDiff, DiffSource, FetchSource, HeadBranch, ScmRepo, TrackingBranch};
+use crate::source::{
+    CapturedDiff, DiffSource, FetchSource, HeadBranch, Remote, ScmRepo, TrackingBranch,
+};
 
 /// The context wiff asks git for around each hunk. A large window means a hunk
 /// holds most or all of its file, so highlighting and rebasing have more to work
@@ -614,6 +616,67 @@ impl ScmRepo for GitRepo {
             .await
     }
 
+    async fn remotes(&self) -> Result<Vec<Remote>> {
+        // Read remote URLs from config rather than parsing `git remote -v`,
+        // whose output pairs a fetch and a push line per remote. --get-regexp
+        // prints matches in config-file order, and git fetches from a remote's
+        // first `url` value, so keeping the first per name yields the fetch URL
+        // and folds a multi-URL remote (git remote set-url --add) into one.
+        let output = self
+            .spawn(
+                &[
+                    "config".into(),
+                    "--get-regexp".into(),
+                    OsString::from(r"^remote\..*\.url$"),
+                ],
+                GitEnv::default(),
+            )
+            .await?;
+        match output.status.code() {
+            // git config exits 1 when the pattern matches nothing: a repo with
+            // no remotes yet, not a failure.
+            Some(1) => return Ok(Vec::new()),
+            Some(0) => {}
+            _ => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(Error::Repo(format!(
+                    "git config --get-regexp for remotes failed ({}): {}",
+                    output.status,
+                    stderr.trim()
+                )));
+            }
+        }
+        let listing = String::from_utf8(output.stdout).map_err(|source| {
+            Error::Repo(format!("git printed a non-UTF-8 remote URL: {source}"))
+        })?;
+        let mut remotes = Vec::new();
+        for line in listing.lines() {
+            let Some((key, url)) = line.split_once(' ') else {
+                return Err(Error::Repo(format!(
+                    "git config printed an unreadable remote line: {line:?}"
+                )));
+            };
+            // The key is `remote.<name>.url`; a remote name may itself contain a
+            // dot, so strip the fixed prefix and suffix rather than splitting.
+            let name = key
+                .strip_prefix("remote.")
+                .and_then(|rest| rest.strip_suffix(".url"))
+                .ok_or_else(|| {
+                    Error::Repo(format!(
+                        "git config printed an unexpected remote key: {key:?}"
+                    ))
+                })?;
+            if remotes.iter().any(|remote: &Remote| remote.name == name) {
+                continue;
+            }
+            remotes.push(Remote {
+                name: name.to_string(),
+                url: url.to_string(),
+            });
+        }
+        Ok(remotes)
+    }
+
     async fn working_tree_is_clean(&self) -> Result<bool> {
         // A non-ignored untracked file counts as unclean, matching what a
         // worktree review captures: it records such files as intent-to-add
@@ -971,7 +1034,7 @@ mod tests {
     use crate::base_ruleset::{BaseRuleset, parse_ruleset};
     use crate::identity::ScmType;
     use crate::record::{RevisionId, ScmSource, SourceKind, TipRule};
-    use crate::source::{DiffSource, FetchSource, ScmRepo, TrackingBranch};
+    use crate::source::{DiffSource, FetchSource, Remote, ScmRepo, TrackingBranch};
 
     /// Run `git` with `args` in `repo` under a laundered environment so neither
     /// the setup nor the capture under test can pick up host or per-user git
@@ -1592,6 +1655,87 @@ index HASHES
     /// A ULID for a session, distinct across tests so pin refs never collide.
     fn session(n: u128) -> Ulid {
         Ulid(n)
+    }
+
+    #[tokio::test]
+    async fn remotes_lists_each_configured_remote_with_its_fetch_url() {
+        let work = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        let (w, h) = (work.path(), home.path());
+        git(w, h, &["init", "-q", "-b", "main"]);
+        git(
+            w,
+            h,
+            &["remote", "add", "origin", "git@github.com:octo/demo.git"],
+        );
+        git(
+            w,
+            h,
+            &["remote", "add", "fork", "https://codeberg.org/me/demo.git"],
+        );
+
+        let repo = GitRepo::new(w);
+        let remotes = repo.remotes().await.expect("remotes");
+        wince::assert_eq!(
+            remotes,
+            vec![
+                Remote {
+                    name: "origin".to_string(),
+                    url: "git@github.com:octo/demo.git".to_string(),
+                },
+                Remote {
+                    name: "fork".to_string(),
+                    url: "https://codeberg.org/me/demo.git".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn remotes_reports_a_multi_url_remote_once_by_its_fetch_url() {
+        let work = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        let (w, h) = (work.path(), home.path());
+        git(w, h, &["init", "-q", "-b", "main"]);
+        git(
+            w,
+            h,
+            &["remote", "add", "origin", "git@github.com:octo/demo.git"],
+        );
+        // A second URL, as `git remote set-url --add` writes it; git fetches
+        // from the first, so the added one must not produce a second entry.
+        git(
+            w,
+            h,
+            &[
+                "remote",
+                "set-url",
+                "--add",
+                "origin",
+                "https://github.com/octo/demo.git",
+            ],
+        );
+
+        let repo = GitRepo::new(w);
+        let remotes = repo.remotes().await.expect("remotes");
+        wince::assert_eq!(
+            remotes,
+            vec![Remote {
+                name: "origin".to_string(),
+                url: "git@github.com:octo/demo.git".to_string(),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn remotes_is_empty_for_a_repo_with_no_remotes() {
+        let work = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        git(work.path(), home.path(), &["init", "-q", "-b", "main"]);
+
+        let repo = GitRepo::new(work.path());
+        let remotes = repo.remotes().await.expect("remotes");
+        wince::assert_eq!(remotes, Vec::<Remote>::new());
     }
 
     #[tokio::test]
