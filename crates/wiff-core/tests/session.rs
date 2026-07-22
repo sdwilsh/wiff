@@ -2,12 +2,12 @@
 
 use ulid::Ulid;
 use wiff_core::record::{
-    Author, AuthorKind, CommentCreate, CommentEvent, CommentEventKind, CommentTarget, RecordBody,
-    ScmSource, Seq, SessionHeader, SourceKind, TipRule, VersionNumber,
+    Author, AuthorKind, CommentCreate, CommentEvent, CommentEventKind, CommentTarget, ForgeUrl,
+    RecordBody, ScmSource, Seq, SessionHeader, SourceKind, TipRule, VersionNumber,
 };
 use wiff_core::session::{
     LockAttempt, LockWait, SessionLog, SyncState, active_session, list_projects, list_sessions,
-    read_records, remove_session,
+    read_records, remove_session, session_bound_to,
 };
 use wiff_core::{BaseRuleset, ScmType};
 use wiff_diff::{LineNo, Side};
@@ -442,6 +442,114 @@ fn discovery_surfaces_a_corrupt_most_recent_when_no_session_names_the_branch() {
             "could not decode session record: {}",
             decode_error(&corrupt_path)
         )
+    );
+}
+
+/// Build a session header bound to the pull request at `url`, for the
+/// binding-selection tests.
+fn forge_header(url: &str) -> impl FnOnce(Ulid) -> RecordBody {
+    let forge = Some(ForgeUrl::parse(url).unwrap());
+    move |ulid| {
+        RecordBody::Session(SessionHeader {
+            ulid,
+            version: wiff_core::record::FORMAT_VERSION,
+            project: "demo".to_string(),
+            repo_root: Some("/repos/demo".to_string()),
+            cwd: "/repos/demo".to_string(),
+            source: worktree_source_on("refs/heads/topic"),
+            forge,
+        })
+    }
+}
+
+#[test]
+fn binding_selection_finds_the_most_recent_session_bound_to_the_pull_request() {
+    let base = tempfile::tempdir().unwrap();
+    let url = ForgeUrl::parse("https://github.com/octo/demo/pull/7").unwrap();
+
+    // A fresh review of a pull request starts a new session, so two can share
+    // one binding.
+    let (_older, lock) =
+        SessionLog::create(base.path(), "demo", forge_header(url.as_str())).unwrap();
+    drop(lock);
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    let (newer, lock) =
+        SessionLog::create(base.path(), "demo", forge_header(url.as_str())).unwrap();
+    drop(lock);
+
+    wince::assert_eq!(
+        session_bound_to(base.path(), "demo", &url).unwrap(),
+        Some(newer.path().to_path_buf())
+    );
+}
+
+#[test]
+fn binding_selection_prefers_the_most_recently_written_over_the_newest_created() {
+    let base = tempfile::tempdir().unwrap();
+    let url = ForgeUrl::parse("https://github.com/octo/demo/pull/7").unwrap();
+
+    let (older, lock) =
+        SessionLog::create(base.path(), "demo", forge_header(url.as_str())).unwrap();
+    let older_path = older.path().to_path_buf();
+    drop(lock);
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    let (_newer, lock) =
+        SessionLog::create(base.path(), "demo", forge_header(url.as_str())).unwrap();
+    drop(lock);
+
+    // Working in the older session bumps its mtime past the newer one's creation
+    // time. Recency is the later of creation and last write, so the older-by-
+    // creation session is now the most recent and is chosen.
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    let mut older = SessionLog::open(&older_path).unwrap();
+    older.append_locked(comment()).unwrap();
+
+    wince::assert_eq!(
+        session_bound_to(base.path(), "demo", &url).unwrap(),
+        Some(older_path)
+    );
+}
+
+#[test]
+fn binding_selection_ignores_a_session_bound_to_another_pull_request() {
+    let base = tempfile::tempdir().unwrap();
+    let wanted = ForgeUrl::parse("https://github.com/octo/demo/pull/7").unwrap();
+
+    let (_elsewhere, lock) = SessionLog::create(
+        base.path(),
+        "demo",
+        forge_header("https://github.com/octo/demo/pull/99"),
+    )
+    .unwrap();
+    drop(lock);
+    let (_local, lock) = SessionLog::create(base.path(), "demo", header).unwrap();
+    drop(lock);
+
+    wince::assert_eq!(
+        session_bound_to(base.path(), "demo", &wanted).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn binding_selection_skips_a_corrupt_session_to_reach_the_bound_one() {
+    let base = tempfile::tempdir().unwrap();
+    let url = ForgeUrl::parse("https://github.com/octo/demo/pull/7").unwrap();
+
+    // A healthy session bound to the pull request, and a newer session whose
+    // header line is committed but not a valid record.
+    let (bound, lock) =
+        SessionLog::create(base.path(), "demo", forge_header(url.as_str())).unwrap();
+    drop(lock);
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    let (corrupt, lock) = SessionLog::create(base.path(), "demo", header).unwrap();
+    let corrupt_path = corrupt.path().to_path_buf();
+    drop(lock);
+    std::fs::write(&corrupt_path, "{\"not\":\"a record\"}\n").unwrap();
+
+    wince::assert_eq!(
+        session_bound_to(base.path(), "demo", &url).unwrap(),
+        Some(bound.path().to_path_buf())
     );
 }
 

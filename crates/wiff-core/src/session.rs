@@ -18,7 +18,7 @@ use ulid::Ulid;
 use crate::error::{Error, Result};
 use crate::identity::ScmType;
 use crate::record::{
-    Record, RecordBody, ScmSource, Seq, SessionHeader, SourceKind, TipRule, VersionNumber,
+    ForgeUrl, Record, RecordBody, ScmSource, Seq, SessionHeader, SourceKind, TipRule, VersionNumber,
 };
 
 /// The environment variable that overrides the base data directory.
@@ -536,6 +536,35 @@ pub fn active_session(
     // to be pointed at it; a corrupt header elsewhere was already skipped above.
     read_header(&most_recent)?;
     Ok(most_recent)
+}
+
+/// The most recent session in `project` bound to the pull request at `url`, or
+/// `None` when none is. A session is looked up by its binding rather than a
+/// checked-out branch: the caller holds the pull request's URL and wants its
+/// session whatever branch, if any, that session also tracks. A fresh review of
+/// the same pull request starts a new session, so several may share a binding;
+/// recency here is the later of a session's creation and its last write, so the
+/// one worked in most recently wins.
+///
+/// A momentarily unreadable session errors rather than reading as "no binding",
+/// since a caller deciding whether to resume or start a fresh review would
+/// otherwise create a duplicate for a pull request that already has a session.
+pub fn session_bound_to(base: &Path, project: &str, url: &ForgeUrl) -> Result<Option<PathBuf>> {
+    for path in list_sessions(base, project)? {
+        match read_header(&path) {
+            Ok(Some(header)) if header.forge.as_ref() == Some(url) => return Ok(Some(path)),
+            // A header for another pull request, or one not yet readable (an
+            // in-flight create or a truncated file), is simply not this match.
+            Ok(_) => {}
+            // A first record that is not a header is a damaged session; skip it
+            // rather than aborting, so an unrelated broken session cannot hide a
+            // healthy one bound to this pull request.
+            Err(Error::Decode(_) | Error::NotASession { .. }) => {}
+            // An I/O failure is not evidence of a non-match, so it propagates.
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(None)
 }
 
 /// Whether an scm source is the review of `branch` (a full ref name such as
