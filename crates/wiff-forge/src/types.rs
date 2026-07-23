@@ -22,11 +22,11 @@ pub struct FetchedPullRequest {
     /// How to bring the pull request's commits into a local repo; the wire
     /// protocol the head repository speaks picks the variant.
     pub head: FetchSource,
-    /// The target branch the pull request merges into.
-    pub base_ref: String,
-    /// The target branch's resolved tip; the review's base is the merge-base of
-    /// this commit with the head.
-    pub base_commit: RevisionId,
+    /// How to bring the pull request's target-branch tip into a local repo. The
+    /// review's base is the merge-base of that commit with the head, so it must
+    /// be present locally even when the target has advanced past the fork point
+    /// and the head fetch did not bring it down.
+    pub base: FetchSource,
     /// The pull request's inline and review-level comments.
     pub comments: Vec<FetchedComment>,
     /// The pull request's reviews, each with a verdict or a plain summary.
@@ -38,6 +38,12 @@ impl FetchedPullRequest {
     /// the commit its fetch resolves to.
     pub fn head_commit(&self) -> &RevisionId {
         self.head.commit()
+    }
+
+    /// The target-branch tip the review's base is computed against, held within
+    /// [`Self::base`] as the commit its fetch resolves to.
+    pub fn base_commit(&self) -> &RevisionId {
+        self.base.commit()
     }
 }
 

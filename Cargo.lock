@@ -3055,6 +3055,7 @@ name = "wiff"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "serde",
  "serde_json",
@@ -3104,6 +3105,7 @@ dependencies = [
  "thiserror",
  "time",
  "tokio",
+ "tracing",
  "ulid",
  "url",
  "wiff-diff",

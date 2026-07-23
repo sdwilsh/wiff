@@ -158,8 +158,11 @@ fn fetched_v0() -> FetchedPullRequest {
             git_ref: "refs/pull/7/head".to_string(),
             commit: RevisionId("head0".to_string()),
         },
-        base_ref: "main".to_string(),
-        base_commit: RevisionId("mbase".to_string()),
+        base: FetchSource::Git {
+            url: "https://github.com/octo/demo".to_string(),
+            git_ref: "refs/heads/main".to_string(),
+            commit: RevisionId("mbase".to_string()),
+        },
         comments: vec![inline_comment("head0")],
         reviews: vec![approving_review()],
     }

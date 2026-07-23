@@ -37,6 +37,9 @@ fn parse_diff(text: &str, tab_width: usize) -> Result<wiff_diff::Diff, wiff_diff
 /// different from the latest captured version, a modal offers to refresh once
 /// the existing state is on screen.
 pub fn open(session_path: &Path, config: &Config, offer_refresh: bool) -> anyhow::Result<()> {
+    // The review takes the terminal from here on, so keep log output off its
+    // alternate screen.
+    crate::logging::silence_for_tui();
     let log = SessionLog::open(session_path)?;
     let state = ReviewState::load(session_path)?;
     let version = state

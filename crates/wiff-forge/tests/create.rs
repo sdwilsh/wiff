@@ -182,8 +182,8 @@ impl ScmRepo for FakeRepo {
         unreachable!("opening a pull request does not fetch")
     }
 
-    async fn pin_base(&self, _commit: &RevisionId, _session: Ulid) -> CoreResult<()> {
-        unreachable!("opening a pull request does not pin")
+    async fn fetch_base(&self, _source: &FetchSource, _session: Ulid) -> CoreResult<RevisionId> {
+        unreachable!("opening a pull request does not fetch")
     }
 
     async fn remotes(&self) -> CoreResult<Vec<Remote>> {

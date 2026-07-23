@@ -58,16 +58,6 @@ pub enum Command {
 }
 
 impl Command {
-    /// Whether this subcommand takes over the terminal with the TUI. A command
-    /// that does must not have log output written over its alternate screen.
-    pub fn opens_tui(&self) -> bool {
-        match self {
-            Command::New(args) => args.opens_tui(),
-            Command::Resume(_) => true,
-            _ => false,
-        }
-    }
-
     /// Run the selected subcommand.
     pub async fn run(self) -> anyhow::Result<()> {
         match self {

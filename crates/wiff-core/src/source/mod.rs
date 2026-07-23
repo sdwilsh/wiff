@@ -98,7 +98,7 @@ impl DiffSource for CapturedDiff {
 /// through its git backend.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FetchSource {
-    /// Fetch `git_ref` from `url` and expect it to resolve to `commit`. The
+    /// Fetch `git_ref` from `url` to bring `commit` into the local repo. The
     /// forge adapter has already chosen between the pull-ref namespace and the
     /// head repository, so this holds one resolved fetch either way.
     Git {
@@ -106,14 +106,16 @@ pub enum FetchSource {
         url: String,
         /// The ref within that repository to fetch.
         git_ref: String,
-        /// The commit the fetched ref is required to resolve to; a fetch that
-        /// resolves to a different commit is rejected.
+        /// The commit the forge reports for this fetch. How it relates to the
+        /// fetched ref depends on the consumer: a head fetch requires the ref to
+        /// resolve to it, while a base fetch only requires it to be reachable
+        /// from the ref's tip.
         commit: RevisionId,
     },
 }
 
 impl FetchSource {
-    /// The commit this fetch is required to resolve to.
+    /// The commit the forge reports for this fetch.
     pub fn commit(&self) -> &RevisionId {
         match self {
             FetchSource::Git { commit, .. } => commit,
@@ -153,10 +155,17 @@ pub trait ScmRepo {
     /// ref does not resolve to the commit `source` expects.
     async fn fetch_pinned(&self, source: &FetchSource, session: Ulid) -> Result<RevisionId>;
 
-    /// Pin an already-present `commit` under the session's `base` pin. The base
-    /// is the pull request's target-branch tip, which the repo usually already
-    /// holds.
-    async fn pin_base(&self, commit: &RevisionId, session: Ulid) -> Result<()>;
+    /// Fetch the target branch `source` names, pin the commit `source` reports
+    /// under the session's `base` pin, and return it. Unlike
+    /// [`fetch_pinned`](Self::fetch_pinned), the reported commit need not be the
+    /// fetched ref's tip, only reachable from it: `source` names the pull
+    /// request's target branch and the tip the forge saw at its last sync, which
+    /// the live branch has usually moved past, and the review's base is anchored
+    /// to that older commit. Fetching the branch brings the commit down as one
+    /// of its ancestors. Fails when this SCM cannot speak the protocol `source`
+    /// names, or when the reported commit is absent from the fetched branch (a
+    /// force-push or rebase of the target since the last sync).
+    async fn fetch_base(&self, source: &FetchSource, session: Ulid) -> Result<RevisionId>;
 
     /// List the repository's remotes, one per remote name with the URL git
     /// fetches from (a remote configured with several URLs reports its first).

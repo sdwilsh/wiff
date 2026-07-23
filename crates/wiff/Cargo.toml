@@ -29,5 +29,6 @@ wiff-forge.workspace = true
 wiff-tui.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
 time.workspace = true
 wince.workspace = true

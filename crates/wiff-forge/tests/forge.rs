@@ -74,8 +74,11 @@ impl Forge for FakeForge {
                 git_ref: "refs/pull/1/head".to_string(),
                 commit: RevisionId("headcommit".to_string()),
             },
-            base_ref: "main".to_string(),
-            base_commit: RevisionId("basecommit".to_string()),
+            base: FetchSource::Git {
+                url: "https://github.com/o/r".to_string(),
+                git_ref: "refs/heads/main".to_string(),
+                commit: RevisionId("basecommit".to_string()),
+            },
             comments: vec![FetchedComment {
                 origin: external_ref("c1"),
                 author: Author {
@@ -168,8 +171,11 @@ async fn fetch_returns_the_pull_request_the_forge_reports() {
                 git_ref: "refs/pull/1/head".to_string(),
                 commit: RevisionId("headcommit".to_string()),
             },
-            base_ref: "main".to_string(),
-            base_commit: RevisionId("basecommit".to_string()),
+            base: FetchSource::Git {
+                url: "https://github.com/o/r".to_string(),
+                git_ref: "refs/heads/main".to_string(),
+                commit: RevisionId("basecommit".to_string()),
+            },
             comments: vec![FetchedComment {
                 origin: external_ref("c1"),
                 author: Author {

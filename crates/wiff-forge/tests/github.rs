@@ -143,8 +143,11 @@ fn expected_shell(url: &ForgeUrl, comments: Vec<FetchedComment>) -> FetchedPullR
             git_ref: "refs/pull/7/head".to_string(),
             commit: RevisionId(HEAD_SHA.to_string()),
         },
-        base_ref: "main".to_string(),
-        base_commit: RevisionId(BASE_SHA.to_string()),
+        base: FetchSource::Git {
+            url: "https://github.com/octo/demo.git".to_string(),
+            git_ref: "refs/heads/main".to_string(),
+            commit: RevisionId(BASE_SHA.to_string()),
+        },
         comments,
         reviews: vec![],
     }
@@ -400,8 +403,11 @@ async fn a_pull_request_maps_to_the_neutral_shape() {
             git_ref: "refs/pull/7/head".to_string(),
             commit: RevisionId("1111111111111111111111111111111111111111".to_string()),
         },
-        base_ref: "main".to_string(),
-        base_commit: RevisionId("2222222222222222222222222222222222222222".to_string()),
+        base: FetchSource::Git {
+            url: "https://github.com/octo/demo.git".to_string(),
+            git_ref: "refs/heads/main".to_string(),
+            commit: RevisionId("2222222222222222222222222222222222222222".to_string()),
+        },
         comments: vec![
             FetchedComment {
                 origin: review_comment(
@@ -561,8 +567,11 @@ async fn a_pull_request_without_a_base_clone_url_builds_one_from_its_web_url() {
             git_ref: "refs/pull/7/head".to_string(),
             commit: RevisionId("1111111111111111111111111111111111111111".to_string()),
         },
-        base_ref: "main".to_string(),
-        base_commit: RevisionId("2222222222222222222222222222222222222222".to_string()),
+        base: FetchSource::Git {
+            url: "https://github.com/octo/demo.git".to_string(),
+            git_ref: "refs/heads/main".to_string(),
+            commit: RevisionId("2222222222222222222222222222222222222222".to_string()),
+        },
         comments: vec![],
         reviews: vec![],
     };
@@ -641,8 +650,11 @@ async fn a_self_hosted_fallback_clone_url_keeps_the_pull_requests_port() {
             git_ref: "refs/pull/7/head".to_string(),
             commit: RevisionId(HEAD_SHA.to_string()),
         },
-        base_ref: "main".to_string(),
-        base_commit: RevisionId(BASE_SHA.to_string()),
+        base: FetchSource::Git {
+            url: "https://git.example.com:8443/octo/demo.git".to_string(),
+            git_ref: "refs/heads/main".to_string(),
+            commit: RevisionId(BASE_SHA.to_string()),
+        },
         comments: vec![],
         reviews: vec![],
     };

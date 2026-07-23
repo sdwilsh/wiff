@@ -82,14 +82,14 @@ impl GithubForge {
         });
         apply_resolutions(&mut comments, &resolutions);
         let head = head_source(pr, &at, &meta);
+        let base = base_source(pr, &at, &meta);
         let description = fetched_description(&at, &forge, &meta)?;
 
         Ok(FetchedPullRequest {
             url: pr.clone(),
             description,
             head,
-            base_ref: meta.base.ref_field.clone(),
-            base_commit: RevisionId(meta.base.sha.clone()),
+            base,
             comments,
             reviews,
         })
@@ -632,27 +632,51 @@ impl RepoId {
     }
 }
 
-/// Build the fetch that brings the pull request's commits into a local repo.
-/// GitHub serves every pull request under `refs/pull/<number>/head` on the base
-/// repository, which reaches a fork without adding a remote for it. The base
-/// repository's `clone_url` names where to fetch from; when the API omits it,
-/// the URL is reconstructed from the pull request's own scheme and authority.
+/// The base repository's clone URL, where both the pull request's head and its
+/// target branch are fetched from. GitHub serves the head under
+/// `refs/pull/<number>/head` on the base repository, which reaches a fork
+/// without adding a remote for it, and the target branch lives there too. When
+/// the API omits the `clone_url`, it is reconstructed from the pull request's
+/// own scheme and authority.
+fn base_repo_clone_url(
+    pr: &ForgeUrl,
+    at: &PullRequestId,
+    meta: &octocrab::models::pulls::PullRequest,
+) -> String {
+    meta.base
+        .repo
+        .as_ref()
+        .and_then(|repo| repo.clone_url.as_ref())
+        .map(Url::to_string)
+        .unwrap_or_else(|| fallback_clone_url(pr, at))
+}
+
+/// The fetch that brings the pull request's head down, through the base
+/// repository's `refs/pull/<number>/head`.
 fn head_source(
     pr: &ForgeUrl,
     at: &PullRequestId,
     meta: &octocrab::models::pulls::PullRequest,
 ) -> FetchSource {
-    let url = meta
-        .base
-        .repo
-        .as_ref()
-        .and_then(|repo| repo.clone_url.as_ref())
-        .map(Url::to_string)
-        .unwrap_or_else(|| fallback_clone_url(pr, at));
     FetchSource::Git {
-        url,
+        url: base_repo_clone_url(pr, at, meta),
         git_ref: format!("refs/pull/{}/head", meta.number),
         commit: RevisionId(meta.head.sha.clone()),
+    }
+}
+
+/// The fetch that brings the target-branch tip down, needed locally to compute
+/// the review's base and often absent once the target has advanced past the
+/// fork point.
+fn base_source(
+    pr: &ForgeUrl,
+    at: &PullRequestId,
+    meta: &octocrab::models::pulls::PullRequest,
+) -> FetchSource {
+    FetchSource::Git {
+        url: base_repo_clone_url(pr, at, meta),
+        git_ref: format!("refs/heads/{}", meta.base.ref_field),
+        commit: RevisionId(meta.base.sha.clone()),
     }
 }
 

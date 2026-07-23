@@ -10,6 +10,7 @@ use std::time::{Duration, SystemTime};
 use async_trait::async_trait;
 use tempfile::NamedTempFile;
 use tokio::io::AsyncWriteExt;
+use tracing::trace;
 use ulid::Ulid;
 
 use crate::base_resolve::{RevisionResolver, resolve_base};
@@ -214,10 +215,22 @@ impl GitRepo {
                 Ok(())
             });
         }
-        tokio::process::Command::from(command)
+        let rendered: Vec<String> = args
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        trace!(repo = %self.repo_root.display(), args = ?rendered, "running git");
+        let output = tokio::process::Command::from(command)
             .output()
             .await
-            .map_err(|source| Error::Repo(format!("could not run git: {source}")))
+            .map_err(|source| Error::Repo(format!("could not run git: {source}")))?;
+        trace!(
+            args = ?rendered,
+            status = %output.status,
+            stderr = %String::from_utf8_lossy(&output.stderr).trim(),
+            "git finished"
+        );
+        Ok(output)
     }
 
     /// Run a git query that prints a single revision, returning it trimmed.
@@ -554,22 +567,46 @@ impl GitRepo {
     }
 }
 
-#[async_trait]
-impl ScmRepo for GitRepo {
-    async fn fetch_pinned(&self, source: &FetchSource, session: Ulid) -> Result<RevisionId> {
+/// What the forge's promised commit means relative to the ref just fetched, and
+/// so which commit ends up pinned.
+enum FetchExpect {
+    /// The fetched ref must resolve to the promised commit, and that commit is
+    /// pinned. A pull request's head lives at an immutable `refs/pull/<n>/head`,
+    /// so a mismatch means the forge and the fetch disagree.
+    Exact,
+    /// The promised commit must be reachable from the fetched ref, and that
+    /// commit is pinned rather than the ref's tip. A pull request's target
+    /// branch keeps moving, and the forge reports the tip as of its last sync,
+    /// which the live branch has usually advanced past; the older commit is
+    /// still on the branch and is what the review's base is anchored to.
+    Reachable,
+}
+
+impl GitRepo {
+    /// Fetch `source` into a per-session scratch ref, check the promised commit
+    /// against `expect`, then pin the resulting commit under `slot` and return
+    /// it.
+    async fn fetch_and_pin(
+        &self,
+        source: &FetchSource,
+        session: Ulid,
+        slot: PinSlot,
+        expect: FetchExpect,
+    ) -> Result<RevisionId> {
         let FetchSource::Git {
             url,
             git_ref,
             commit,
         } = source;
-        let pin = pin_ref(session, PinSlot::Head);
-        // Fetch into a per-session scratch ref rather than the head pin or the
-        // shared FETCH_HEAD: a scratch ref keeps concurrent fetches in the same
-        // repo from observing one another's commit, and it keeps a re-fetch that
-        // turns out inconsistent from destroying a good head pinned by an
-        // earlier successful fetch. The leading `+` overwrites any scratch ref
-        // an interrupted fetch left behind.
-        let scratch = format!("{}incoming", session_ref_prefix(session));
+        let pin = pin_ref(session, slot);
+        // Fetch into a per-session scratch ref rather than the pin or the shared
+        // FETCH_HEAD: a scratch ref keeps concurrent fetches in the same repo
+        // from observing one another's commit, and it keeps a re-fetch that
+        // turns out inconsistent from destroying a good commit an earlier
+        // successful fetch pinned. A slot-specific name keeps a session's head
+        // and base fetches from colliding. The leading `+` overwrites any
+        // scratch ref an interrupted fetch left behind.
+        let scratch = format!("{}incoming-{}", session_ref_prefix(session), slot.as_str());
         self.git(
             [
                 "fetch".into(),
@@ -581,38 +618,63 @@ impl ScmRepo for GitRepo {
         )
         .await?;
         let outcome = async {
-            // Resolve both sides to a full object name before comparing: the
-            // forge may report an abbreviated or differently-cased hash, and the
-            // fetched commit is now present under the scratch ref to resolve the
-            // promised one against.
-            let resolved = self
+            // Resolve to a full object name before comparing: the forge may
+            // report an abbreviated or differently-cased hash, and the fetched
+            // commit is now present under the scratch ref to resolve against.
+            let tip = self
                 .resolve_commit(&scratch)
                 .await?
                 .ok_or_else(|| Error::Repo("git fetch left no ref to resolve".to_string()))?;
-            if self.resolve_commit(commit.as_str()).await? != Some(resolved.clone()) {
-                return Err(Error::Repo(format!(
-                    "fetched {git_ref} resolved to {resolved}, but the forge reported {commit}"
-                )));
-            }
-            // Promote the verified commit to the head pin only now, so a bad
-            // fetch never disturbs a pin from an earlier good one.
-            self.update_ref(&pin, &resolved).await?;
-            Ok(resolved)
+            let pinned = match expect {
+                FetchExpect::Exact => {
+                    if self.resolve_commit(commit.as_str()).await? != Some(tip.clone()) {
+                        return Err(Error::Repo(format!(
+                            "fetched {git_ref} resolved to {tip}, but the forge reported {commit}"
+                        )));
+                    }
+                    tip
+                }
+                FetchExpect::Reachable => {
+                    // The promised commit is on the fetched branch when it is
+                    // present and merge-base with the tip is the commit itself,
+                    // i.e. it is an ancestor of the tip.
+                    let want = self.resolve_commit(commit.as_str()).await?;
+                    let reachable = match &want {
+                        Some(want) => self.merge_base(want, &tip).await? == Some(want.clone()),
+                        None => false,
+                    };
+                    if !reachable {
+                        return Err(Error::Repo(format!(
+                            "the pull request's base {commit} is not on {git_ref} fetched from \
+                             {url}; the target branch may have been rewritten since the pull \
+                             request was last synced"
+                        )));
+                    }
+                    commit.clone()
+                }
+            };
+            // Promote the resulting commit to the pin only now, so a bad fetch
+            // never disturbs a pin from an earlier good one.
+            self.update_ref(&pin, &pinned).await?;
+            Ok(pinned)
         }
         .await;
-        // Drop the scratch ref whether or not validation passed; the head pin
-        // now holds the verified commit on success and is untouched on failure.
+        // Drop the scratch ref whether or not validation passed; the pin now
+        // holds the verified commit on success and is untouched on failure.
         let _ = self.delete_ref(&scratch).await;
         outcome
     }
+}
 
-    async fn pin_base(&self, commit: &RevisionId, session: Ulid) -> Result<()> {
-        if self.resolve_commit(commit.as_str()).await?.is_none() {
-            return Err(Error::Repo(format!(
-                "base commit {commit} is not present locally to pin"
-            )));
-        }
-        self.update_ref(&pin_ref(session, PinSlot::Base), commit)
+#[async_trait]
+impl ScmRepo for GitRepo {
+    async fn fetch_pinned(&self, source: &FetchSource, session: Ulid) -> Result<RevisionId> {
+        self.fetch_and_pin(source, session, PinSlot::Head, FetchExpect::Exact)
+            .await
+    }
+
+    async fn fetch_base(&self, source: &FetchSource, session: Ulid) -> Result<RevisionId> {
+        self.fetch_and_pin(source, session, PinSlot::Base, FetchExpect::Reachable)
             .await
     }
 
@@ -1861,32 +1923,85 @@ index HASHES
     }
 
     #[tokio::test]
-    async fn pin_base_pins_a_present_commit_and_rejects_an_absent_one() {
-        let repo_dir = tempfile::tempdir().expect("tempdir");
+    async fn fetch_base_pins_a_reported_tip_the_branch_has_since_moved_past() {
+        // The base branch lives in a separate origin repo, as the pull request's
+        // target branch lives on its forge. The forge reports the tip it saw at
+        // its last sync, but the branch has advanced two commits past it; the
+        // fetch must still bring that older commit down and pin it.
+        let origin = tempfile::tempdir().expect("tempdir");
+        let work = tempfile::tempdir().expect("tempdir");
         let home = tempfile::tempdir().expect("home");
-        let (r, h) = (repo_dir.path(), home.path());
-        git(r, h, &["init", "-q", "-b", "main"]);
-        std::fs::write(r.join("f.txt"), "a\n").expect("write");
-        git(r, h, &["add", "f.txt"]);
-        git(r, h, &["commit", "-q", "-m", "base"]);
-        let base = RevisionId(git_out(r, h, &["rev-parse", "HEAD"]));
-        let repo = GitRepo::new(r);
+        let (o, w, h) = (origin.path(), work.path(), home.path());
+        git(o, h, &["init", "-q", "-b", "main"]);
+        std::fs::write(o.join("f.txt"), "a\n").expect("write");
+        git(o, h, &["add", "f.txt"]);
+        git(o, h, &["commit", "-q", "-m", "reported tip"]);
+        let reported = RevisionId(git_out(o, h, &["rev-parse", "HEAD"]));
+        std::fs::write(o.join("f.txt"), "a\nb\n").expect("write");
+        git(o, h, &["commit", "-qa", "-m", "advance one"]);
+        std::fs::write(o.join("f.txt"), "a\nb\nc\n").expect("write");
+        git(o, h, &["commit", "-qa", "-m", "advance two"]);
+        git(w, h, &["init", "-q", "-b", "main"]);
+
+        let repo = GitRepo::new(w);
         let sess = session(3);
-
-        repo.pin_base(&base, sess).await.expect("pin base");
-        let pinned = git_out(r, h, &["rev-parse", &format!("refs/wiff/{sess}/base")]);
-        wince::assert_eq!(pinned, base.to_string());
-
-        let absent = RevisionId("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string());
-        let error = repo
-            .pin_base(&absent, sess)
-            .await
-            .expect_err("absent base is rejected");
+        let source = FetchSource::Git {
+            url: o.to_string_lossy().into_owned(),
+            git_ref: "refs/heads/main".to_string(),
+            commit: reported.clone(),
+        };
+        let resolved = repo.fetch_base(&source, sess).await.expect("fetch base");
+        wince::assert_eq!(resolved, reported.clone());
+        // The base pin resolves to the reported commit, not the branch tip, and
+        // no head pin or scratch ref was created alongside it.
+        let pinned = git_out(w, h, &["rev-parse", &format!("refs/wiff/{sess}/base")]);
+        let refs = git_out(w, h, &["for-each-ref", "--format=%(refname)", "refs/wiff/"]);
         wince::assert_eq!(
-            error.to_string(),
-            "base commit \
-             deadbeefdeadbeefdeadbeefdeadbeefdeadbeef is not present locally to pin"
-                .to_string()
+            (pinned, refs),
+            (reported.to_string(), format!("refs/wiff/{sess}/base"))
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_base_rejects_a_reported_commit_absent_from_the_branch() {
+        // The forge reports a base commit that is not on the fetched branch, as
+        // a rebase or force-push of the target would leave behind; the fetch
+        // must reject it rather than pin a commit off the branch.
+        let origin = tempfile::tempdir().expect("tempdir");
+        let work = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        let (o, w, h) = (origin.path(), work.path(), home.path());
+        git(o, h, &["init", "-q", "-b", "main"]);
+        std::fs::write(o.join("f.txt"), "a\n").expect("write");
+        git(o, h, &["add", "f.txt"]);
+        git(o, h, &["commit", "-q", "-m", "origin work"]);
+        git(w, h, &["init", "-q", "-b", "main"]);
+
+        let repo = GitRepo::new(w);
+        let sess = session(3);
+        let absent = RevisionId("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string());
+        let source = FetchSource::Git {
+            url: o.to_string_lossy().into_owned(),
+            git_ref: "refs/heads/main".to_string(),
+            commit: absent.clone(),
+        };
+        let error = repo
+            .fetch_base(&source, sess)
+            .await
+            .expect_err("an absent base commit is rejected");
+        // The rejected fetch leaves no pin resolvable under the session.
+        let refs = git_out(w, h, &["for-each-ref", "--format=%(refname)", "refs/wiff/"]);
+        wince::assert_eq!(
+            (error.to_string(), refs),
+            (
+                format!(
+                    "the pull request's base {absent} is not on refs/heads/main fetched from {}; \
+                     the target branch may have been rewritten since the pull request was last \
+                     synced",
+                    o.to_string_lossy()
+                ),
+                String::new()
+            )
         );
     }
 
@@ -1906,13 +2021,15 @@ index HASHES
         // Removing with no pins present is a no-op, not an error.
         repo.remove_pins(sess).await.expect("remove absent pins");
 
-        repo.pin_base(&commit, sess).await.expect("pin base");
+        repo.update_ref(&super::pin_ref(sess, super::PinSlot::Base), &commit)
+            .await
+            .expect("pin base");
         repo.update_ref(&super::pin_ref(sess, super::PinSlot::Head), &commit)
             .await
             .expect("pin head");
-        // An `incoming` scratch ref, as an interrupted fetch would leave behind;
-        // remove_pins must clear the whole namespace, not just head and base.
-        repo.update_ref(&format!("refs/wiff/{sess}/incoming"), &commit)
+        // An `incoming-head` scratch ref, as an interrupted fetch would leave
+        // behind; remove_pins must clear the whole namespace, not just the pins.
+        repo.update_ref(&format!("refs/wiff/{sess}/incoming-head"), &commit)
             .await
             .expect("plant scratch ref");
         repo.remove_pins(sess).await.expect("remove pins");
