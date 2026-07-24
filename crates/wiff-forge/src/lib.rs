@@ -9,6 +9,7 @@
 //! to the orchestration above this trait.
 
 pub mod apply;
+pub mod blob_diff;
 pub mod clone_url;
 pub mod config;
 pub mod create;
@@ -22,6 +23,7 @@ pub mod resync;
 pub mod types;
 
 pub use apply::{DeclinedWrite, PushOutcome, push};
+pub use blob_diff::{ChangedFile, Content, assemble_diff};
 pub use config::{ForgeHost, ForgeTable, TokenOverride, resolve_token};
 pub use create::{
     OpenRefusal, OpenRequest, OpenedPullRequest, branch_slug, disambiguated_branch,
