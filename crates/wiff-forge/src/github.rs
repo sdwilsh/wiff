@@ -456,21 +456,23 @@ impl GithubForge {
         ))
     }
 
-    /// Re-publish the body of a comment already linked to the forge. An inline
-    /// review comment and a review-level issue comment edit through different
-    /// endpoints, told apart by the comment's web URL.
+    /// Re-publish the body of an object already linked to the forge. An inline
+    /// review comment, a review-level issue comment, and a review's own summary
+    /// body edit through different endpoints and methods, told apart by the
+    /// object's web URL.
     pub async fn edit_comment(&self, at: &ExternalRef, body: &str) -> Result<()> {
         let location = CommentLocation::parse(at)?;
         let id: u64 = at
             .id
             .parse()
             .with_context(|| format!("{} is not a github comment id", at.id))?;
-        let route = location.edit_route(id);
-        let _: IgnoredAny = self
-            .crab
-            .patch(route, Some(&json!({ "body": body })))
-            .await
-            .with_context(|| format!("editing comment {id}"))?;
+        let (method, route) = location.edit_route(id);
+        let payload = json!({ "body": body });
+        let _: IgnoredAny = match method {
+            EditMethod::Patch => self.crab.patch(route, Some(&payload)).await,
+            EditMethod::Put => self.crab.put(route, Some(&payload)).await,
+        }
+        .with_context(|| format!("editing comment {id}"))?;
         Ok(())
     }
 
@@ -1177,24 +1179,32 @@ impl PlacedComment {
 struct CommentLocation {
     owner: String,
     repo: String,
-    /// Whether the comment is an inline review comment or a review-level issue
-    /// comment, which edit through different endpoints.
+    /// Which endpoint edits this object.
     kind: CommentKind,
 }
 
 /// Which comment endpoint a linked comment belongs to. GitHub keeps inline
-/// review comments and review-level issue comments in separate id spaces
-/// reached through separate routes.
+/// review comments, review-level issue comments, and a review's own summary
+/// body in separate id spaces reached through separate routes.
 enum CommentKind {
     Inline,
     Issue,
+    /// A review's summary body, edited through the pull-review endpoint with a
+    /// PUT rather than the PATCH the comment endpoints take. Holds the pull
+    /// request number that endpoint's path names, which the comment endpoints
+    /// do not use.
+    Review {
+        number: u64,
+    },
 }
 
 impl CommentLocation {
     /// Read the repository and comment kind from a linked comment's web URL,
-    /// whose path names the repository and whose fragment distinguishes an
-    /// inline comment (`#discussion_r...`) from an issue comment
-    /// (`#issuecomment-...`).
+    /// whose path names the repository (`/<owner>/<repo>/...`) and whose
+    /// fragment distinguishes an inline comment (`#discussion_r...`), an issue
+    /// comment (`#issuecomment-...`), and a review body
+    /// (`#pullrequestreview-...`). A review body additionally reads the pull
+    /// request number from the `/pull/<number>` path its edit endpoint names.
     fn parse(at: &ExternalRef) -> Result<Self> {
         let web_url = at
             .url
@@ -1212,23 +1222,51 @@ impl CommentLocation {
             CommentKind::Inline
         } else if fragment.starts_with("issuecomment-") {
             CommentKind::Issue
+        } else if fragment.starts_with("pullrequestreview-") {
+            // Require the literal `pull` segment before reading the number, so a
+            // path of an unexpected shape fails here rather than editing the
+            // review of whichever number happens to sit in that position.
+            if segments.next() != Some("pull") {
+                bail!("{web_url} names no pull request");
+            }
+            let number = segments
+                .next()
+                .and_then(|segment| segment.parse().ok())
+                .with_context(|| format!("{web_url} names no pull request number"))?;
+            CommentKind::Review { number }
         } else {
             bail!("{web_url} is not a github comment URL");
         };
         Ok(Self { owner, repo, kind })
     }
 
-    /// The endpoint that edits the comment `id` in this repository.
-    fn edit_route(&self, id: u64) -> String {
+    /// The endpoint that edits the object `id` in this repository, paired with
+    /// the HTTP method it takes: a comment is patched, a review body is put.
+    fn edit_route(&self, id: u64) -> (EditMethod, String) {
         match self.kind {
-            CommentKind::Inline => {
-                format!("/repos/{}/{}/pulls/comments/{id}", self.owner, self.repo)
-            }
-            CommentKind::Issue => {
-                format!("/repos/{}/{}/issues/comments/{id}", self.owner, self.repo)
-            }
+            CommentKind::Inline => (
+                EditMethod::Patch,
+                format!("/repos/{}/{}/pulls/comments/{id}", self.owner, self.repo),
+            ),
+            CommentKind::Issue => (
+                EditMethod::Patch,
+                format!("/repos/{}/{}/issues/comments/{id}", self.owner, self.repo),
+            ),
+            CommentKind::Review { number } => (
+                EditMethod::Put,
+                format!(
+                    "/repos/{}/{}/pulls/{number}/reviews/{id}",
+                    self.owner, self.repo
+                ),
+            ),
         }
     }
+}
+
+/// The HTTP method a linked object's edit endpoint takes.
+enum EditMethod {
+    Patch,
+    Put,
 }
 
 /// Read a page of review threads, each with its resolution state, its resolver,

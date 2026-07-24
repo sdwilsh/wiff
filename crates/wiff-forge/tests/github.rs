@@ -1796,6 +1796,91 @@ async fn edit_comment_patches_a_review_level_comment() {
 }
 
 #[tokio::test]
+async fn edit_comment_puts_a_review_body() {
+    let server = MockServer::start().await;
+
+    // A `#pullrequestreview-` fragment marks a review's own summary, edited
+    // through the pull-review endpoint with a PUT rather than a comment PATCH.
+    Mock::given(method("PUT"))
+        .and(path("/repos/octo/demo/pulls/7/reviews/300"))
+        .and(body_json(json!({ "body": "edited summary" })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let github = GithubForge::new("token", Some(&server.uri())).expect("build the adapter");
+    let at = ExternalRef {
+        forge: github_forge_id(),
+        kind: ExternalKind::Verdict,
+        id: "300".to_string(),
+        url: Some("https://github.com/octo/demo/pull/7#pullrequestreview-300".to_string()),
+    };
+
+    github
+        .edit_comment(&at, "edited summary")
+        .await
+        .expect("edit succeeds");
+    // The mounted put's expect(1) is verified when the server drops.
+}
+
+#[tokio::test]
+async fn edit_comment_ignores_a_missing_pull_number_for_a_comment() {
+    let server = MockServer::start().await;
+
+    // A comment edit routes by id alone; a URL without a `/pull/<number>` path
+    // still edits through the comment endpoint, since only a review body reads
+    // the number.
+    Mock::given(method("PATCH"))
+        .and(path("/repos/octo/demo/pulls/comments/100"))
+        .and(body_json(json!({ "body": "edited body" })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let github = GithubForge::new("token", Some(&server.uri())).expect("build the adapter");
+    let at = ExternalRef {
+        forge: github_forge_id(),
+        kind: ExternalKind::ReviewComment,
+        id: "100".to_string(),
+        url: Some("https://github.com/octo/demo#discussion_r100".to_string()),
+    };
+
+    github
+        .edit_comment(&at, "edited body")
+        .await
+        .expect("edit succeeds");
+    // The mounted patch's expect(1) is verified when the server drops.
+}
+
+#[tokio::test]
+async fn edit_comment_rejects_a_review_body_whose_path_names_no_pull_request() {
+    let github =
+        GithubForge::new("token", Some("https://example.invalid")).expect("build the adapter");
+    // The path's third segment is `tree`, not `pull`, so the pull number cannot
+    // be read; a review-body edit must fail rather than target whichever number
+    // sits in that position.
+    let at = ExternalRef {
+        forge: github_forge_id(),
+        kind: ExternalKind::Verdict,
+        id: "300".to_string(),
+        url: Some("https://github.com/octo/demo/tree/7#pullrequestreview-300".to_string()),
+    };
+
+    let error = github
+        .edit_comment(&at, "edited summary")
+        .await
+        .expect_err("a review body without a pull request is rejected");
+
+    wince::assert_eq!(
+        error.to_string(),
+        "https://github.com/octo/demo/tree/7#pullrequestreview-300 names no pull request"
+            .to_string()
+    );
+}
+
+#[tokio::test]
 async fn set_description_patches_the_pull_request() {
     let server = MockServer::start().await;
 
