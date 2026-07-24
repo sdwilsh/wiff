@@ -14,8 +14,9 @@ use wiff_diff::{LineNo, Side};
 use wiff_forge::{
     FetchedComment, FetchedDescription, FetchedPullRequest, FetchedReview, ForgeAnchor,
     GithubForge, NewPullRequest, OutgoingComment, OutgoingReview, Resolution, SubmittedReview,
+    assemble_diff,
 };
-use wiremock::matchers::{body_json, body_string_contains, method, path};
+use wiremock::matchers::{body_json, body_string_contains, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Build a GitHub account JSON object with every field octocrab requires to
@@ -1975,5 +1976,267 @@ async fn create_pull_request_rejects_a_url_with_extra_path_segments() {
     wince::assert_eq!(
         error.to_string(),
         "https://github.com/octo/demo/pull/7 is not a github repository URL".to_string()
+    );
+}
+
+/// Build a pull request files entry with the fields octocrab requires, naming
+/// the changed file, its status, and, for a rename, the path it moved from.
+fn file_entry(filename: &str, status: &str, previous: Option<&str>) -> Value {
+    let mut entry = json!({
+        "sha": "blobsha",
+        "filename": filename,
+        "status": status,
+        "additions": 1,
+        "deletions": 1,
+        "changes": 2,
+        "blob_url": "https://github.com/octo/demo/blob/head/file",
+        "raw_url": "https://github.com/octo/demo/raw/head/file",
+        "contents_url": format!("https://api.example.invalid/repos/octo/demo/contents/{filename}"),
+    });
+    if let Some(previous) = previous {
+        merge(&mut entry, json!({ "previous_filename": previous }));
+    }
+    entry
+}
+
+/// Base64-encode `text` as GitHub's contents and blobs APIs return file bodies.
+fn b64(text: &str) -> String {
+    use base64::Engine as _;
+    base64::prelude::BASE64_STANDARD.encode(text.as_bytes())
+}
+
+/// Mount a GET route returning `body` as JSON, matched on path alone.
+async fn mount_get(server: &MockServer, route: &str, body: Value) {
+    Mock::given(method("GET"))
+        .and(path(route))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
+/// Mount a contents API route for `path_` at revision `git_ref`, returning
+/// `body` as the file metadata JSON.
+async fn mount_contents(server: &MockServer, path_: &str, git_ref: &str, body: Value) {
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/octo/demo/contents/{path_}")))
+        .and(query_param("ref", git_ref))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
+/// A contents response with the file inline, as GitHub returns below its inline
+/// size limit.
+fn inline_content(sha: &str, text: &str) -> Value {
+    json!({
+        "sha": sha,
+        "size": text.len(),
+        "encoding": "base64",
+        "content": b64(text),
+    })
+}
+
+#[tokio::test]
+async fn changed_files_assemble_from_fetched_blob_contents() {
+    let server = MockServer::start().await;
+
+    mount_get(&server, "/repos/octo/demo/pulls/7", base_pull()).await;
+    mount_get(
+        &server,
+        "/repos/octo/demo/pulls/7/files",
+        json!([
+            file_entry("added.txt", "added", None),
+            file_entry("mod.txt", "modified", None),
+            file_entry("gone.txt", "removed", None),
+            file_entry("to.txt", "renamed", Some("from.txt")),
+            file_entry("img.png", "modified", None),
+            file_entry("big.txt", "modified", None),
+        ]),
+    )
+    .await;
+
+    // A pure add reads only the head side; a delete only the base side.
+    mount_contents(
+        &server,
+        "added.txt",
+        HEAD_SHA,
+        inline_content("a1", "new line\n"),
+    )
+    .await;
+    mount_contents(&server, "gone.txt", BASE_SHA, inline_content("g1", "bye\n")).await;
+
+    // A modify and a rename read both sides.
+    mount_contents(&server, "mod.txt", BASE_SHA, inline_content("m0", "old\n")).await;
+    mount_contents(&server, "mod.txt", HEAD_SHA, inline_content("m1", "new\n")).await;
+    mount_contents(
+        &server,
+        "from.txt",
+        BASE_SHA,
+        inline_content("r0", "same\n"),
+    )
+    .await;
+    mount_contents(&server, "to.txt", HEAD_SHA, inline_content("r1", "same2\n")).await;
+
+    // A file holding a NUL byte on either side is classified binary.
+    mount_contents(&server, "img.png", BASE_SHA, inline_content("i0", "PNG\0a")).await;
+    mount_contents(&server, "img.png", HEAD_SHA, inline_content("i1", "PNG\0b")).await;
+
+    // Above the contents API's inline size the body is omitted and the encoding
+    // marked "none"; the blobs API then serves the full bytes by sha.
+    for (git_ref, sha) in [(BASE_SHA, "big-base"), (HEAD_SHA, "big-head")] {
+        mount_contents(
+            &server,
+            "big.txt",
+            git_ref,
+            json!({ "sha": sha, "size": 2_000_000, "encoding": "none", "content": "" }),
+        )
+        .await;
+    }
+    mount_get(
+        &server,
+        "/repos/octo/demo/git/blobs/big-base",
+        json!({ "content": b64("bigbase\n"), "encoding": "base64" }),
+    )
+    .await;
+    mount_get(
+        &server,
+        "/repos/octo/demo/git/blobs/big-head",
+        json!({ "content": b64("bighead\n"), "encoding": "base64" }),
+    )
+    .await;
+
+    let github = GithubForge::new("token", Some(&server.uri())).expect("build the adapter");
+    let pr = ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("valid url");
+
+    let files = github
+        .fetch_changed_files(&pr)
+        .await
+        .expect("fetching changed files succeeds");
+
+    wince::assert_eq!(
+        assemble_diff(&files),
+        "\
+diff --git a/added.txt b/added.txt
+--- /dev/null
++++ b/added.txt
+@@ -0,0 +1 @@
++new line
+diff --git a/mod.txt b/mod.txt
+--- a/mod.txt
++++ b/mod.txt
+@@ -1 +1 @@
+-old
++new
+diff --git a/gone.txt b/gone.txt
+--- a/gone.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-bye
+diff --git a/from.txt b/to.txt
+rename from from.txt
+rename to to.txt
+--- a/from.txt
++++ b/to.txt
+@@ -1 +1 @@
+-same
++same2
+diff --git a/img.png b/img.png
+--- a/img.png
++++ b/img.png
+Binary files a/img.png and b/img.png differ
+diff --git a/big.txt b/big.txt
+--- a/big.txt
++++ b/big.txt
+@@ -1 +1 @@
+-bigbase
++bighead
+"
+    );
+}
+
+#[tokio::test]
+async fn an_oversized_file_renders_as_binary() {
+    let server = MockServer::start().await;
+
+    mount_get(&server, "/repos/octo/demo/pulls/7", base_pull()).await;
+    mount_get(
+        &server,
+        "/repos/octo/demo/pulls/7/files",
+        json!([file_entry("huge.bin", "added", None)]),
+    )
+    .await;
+
+    // A file past the API's size ceiling is refused with a 403 whose error code
+    // says so, rather than a body wiff could read a size from; the file then
+    // reads binary.
+    Mock::given(method("GET"))
+        .and(path("/repos/octo/demo/contents/huge.bin"))
+        .and(query_param("ref", HEAD_SHA))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+            "message": "The requested blob is too large to fetch via the API.",
+            "errors": [{ "resource": "Blob", "field": "data", "code": "too_large" }],
+            "documentation_url": "https://docs.github.com/rest/repos/contents",
+        })))
+        .mount(&server)
+        .await;
+
+    let github = GithubForge::new("token", Some(&server.uri())).expect("build the adapter");
+    let pr = ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("valid url");
+
+    let files = github
+        .fetch_changed_files(&pr)
+        .await
+        .expect("fetching changed files succeeds");
+
+    wince::assert_eq!(
+        assemble_diff(&files),
+        "\
+diff --git a/huge.bin b/huge.bin
+--- /dev/null
++++ b/huge.bin
+Binary files /dev/null and b/huge.bin differ
+"
+    );
+}
+
+#[tokio::test]
+async fn a_blob_in_an_unexpected_encoding_is_an_error() {
+    let server = MockServer::start().await;
+
+    mount_get(&server, "/repos/octo/demo/pulls/7", base_pull()).await;
+    mount_get(
+        &server,
+        "/repos/octo/demo/pulls/7/files",
+        json!([file_entry("weird.txt", "added", None)]),
+    )
+    .await;
+
+    // Above the inline size the contents API omits the body and marks the
+    // encoding "none", sending wiff to the blobs API by sha.
+    mount_contents(
+        &server,
+        "weird.txt",
+        HEAD_SHA,
+        json!({ "sha": "weirdsha", "size": 5_000_000, "encoding": "none", "content": "" }),
+    )
+    .await;
+    mount_get(
+        &server,
+        "/repos/octo/demo/git/blobs/weirdsha",
+        json!({ "content": "not base64 here", "encoding": "utf-8" }),
+    )
+    .await;
+
+    let github = GithubForge::new("token", Some(&server.uri())).expect("build the adapter");
+    let pr = ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("valid url");
+
+    let error = github
+        .fetch_changed_files(&pr)
+        .await
+        .expect_err("an unexpected blob encoding fails the fetch");
+
+    wince::assert_eq!(
+        error.to_string(),
+        "blob weirdsha came back in unexpected encoding utf-8".to_string()
     );
 }

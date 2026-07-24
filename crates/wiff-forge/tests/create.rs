@@ -16,8 +16,9 @@ use wiff_core::session::{LockWait, SessionLog};
 use wiff_core::source::{FetchSource, Remote, ScmRepo, TrackingBranch};
 use wiff_core::{BaseRuleset, ScmType};
 use wiff_forge::{
-    FetchedPullRequest, Forge, NewPullRequest, OpenRefusal, OpenRequest, OpenedPullRequest,
-    OutgoingComment, OutgoingReview, SubmittedReview, disambiguated_branch, open_pull_request,
+    ChangedFile, FetchedPullRequest, Forge, NewPullRequest, OpenRefusal, OpenRequest,
+    OpenedPullRequest, OutgoingComment, OutgoingReview, SubmittedReview, disambiguated_branch,
+    open_pull_request,
 };
 
 fn human(name: &str) -> Author {
@@ -102,6 +103,10 @@ impl FakeForge {
 impl Forge for FakeForge {
     async fn fetch(&self, _pr: &ForgeUrl) -> Result<FetchedPullRequest> {
         unreachable!("opening a pull request does not fetch")
+    }
+
+    async fn fetch_changed_files(&self, _pr: &ForgeUrl) -> Result<Vec<ChangedFile>> {
+        unreachable!("opening a pull request does not fetch changed files")
     }
 
     async fn submit_review(

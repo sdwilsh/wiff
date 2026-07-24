@@ -55,6 +55,11 @@ pub trait Forge: Send + Sync {
     /// for obtaining its diff, its description, review comments, and verdicts.
     async fn fetch(&self, pr: &ForgeUrl) -> Result<FetchedPullRequest>;
 
+    /// Fetch every changed file of the pull request with the base and head
+    /// contents needed to assemble its diff, for when there is no local clone to
+    /// diff against.
+    async fn fetch_changed_files(&self, pr: &ForgeUrl) -> Result<Vec<ChangedFile>>;
+
     /// Submit the batched review -- the inline comments that anchor, plus the
     /// verdict and summary -- as one all-or-nothing call.
     async fn submit_review(

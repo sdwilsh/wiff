@@ -4,9 +4,14 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
+use base64::Engine as _;
+use base64::prelude::BASE64_STANDARD;
+use futures::stream::{StreamExt as _, TryStreamExt as _};
 use octocrab::Octocrab;
 use octocrab::models::ReviewId;
+use octocrab::models::repos::DiffEntryStatus;
+use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use serde::Deserialize;
 use serde::de::IgnoredAny;
 use serde_json::{Value, json};
@@ -18,8 +23,9 @@ use wiff_core::record::{
     RevisionId,
 };
 use wiff_core::source::FetchSource;
-use wiff_diff::{LineNo, Side};
+use wiff_diff::{FileStatus, LineNo, Side};
 
+use crate::blob_diff::{ChangedFile, Content};
 use crate::clone_url::parse_clone_url;
 use crate::types::{
     FetchedComment, FetchedDescription, FetchedPullRequest, FetchedReview, ForgeAnchor,
@@ -94,6 +100,128 @@ impl GithubForge {
             comments,
             reviews,
         })
+    }
+
+    /// Fetch every changed file of the pull request with the base and head
+    /// contents needed to assemble its diff without a local clone. A file too
+    /// large to fetch, or whose content is not valid UTF-8, is reported as
+    /// binary rather than diffed.
+    pub async fn fetch_changed_files(&self, pr: &ForgeUrl) -> Result<Vec<ChangedFile>> {
+        let at = PullRequestId::parse(pr)?;
+        let meta = self
+            .crab
+            .pulls(&at.owner, &at.repo)
+            .get(at.number)
+            .await
+            .with_context(|| format!("fetching {pr}"))?;
+        let base_sha = meta.base.sha.clone();
+        let head_sha = meta.head.sha.clone();
+
+        let first = self
+            .crab
+            .pulls(&at.owner, &at.repo)
+            .list_files(at.number)
+            .await
+            .with_context(|| format!("listing the changed files of {pr}"))?;
+        let entries = self
+            .crab
+            .all_pages(first)
+            .await
+            .with_context(|| format!("listing the changed files of {pr}"))?;
+
+        let plans = entries
+            .into_iter()
+            .map(|entry| {
+                FilePlan::from_entry(
+                    entry.status,
+                    &entry.filename,
+                    entry.previous_filename.as_deref(),
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        // Fetch the files concurrently, bounded so a wide pull request does not
+        // open one request per file simultaneously, while `buffered` keeps the
+        // results in the listing's order for a stable assembled diff.
+        let files = futures::stream::iter(plans)
+            .map(|plan| self.fetch_file(&at, &base_sha, &head_sha, plan))
+            .buffered(FETCH_CONCURRENCY)
+            .try_collect()
+            .await?;
+        Ok(files)
+    }
+
+    /// Fetch the sides `plan` calls for and assemble them into one changed file.
+    async fn fetch_file(
+        &self,
+        at: &PullRequestId,
+        base_sha: &str,
+        head_sha: &str,
+        plan: FilePlan,
+    ) -> Result<ChangedFile> {
+        let before = match plan.fetch_base {
+            true => Some(self.fetch_side(at, &plan.old_path, base_sha).await?),
+            false => None,
+        };
+        let after = match plan.fetch_head {
+            true => Some(self.fetch_side(at, &plan.new_path, head_sha).await?),
+            false => None,
+        };
+        Ok(ChangedFile {
+            status: plan.status,
+            old_path: plan.old_path,
+            new_path: plan.new_path,
+            content: content_of(before, after),
+        })
+    }
+
+    /// Fetch one side's blob content for `path` at `commit`, reading the file
+    /// through the contents API and falling back to the blobs API for a file
+    /// larger than the contents API serves inline. A file past the API's own
+    /// ceiling, which the contents API refuses to serve, is reported as too
+    /// large rather than fetched.
+    async fn fetch_side(&self, at: &PullRequestId, path: &str, commit: &str) -> Result<SideBlob> {
+        let route = format!(
+            "/repos/{}/{}/contents/{}",
+            at.owner,
+            at.repo,
+            utf8_percent_encode(path, CONTENTS_PATH)
+        );
+        let content: ContentResponse = match self.crab.get(&route, Some(&[("ref", commit)])).await {
+            Ok(content) => content,
+            // A file past the API's size ceiling is refused with a 403 whose
+            // error code says so, rather than a body wiff could read a size
+            // from; that refusal renders the file binary.
+            Err(err) if is_too_large(&err) => return Ok(SideBlob::TooLarge),
+            Err(err) => return Err(err).with_context(|| format!("fetching {path} at {commit}")),
+        };
+        // Above the contents API's inline size, the response omits the content
+        // and marks the encoding "none"; the blobs API serves the full bytes by
+        // sha up to a far larger ceiling.
+        let bytes = match content.content {
+            Some(encoded) if content.encoding.as_deref() == Some("base64") => {
+                decode_base64(&encoded)?
+            }
+            _ => self.fetch_blob(at, &content.sha).await?,
+        };
+        Ok(SideBlob::Bytes(bytes))
+    }
+
+    /// Fetch a blob's bytes by its `sha` through the git blobs API.
+    async fn fetch_blob(&self, at: &PullRequestId, sha: &str) -> Result<Vec<u8>> {
+        let route = format!("/repos/{}/{}/git/blobs/{}", at.owner, at.repo, sha);
+        let blob: BlobResponse = self
+            .crab
+            .get(&route, None::<&()>)
+            .await
+            .with_context(|| format!("fetching blob {sha}"))?;
+        if blob.encoding != "base64" {
+            bail!(
+                "blob {sha} came back in unexpected encoding {}",
+                blob.encoding
+            );
+        }
+        decode_base64(&blob.content)
     }
 
     /// Read the pull request's inline review comments and its review-level
@@ -547,6 +675,10 @@ impl crate::Forge for GithubForge {
         self.fetch(pr).await
     }
 
+    async fn fetch_changed_files(&self, pr: &ForgeUrl) -> Result<Vec<ChangedFile>> {
+        self.fetch_changed_files(pr).await
+    }
+
     fn pull_request_url(&self, remote_url: &str, id: &str) -> Result<ForgeUrl> {
         let (mut url, owner, repo) = parse_remote(remote_url)?;
         // Extend the path through url::Url so an id holding a URL-reserved
@@ -587,8 +719,153 @@ impl crate::Forge for GithubForge {
     }
 }
 
-/// A pull request's coordinates on GitHub, taken from the path of its web URL,
-/// `/<owner>/<repo>/pull/<number>`.
+/// How many changed files wiff fetches concurrently. A wide pull request runs
+/// its per-file fetches in parallel up to this bound, kept modest to stay
+/// within GitHub's rate and abuse limits.
+const FETCH_CONCURRENCY: usize = 8;
+
+/// The characters escaped when a file path is placed into a contents API route.
+/// The set covers the reserved and unsafe bytes a path may hold while leaving
+/// the `/` separators intact.
+const CONTENTS_PATH: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'%')
+    .add(b'<')
+    .add(b'>')
+    .add(b'?')
+    .add(b'[')
+    .add(b'\\')
+    .add(b']')
+    .add(b'^')
+    .add(b'`')
+    .add(b'{')
+    .add(b'|')
+    .add(b'}');
+
+/// The metadata the contents API returns for a file, with its content inline
+/// for a file small enough to serve that way.
+#[derive(Deserialize)]
+struct ContentResponse {
+    sha: String,
+    encoding: Option<String>,
+    content: Option<String>,
+}
+
+/// Whether an octocrab error is GitHub refusing to serve a file past its size
+/// ceiling: a 403 whose `too_large` error code says so. A plain 403 for another
+/// reason (a rate limit, say) is not this and must propagate.
+fn is_too_large(err: &octocrab::Error) -> bool {
+    let octocrab::Error::GitHub { source, .. } = err else {
+        return false;
+    };
+    source.status_code.as_u16() == 403
+        && source
+            .errors
+            .iter()
+            .flatten()
+            .any(|error| error.get("code").and_then(Value::as_str) == Some("too_large"))
+}
+
+/// A blob's bytes as the git blobs API returns them.
+#[derive(Deserialize)]
+struct BlobResponse {
+    content: String,
+    encoding: String,
+}
+
+/// One side's fetched content, or a marker that the file is too large to fetch.
+enum SideBlob {
+    /// The decoded bytes of the file at a revision.
+    Bytes(Vec<u8>),
+    /// The file exceeds the size wiff fetches; render it as binary.
+    TooLarge,
+}
+
+/// How a changed file maps into wiff's diff model: its status, the paths on each
+/// side, and which sides have content to fetch.
+struct FilePlan {
+    status: FileStatus,
+    old_path: String,
+    new_path: String,
+    fetch_base: bool,
+    fetch_head: bool,
+}
+
+impl FilePlan {
+    /// Map a changed file's GitHub status and paths into a plan. A renamed file
+    /// needs the path it moved from, which GitHub reports in `previous_filename`.
+    fn from_entry(
+        status: DiffEntryStatus,
+        filename: &str,
+        previous_filename: Option<&str>,
+    ) -> Result<Self> {
+        let name = filename.to_string();
+        Ok(match status {
+            // A copy adds a new file from another's content; wiff has no copy
+            // status, so it reads as an add of the new path.
+            DiffEntryStatus::Added | DiffEntryStatus::Copied => Self {
+                status: FileStatus::Added,
+                old_path: name.clone(),
+                new_path: name,
+                fetch_base: false,
+                fetch_head: true,
+            },
+            DiffEntryStatus::Removed => Self {
+                status: FileStatus::Deleted,
+                old_path: name.clone(),
+                new_path: name,
+                fetch_base: true,
+                fetch_head: false,
+            },
+            DiffEntryStatus::Modified | DiffEntryStatus::Changed => Self {
+                status: FileStatus::Modified,
+                old_path: name.clone(),
+                new_path: name,
+                fetch_base: true,
+                fetch_head: true,
+            },
+            DiffEntryStatus::Renamed => Self {
+                status: FileStatus::Renamed,
+                old_path: previous_filename
+                    .ok_or_else(|| anyhow!("renamed file {name} has no previous path"))?
+                    .to_string(),
+                new_path: name,
+                fetch_base: true,
+                fetch_head: true,
+            },
+            DiffEntryStatus::Unchanged => {
+                bail!("file {name} is listed as changed but reports no change")
+            }
+            other => bail!("file {name} has an unrecognized change status {other:?}"),
+        })
+    }
+}
+
+/// Classify a changed file's two fetched sides into diff content, reporting a
+/// file binary when either side is too large to fetch.
+fn content_of(before: Option<SideBlob>, after: Option<SideBlob>) -> Content {
+    if matches!(before, Some(SideBlob::TooLarge)) || matches!(after, Some(SideBlob::TooLarge)) {
+        return Content::Binary;
+    }
+    let bytes = |side: Option<SideBlob>| match side {
+        Some(SideBlob::Bytes(bytes)) => Some(bytes),
+        _ => None,
+    };
+    Content::from_sides(bytes(before), bytes(after))
+}
+
+/// Decode GitHub's base64, which wraps its output across lines that must be
+/// stripped before decoding.
+fn decode_base64(encoded: &str) -> Result<Vec<u8>> {
+    let mut bytes = encoded.as_bytes().to_vec();
+    bytes.retain(|b| !b.is_ascii_whitespace());
+    BASE64_STANDARD
+        .decode(bytes)
+        .context("decoding base64 content")
+}
+
 struct PullRequestId {
     owner: String,
     repo: String,
@@ -1429,7 +1706,9 @@ mod graphql {
 mod tests {
     use wiff_core::record::ForgeUrl;
 
-    use super::GithubForge;
+    use octocrab::models::repos::DiffEntryStatus;
+
+    use super::{FilePlan, GithubForge};
     use crate::Forge;
 
     // Building the octocrab client spawns a background service, so constructing
@@ -1495,6 +1774,44 @@ mod tests {
         wince::assert_eq!(
             error.to_string(),
             "https://gitlab.com/group/sub/demo.git is not a github repository remote URL"
+        );
+    }
+
+    /// Describe the plan a status and paths map to: the wiff status, the two
+    /// paths, and which sides are fetched.
+    fn plan(status: DiffEntryStatus, filename: &str, previous: Option<&str>) -> String {
+        match FilePlan::from_entry(status, filename, previous) {
+            Ok(plan) => format!(
+                "{:?} {} -> {} base={} head={}",
+                plan.status, plan.old_path, plan.new_path, plan.fetch_base, plan.fetch_head
+            ),
+            Err(err) => format!("error: {err}"),
+        }
+    }
+
+    #[test]
+    fn maps_each_change_status_to_a_plan() {
+        let cases = [
+            plan(DiffEntryStatus::Added, "new.rs", None),
+            plan(DiffEntryStatus::Copied, "copy.rs", Some("orig.rs")),
+            plan(DiffEntryStatus::Removed, "gone.rs", None),
+            plan(DiffEntryStatus::Modified, "edit.rs", None),
+            plan(DiffEntryStatus::Changed, "mode.rs", None),
+            plan(DiffEntryStatus::Renamed, "to.rs", Some("from.rs")),
+            plan(DiffEntryStatus::Renamed, "to.rs", None),
+            plan(DiffEntryStatus::Unchanged, "same.rs", None),
+        ];
+        wince::assert_eq!(
+            cases.join("\n"),
+            "\
+Added new.rs -> new.rs base=false head=true
+Added copy.rs -> copy.rs base=false head=true
+Deleted gone.rs -> gone.rs base=true head=false
+Modified edit.rs -> edit.rs base=true head=true
+Modified mode.rs -> mode.rs base=true head=true
+Renamed from.rs -> to.rs base=true head=true
+error: renamed file to.rs has no previous path
+error: file same.rs is listed as changed but reports no change"
         );
     }
 }

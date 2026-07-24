@@ -209,6 +209,10 @@ impl Forge for FakeForge {
         unreachable!("push does not fetch")
     }
 
+    async fn fetch_changed_files(&self, _pr: &ForgeUrl) -> Result<Vec<wiff_forge::ChangedFile>> {
+        unreachable!("push does not fetch changed files")
+    }
+
     async fn submit_review(
         &self,
         _pr: &ForgeUrl,

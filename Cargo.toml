@@ -18,13 +18,16 @@ too_many_arguments = "deny"
 [workspace.dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
+base64 = "0.22"
 blake3 = "1"
 clap = { version = "4", features = ["derive"] }
 directories = "6"
 fancy-regex = "0.16"
+futures = "0.3"
 globset = "0.4"
 nix = { version = "0.29", features = ["fs", "signal"] }
 octocrab = "0.54"
+percent-encoding = "2"
 pulldown-cmark = { version = "0.12", default-features = false }
 ratatui = { version = "0.29", default-features = false }
 serde = { version = "1", features = ["derive"] }

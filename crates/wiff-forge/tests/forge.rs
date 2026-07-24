@@ -14,8 +14,9 @@ use wiff_core::record::{
 use wiff_core::source::FetchSource;
 use wiff_diff::{LineNo, Side};
 use wiff_forge::{
-    FetchedComment, FetchedDescription, FetchedPullRequest, FetchedReview, Forge, ForgeAnchor,
-    NewPullRequest, OutgoingComment, OutgoingReview, Resolution, SubmittedReview, Unsupported,
+    ChangedFile, FetchedComment, FetchedDescription, FetchedPullRequest, FetchedReview, Forge,
+    ForgeAnchor, NewPullRequest, OutgoingComment, OutgoingReview, Resolution, SubmittedReview,
+    Unsupported,
 };
 
 fn forge_id() -> ForgeId {
@@ -111,6 +112,10 @@ impl Forge for FakeForge {
                 dismissed: false,
             }],
         })
+    }
+
+    async fn fetch_changed_files(&self, _pr: &ForgeUrl) -> Result<Vec<ChangedFile>> {
+        unreachable!("this fake serves no changed files")
     }
 
     async fn submit_review(

@@ -696,6 +696,13 @@ mod tests {
             Ok(self.0.clone())
         }
 
+        async fn fetch_changed_files(
+            &self,
+            _pr: &ForgeUrl,
+        ) -> anyhow::Result<Vec<wiff_forge::ChangedFile>> {
+            unreachable!("mirroring a pull request does not fetch changed files")
+        }
+
         async fn submit_review(
             &self,
             _pr: &ForgeUrl,
@@ -905,6 +912,13 @@ mod tests {
     impl Forge for PushForge {
         async fn fetch(&self, _pr: &ForgeUrl) -> anyhow::Result<FetchedPullRequest> {
             Ok(self.fetched.clone())
+        }
+
+        async fn fetch_changed_files(
+            &self,
+            _pr: &ForgeUrl,
+        ) -> anyhow::Result<Vec<wiff_forge::ChangedFile>> {
+            unreachable!("pushing a review does not fetch changed files")
         }
 
         async fn submit_review(

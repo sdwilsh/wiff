@@ -38,6 +38,30 @@ pub enum Content {
     Binary,
 }
 
+impl Content {
+    /// Classify a changed file's raw contents into text or binary. A `None` side
+    /// is one the change does not touch: the base of an add, the head of a
+    /// delete. Present bytes that are not valid UTF-8, or that contain a NUL,
+    /// mark the file binary, matching how git decides a blob is not textual.
+    pub fn from_sides(before: Option<Vec<u8>>, after: Option<Vec<u8>>) -> Content {
+        match (decode_side(before), decode_side(after)) {
+            (Some(before), Some(after)) => Content::Text { before, after },
+            _ => Content::Binary,
+        }
+    }
+}
+
+/// Decode one side's bytes to text, treating an untouched side as empty. Returns
+/// `None` when the bytes are not valid UTF-8 or hold a NUL, the signal that the
+/// file is binary.
+fn decode_side(bytes: Option<Vec<u8>>) -> Option<String> {
+    match bytes {
+        None => Some(String::new()),
+        Some(bytes) if bytes.contains(&0) => None,
+        Some(bytes) => String::from_utf8(bytes).ok(),
+    }
+}
+
 /// Assemble git-format unified diff text from the whole-file contents of each
 /// changed file, for use when there is no local repository to diff against.
 pub fn assemble_diff(files: &[ChangedFile]) -> String {
@@ -311,6 +335,37 @@ rename to b.txt
 "
         );
         wince::assert_eq!(dump(&text), "Renamed a.txt -> b.txt\n");
+    }
+
+    /// Describe the `Content` each pair of sides classifies to, for a full-value
+    /// assertion over every combination the fetch path produces.
+    fn classify(before: Option<&[u8]>, after: Option<&[u8]>) -> String {
+        match Content::from_sides(before.map(<[u8]>::to_vec), after.map(<[u8]>::to_vec)) {
+            Content::Text { before, after } => format!("text {before:?} {after:?}"),
+            Content::Binary => "binary".to_string(),
+        }
+    }
+
+    #[test]
+    fn classifies_sides_into_text_or_binary() {
+        let cases = [
+            classify(None, Some(b"hi\n")),
+            classify(Some(b"bye\n"), None),
+            classify(Some(b"old\n"), Some(b"new\n")),
+            classify(Some(b"a\x00b"), Some(b"text")),
+            classify(Some(b"text"), Some(b"a\x00b")),
+            classify(Some(&[0xff, 0xfe]), None),
+        ];
+        wince::assert_eq!(
+            cases.join("\n"),
+            "\
+text \"\" \"hi\\n\"
+text \"bye\\n\" \"\"
+text \"old\\n\" \"new\\n\"
+binary
+binary
+binary"
+        );
     }
 
     #[test]

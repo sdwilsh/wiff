@@ -10,7 +10,10 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+base64.workspace = true
+futures.workspace = true
 octocrab.workspace = true
+percent-encoding.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
 similar.workspace = true
@@ -24,6 +27,7 @@ wiff-core.workspace = true
 wiff-diff.workspace = true
 
 [dev-dependencies]
+base64.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 time = { workspace = true, features = ["macros"] }
