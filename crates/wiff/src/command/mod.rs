@@ -22,7 +22,7 @@ use ulid::Ulid;
 use wiff_config::Config;
 use wiff_core::record::{Author, AuthorKind, ScmSource, SessionHeader, SourceKind, TipRule};
 use wiff_core::session::{active_session, data_dir, session_file};
-use wiff_core::source::{HeadBranch, head_branch};
+use wiff_core::source::{GitRepo, HeadBranch, ScmRepo, head_branch};
 use wiff_core::{BaseRuleset, CapturedDiff, DiffSource, GitSource, ProjectIdentity, ScmType};
 
 use self::comment::CommentArgs;
@@ -150,6 +150,22 @@ pub(crate) async fn capture_scm_diff(
         bail!("no changes to review");
     }
     Ok(captured)
+}
+
+/// A handle to the repository at `root` for the forge operations [`ScmRepo`]
+/// names, dispatched on its detected `scm`. This is the single point that binds
+/// a repository kind to its [`ScmRepo`] implementation; adding a new
+/// source-control system means adding its arm here. Errors for a kind wiff
+/// cannot yet drive through the trait, and for a directory with no known scm.
+pub(crate) fn scm_repo(scm: Option<ScmType>, root: PathBuf) -> anyhow::Result<Box<dyn ScmRepo>> {
+    match scm {
+        Some(ScmType::Git) => Ok(Box::new(GitRepo::new(root))),
+        Some(other) => bail!(
+            "{} is a {other} repository, which wiff cannot drive yet",
+            root.display()
+        ),
+        None => bail!("{} is not a recognized repository", root.display()),
+    }
 }
 
 /// Build the git source for `selection`. An explicit `base` overrides the

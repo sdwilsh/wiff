@@ -1350,6 +1350,44 @@ fn re_pulling_unchanged_reviews_appends_nothing() {
 }
 
 #[test]
+fn a_content_free_review_is_not_imported() {
+    // A plain comment review with no summary and no verdict, and an empty review
+    // that was dismissed, are both bare containers the forge created to hold
+    // inline comments; neither imports a review-level comment of its own.
+    let reviews = vec![
+        review("r1", "alice", "", None, false),
+        review("r2", "bob", "", None, true),
+    ];
+    let events = reconcile_reviews(&reviews, &[], VersionNumber(0), ids());
+    wince::assert_eq!(events, Vec::<RecordBody>::new());
+}
+
+#[test]
+fn re_pulling_an_unchanged_review_keeps_a_local_summary_edit() {
+    // A review imported with a summary, then edited locally without pushing.
+    // Re-pulling the same unchanged review must not clobber the unpushed edit
+    // back to the forge body: the reconcile compares the forge against the
+    // synced marker, not the local body, so it appends nothing.
+    let reviews = vec![review(
+        "r1",
+        "alice",
+        "please fix",
+        Some(Disposition::RequestChanges),
+        false,
+    )];
+    let mut log = reconcile_reviews(&reviews, &[], VersionNumber(0), ids());
+    let id = fold_events(log.clone())[0].id;
+    log.push(edit_event(
+        id,
+        human("alice"),
+        "please fix, and here is how".to_string(),
+    ));
+    let existing = fold_events(log);
+    let again = reconcile_reviews(&reviews, &existing, VersionNumber(0), ids());
+    wince::assert_eq!(again, Vec::<RecordBody>::new());
+}
+
+#[test]
 fn a_review_listed_twice_is_reconciled_once() {
     // A forge listing that repeats one review by origin imports a single
     // verdict-level comment rather than one per repeat.

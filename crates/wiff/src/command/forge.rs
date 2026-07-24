@@ -6,20 +6,22 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, bail};
+use anyhow::{Context, anyhow, bail};
 use clap::{Args, Subcommand};
 use ulid::Ulid;
 use wiff_config::Config;
 use wiff_core::record::{Author, ForgeUrl, TipRule};
-use wiff_core::session::{data_dir, session_bound_to, session_file};
-use wiff_core::source::GitRepo;
+use wiff_core::session::{
+    data_dir, forge_bound_sessions, session_binding, session_bound_to, session_file,
+};
 use wiff_core::{BaseRuleset, GitSource, ProjectIdentity, ScmRepo, SessionLog};
 use wiff_forge::{
-    FetchedPullRequest, Forge, GithubForge, ImportRequest, TokenOverride, import_pull_request,
-    resolve_token, resync_pull_request, select_pull_request_remote,
+    DeclinedWrite, FetchedPullRequest, Forge, GithubForge, ImportRequest, PushOutcome,
+    ResyncOutcome, TokenOverride, import_pull_request, push, resolve_token, resync_pull_request,
+    select_pull_request_remote,
 };
 
-use super::resolve_author;
+use super::{resolve_author, scm_repo};
 use crate::tui;
 
 /// Arguments for `wiff forge`.
@@ -37,9 +39,7 @@ impl ForgeArgs {
         let cli = self.token.overrides();
         match self.command {
             ForgeCommand::Pull(args) => args.run(&cli).await,
-            ForgeCommand::Push => {
-                bail!("wiff forge push is not implemented yet")
-            }
+            ForgeCommand::Push(args) => args.run(&cli).await,
         }
     }
 }
@@ -72,7 +72,7 @@ enum ForgeCommand {
     /// Fetch a pull request into a session and open it.
     Pull(PullArgs),
     /// Publish the local review to the bound pull request.
-    Push,
+    Push(PushArgs),
 }
 
 /// Arguments for `wiff forge pull`.
@@ -107,6 +107,202 @@ impl PullArgs {
             mirror_pull_request(forge.as_ref(), &url, &cwd, &base, author, self.new_session)
                 .await?;
         tui::open(&session, &config, false)
+    }
+}
+
+/// Arguments for `wiff forge push`.
+#[derive(Debug, Args)]
+struct PushArgs {
+    /// The pull request to publish to, when the repository holds reviews of
+    /// several: a number read against the repository's forge remote, or a full
+    /// pull-request URL. Omitted when the repository holds a single bound review.
+    #[arg(value_name = "NUMBER|URL")]
+    pr: Option<String>,
+    /// The exact session to publish, by ULID. Names one fork when several
+    /// reviews of the same pull request share a binding and a URL cannot tell
+    /// them apart.
+    #[arg(long, conflicts_with = "pr")]
+    session: Option<String>,
+    /// The display name to attribute the pull-first rebase's re-anchored
+    /// comments to, and whose local comments are published.
+    #[arg(long)]
+    author: Option<String>,
+    /// Act as an agent rather than a human: attribute the rebase to an agent and
+    /// publish that agent's comments instead of the human reviewer's.
+    #[arg(long)]
+    agent: bool,
+}
+
+impl PushArgs {
+    /// Publish the repository's bound review to its pull request.
+    async fn run(self, cli: &TokenOverride) -> anyhow::Result<()> {
+        let config = Config::load()?;
+        let cwd = std::env::current_dir().context("could not determine the current directory")?;
+        let identity = ProjectIdentity::for_dir(&cwd).map_err(|_| {
+            anyhow!(
+                "wiff forge push publishes a review from the repository holding it, but the \
+                 current directory is not inside a repository"
+            )
+        })?;
+        let root = identity
+            .repo_root
+            .clone()
+            .expect("for_dir yields a repo root on success");
+        let repo = scm_repo(identity.scm, root.clone())?;
+        let base = data_dir()?;
+        let (path, url, forge) = self
+            .locate_review(&identity, &base, &cwd, &config, cli)
+            .await?;
+        let mut log = SessionLog::open(&path)?;
+        let author = resolve_author(self.agent, self.author)?;
+        let (resync, pushed) =
+            push_bound_review(forge.as_ref(), repo.as_ref(), &mut log, &root, &url, author).await?;
+        report_push(&url, &resync, &pushed);
+        Ok(())
+    }
+
+    /// The session to publish, its bound pull request, and an adapter for that
+    /// pull request's host. A ULID names one session outright; a pull request
+    /// resolves to the most recent session bound to it; with neither given, the
+    /// repository's single bound session is published, and it is an error to
+    /// have none, or to have several without naming which.
+    async fn locate_review(
+        &self,
+        identity: &ProjectIdentity,
+        base: &Path,
+        cwd: &Path,
+        config: &Config,
+        cli: &TokenOverride,
+    ) -> anyhow::Result<(PathBuf, ForgeUrl, Box<dyn Forge>)> {
+        if let Some(session) = &self.session {
+            let ulid = Ulid::from_string(session)
+                .with_context(|| format!("{session} is not a valid session ULID"))?;
+            let path = session_file(base, &identity.canonical, ulid);
+            if !path.exists() {
+                bail!("`wiff forge push --session {ulid}` names no session in this repository");
+            }
+            let url = session_binding(&path)?.ok_or_else(|| {
+                anyhow!(
+                    "session {ulid} is not bound to a pull request; pull one with `wiff forge \
+                     pull` before pushing"
+                )
+            })?;
+            let forge = connect_forge(config, &url.host(), cli)?;
+            return Ok((path, url, forge));
+        }
+        if let Some(pr) = &self.pr {
+            let (url, forge) = resolve_target(pr, cwd, config, cli).await?;
+            let path = session_bound_to(base, &identity.canonical, &url)?.ok_or_else(|| {
+                anyhow!(
+                    "no session in this repository is bound to {}; pull it with `wiff forge \
+                     pull` before pushing",
+                    url.as_str()
+                )
+            })?;
+            return Ok((path, url, forge));
+        }
+        let mut bound = forge_bound_sessions(base, &identity.canonical)?;
+        match bound.len() {
+            0 => bail!(
+                "no session in this repository is bound to a pull request; pull one with `wiff \
+                 forge pull` before pushing"
+            ),
+            1 => {
+                let only = bound.pop().expect("one bound session");
+                let forge = connect_forge(config, &only.url.host(), cli)?;
+                Ok((only.path, only.url, forge))
+            }
+            _ => {
+                let listing = bound
+                    .iter()
+                    .map(|session| format!("{} ({})", session.ulid, session.url.as_str()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                bail!(
+                    "several sessions here are bound to pull requests: {listing}; name which to \
+                     push with `wiff forge push --session <ULID>`"
+                )
+            }
+        }
+    }
+}
+
+/// Reconcile the bound pull request's remote state as of the pre-push fetch into
+/// the session behind `log`, then publish `author`'s local review to it. Pulling
+/// first rebases the local review onto that fetched state; a forge edit made
+/// after this fetch but before the review is submitted is left for the next pull
+/// to reconcile. Returns what the reconcile imported and what the publish sent.
+async fn push_bound_review(
+    forge: &dyn Forge,
+    repo: &dyn ScmRepo,
+    log: &mut SessionLog,
+    root: &Path,
+    url: &ForgeUrl,
+    author: Author,
+) -> anyhow::Result<(ResyncOutcome, PushOutcome)> {
+    let fetched = forge.fetch(url).await?;
+    let source = prepare_source(repo, root, &fetched, log.ulid()).await?;
+    let resync = resync_pull_request(log, &source, &fetched, author.clone()).await?;
+    let pushed = push(forge, log, url, &author).await?;
+    Ok((resync, pushed))
+}
+
+/// Print what pushing to `url` did: first what its pull-first step reconciled
+/// from the forge, then what publishing the review sent.
+fn report_push(url: &ForgeUrl, resync: &ResyncOutcome, outcome: &PushOutcome) {
+    if resync.refresh.is_some()
+        || resync.comments > 0
+        || resync.reviews > 0
+        || resync.description_updated
+    {
+        println!("reconciled from {}", url.as_str());
+        if resync.refresh.is_some() {
+            println!("  captured a new diff version");
+        }
+        if resync.comments > 0 {
+            println!("  {} comments updated from the forge", resync.comments);
+        }
+        if resync.reviews > 0 {
+            println!("  {} reviews updated from the forge", resync.reviews);
+        }
+        if resync.description_updated {
+            println!("  description updated from the forge");
+        }
+    }
+    println!("pushed review to {}", url.as_str());
+    let mut reported = false;
+    let mut line = |count: usize, label: &str| {
+        if count > 0 {
+            println!("  {count} {label}");
+            reported = true;
+        }
+    };
+    line(outcome.created.len(), "comments created");
+    line(outcome.edited.len(), "comment edits published");
+    line(outcome.resolved.len(), "comment resolutions published");
+    if outcome.verdict_submitted {
+        println!("  verdict submitted");
+        reported = true;
+    }
+    if outcome.description_published {
+        println!("  description updated");
+        reported = true;
+    }
+    for declined in &outcome.declined {
+        match declined {
+            DeclinedWrite::Resolution(comment) => {
+                println!(
+                    "  resolution of comment {comment} not propagated: the forge does not support it"
+                );
+            }
+            DeclinedWrite::Description => {
+                println!("  description update not propagated: the forge does not support it");
+            }
+        }
+        reported = true;
+    }
+    if !reported {
+        println!("  nothing to publish; the review was already up to date");
     }
 }
 
@@ -153,7 +349,7 @@ async fn resolve_target(
         }
         PullTarget::Number(number) => {
             let identity = ProjectIdentity::for_dir(cwd).map_err(|_| {
-                anyhow::anyhow!(
+                anyhow!(
                     "a pull-request number is read against the repository's forge remote, but \
                      the current directory is not inside a repository; give a full pull-request \
                      URL instead"
@@ -161,19 +357,15 @@ async fn resolve_target(
             })?;
             let root = identity
                 .repo_root
+                .clone()
                 .expect("for_dir yields a repo root on success");
-            // A number resolves through git remotes. A colocated jj checkout
-            // keeps a usable .git beside its .jj, so read git whenever a .git is
-            // present rather than trusting the discovered scm, which names jj for
-            // that layout.
-            if !root.join(".git").exists() {
-                bail!(
-                    "a pull-request number is read against a git remote, but {} is not a git \
-                     repository; give a full pull-request URL instead",
-                    root.display()
-                );
-            }
-            let remotes = GitRepo::new(root).remotes().await?;
+            let repo = scm_repo(identity.scm, root).map_err(|err| {
+                anyhow!(
+                    "a pull-request number is read against a git remote, but {err:#}; give a full \
+                     pull-request URL instead"
+                )
+            })?;
+            let remotes = repo.remotes().await?;
             let (remote, host) = select_pull_request_remote(&remotes, &config.forge)?;
             let forge = connect_forge(config, &host, cli)?;
             let url = forge.pull_request_url(&remote.url, &number.to_string())?;
@@ -195,7 +387,7 @@ async fn mirror_pull_request(
     new_session: bool,
 ) -> anyhow::Result<PathBuf> {
     let identity = ProjectIdentity::for_dir(cwd).map_err(|_| {
-        anyhow::anyhow!(
+        anyhow!(
             "wiff forge pull mirrors a pull request into the current repository, but the current \
              directory is not inside one; a repo-less pull is not supported yet"
         )
@@ -204,15 +396,7 @@ async fn mirror_pull_request(
         .repo_root
         .clone()
         .expect("for_dir yields a repo root on success");
-    // A colocated jj checkout keeps a usable .git beside its .jj, so read git
-    // whenever a .git is present rather than trusting the discovered scm.
-    if !root.join(".git").exists() {
-        bail!(
-            "wiff forge pull does not yet support mirroring into a non-git repository, but {} is \
-             not a git repository",
-            root.display()
-        );
-    }
+    let repo = scm_repo(identity.scm, root.clone())?;
 
     let fetched = forge.fetch(url).await?;
     let existing = if new_session {
@@ -223,13 +407,13 @@ async fn mirror_pull_request(
     match existing {
         Some(path) => {
             let mut log = SessionLog::open(&path)?;
-            let source = prepare_source(&root, &fetched, log.ulid()).await?;
+            let source = prepare_source(repo.as_ref(), &root, &fetched, log.ulid()).await?;
             resync_pull_request(&mut log, &source, &fetched, author).await?;
             Ok(path)
         }
         None => {
             let session = Ulid::new();
-            let source = prepare_source(&root, &fetched, session).await?;
+            let source = prepare_source(repo.as_ref(), &root, &fetched, session).await?;
             let request = ImportRequest {
                 session,
                 base,
@@ -249,11 +433,11 @@ async fn mirror_pull_request(
 /// tip is fetched rather than assumed present: once the target advances past the
 /// fork point it is no longer reachable from the head.
 async fn prepare_source(
+    repo: &dyn ScmRepo,
     root: &Path,
     fetched: &FetchedPullRequest,
     session: Ulid,
 ) -> anyhow::Result<GitSource> {
-    let repo = GitRepo::new(root);
     let head = repo.fetch_pinned(&fetched.head, session).await?;
     repo.fetch_base(&fetched.base, session).await?;
     let base = BaseRuleset::new(format!(
@@ -298,12 +482,19 @@ pub(crate) fn connect_forge(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+
     use async_trait::async_trait;
     use time::OffsetDateTime;
+    use wiff_core::ScmType;
     use wiff_core::record::{
-        AuthorKind, Description, ExternalKind, ExternalRef, ForgeId, RevisionId,
+        AuthorKind, CommentCreate, CommentEvent, CommentEventKind, CommentTarget, Description,
+        ExternalKind, ExternalRef, FORMAT_VERSION, ForgeId, RecordBody, RevisionId, ScmSource,
+        SessionHeader, SourceKind,
     };
     use wiff_core::review::ReviewState;
+    use wiff_core::session::LockWait;
     use wiff_core::source::FetchSource;
     use wiff_forge::{
         FetchedDescription, ForgeHost, ForgeTable, NewPullRequest, OutgoingComment, OutgoingReview,
@@ -476,7 +667,7 @@ mod tests {
     }
 
     // A discovered root that is not a git checkout (here a bare `.hg` marker)
-    // cannot answer a number, since resolution reads git remotes.
+    // cannot answer a number, since only git is driven for a remote lookup.
     #[tokio::test]
     async fn a_number_target_in_a_non_git_repository_is_rejected() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -486,13 +677,11 @@ mod tests {
             .await
             .map(|_| ())
             .unwrap_err();
-        let message = error
-            .to_string()
-            .replace(&dir.path().display().to_string(), "TMPDIR");
+        let message = format!("{error:#}").replace(&dir.path().display().to_string(), "TMPDIR");
         wince::assert_eq!(
             message,
-            "a pull-request number is read against a git remote, but TMPDIR is not a git \
-             repository; give a full pull-request URL instead"
+            "a pull-request number is read against a git remote, but TMPDIR is a hg repository, \
+             which wiff cannot drive yet; give a full pull-request URL instead"
         );
     }
 
@@ -699,6 +888,485 @@ mod tests {
              bound to: https://github.com/octo/demo/pull/7\n\
              description: PR title / PR body\n\
              diff versions: 1"
+                .to_string()
+        );
+    }
+
+    /// A forge that hands back a fixed pull request on fetch and binds every
+    /// comment it is asked to publish to a predictable forge object, recording
+    /// the ULIDs it posted standalone. The inline batch and the standalone posts
+    /// both return objects, so a push can link them.
+    struct PushForge {
+        fetched: FetchedPullRequest,
+        posted: Mutex<Vec<Ulid>>,
+    }
+
+    #[async_trait]
+    impl Forge for PushForge {
+        async fn fetch(&self, _pr: &ForgeUrl) -> anyhow::Result<FetchedPullRequest> {
+            Ok(self.fetched.clone())
+        }
+
+        async fn submit_review(
+            &self,
+            _pr: &ForgeUrl,
+            review: &OutgoingReview,
+        ) -> anyhow::Result<SubmittedReview> {
+            let comments: BTreeMap<Ulid, ExternalRef> = review
+                .comments
+                .iter()
+                .map(|c| {
+                    (
+                        c.comment,
+                        github_ref(ExternalKind::ReviewComment, &format!("rc-{}", c.comment)),
+                    )
+                })
+                .collect();
+            Ok(SubmittedReview {
+                review: github_ref(ExternalKind::Verdict, "review"),
+                comments,
+            })
+        }
+
+        async fn post_comment(
+            &self,
+            _pr: &ForgeUrl,
+            comment: &OutgoingComment,
+        ) -> anyhow::Result<ExternalRef> {
+            self.posted.lock().expect("lock").push(comment.comment);
+            Ok(github_ref(
+                ExternalKind::ReviewComment,
+                &format!("pc-{}", comment.comment),
+            ))
+        }
+
+        async fn edit_comment(&self, _at: &ExternalRef, _body: &str) -> anyhow::Result<()> {
+            unreachable!("this review has no linked comment to edit")
+        }
+
+        async fn set_resolved(&self, _at: &ExternalRef, _resolved: bool) -> anyhow::Result<()> {
+            unreachable!("this review has no linked comment to resolve")
+        }
+
+        async fn set_description(
+            &self,
+            _pr: &ForgeUrl,
+            _description: &Description,
+        ) -> anyhow::Result<()> {
+            unreachable!("the imported description already matches the forge")
+        }
+
+        async fn create_pull_request(&self, _req: &NewPullRequest) -> anyhow::Result<ForgeUrl> {
+            unreachable!("pushing a review does not open a pull request")
+        }
+
+        fn pull_request_url(&self, _remote_url: &str, _id: &str) -> anyhow::Result<ForgeUrl> {
+            unreachable!("pushing a review does not resolve one by id")
+        }
+    }
+
+    // A bound session's local comment is published to its pull request: the
+    // pull-first resync finds nothing changed upstream, then the comment posts
+    // and its forge object is linked back onto it.
+    #[tokio::test]
+    async fn pushing_a_bound_review_publishes_the_local_comment() {
+        let origin = tempfile::tempdir().expect("origin tempdir");
+        let work = tempfile::tempdir().expect("work tempdir");
+        let data = tempfile::tempdir().expect("data tempdir");
+
+        git(origin.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(origin.path().join("f.txt"), "base\n").expect("write base");
+        git(origin.path(), &["add", "f.txt"]);
+        git(origin.path(), &["commit", "-q", "-m", "base"]);
+        git(origin.path(), &["checkout", "-q", "-b", "pr"]);
+        std::fs::write(origin.path().join("f.txt"), "base\nchange\n").expect("write change");
+        git(origin.path(), &["commit", "-qa", "-m", "pr work"]);
+        let head_commit = git_out(origin.path(), &["rev-parse", "HEAD"]);
+        git(origin.path(), &["checkout", "-q", "main"]);
+        let base_commit = git_out(origin.path(), &["rev-parse", "HEAD"]);
+        git(
+            work.path(),
+            &["clone", "-q", &origin.path().display().to_string(), "."],
+        );
+
+        let fetched = fetched_pull_request(origin.path(), &base_commit, &head_commit);
+        let url = ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("valid url");
+        let import = FetchForge(fetched.clone());
+        let path =
+            mirror_pull_request(&import, &url, work.path(), data.path(), human("wez"), false)
+                .await
+                .expect("import binds a session");
+
+        // A locally authored review-level comment, anchored against the imported
+        // diff version, with no forge object yet.
+        let comment = Ulid::from(42u128);
+        let version = ReviewState::load(&path)
+            .expect("load imported session")
+            .latest_version()
+            .expect("imported version")
+            .number;
+        let mut log = SessionLog::open(&path).expect("open session");
+        let (mut lock, _records) = log.lock_and_sync(LockWait::Block).expect("lock");
+        log.append(
+            &mut lock,
+            RecordBody::CommentEvent(CommentEvent {
+                id: comment,
+                author: human("wez"),
+                authored_at: None,
+                origin: None,
+                kind: CommentEventKind::Create(CommentCreate {
+                    target: CommentTarget::File {
+                        file: "f.txt".to_string(),
+                    },
+                    version,
+                    anchor: None,
+                    body: "a note on the whole file".to_string(),
+                    disposition: None,
+                }),
+            }),
+        )
+        .expect("append comment");
+        drop(lock);
+
+        let forge = PushForge {
+            fetched,
+            posted: Mutex::new(Vec::new()),
+        };
+        let repo = scm_repo(Some(ScmType::Git), work.path().to_path_buf()).expect("git repo");
+        let (_resync, outcome) = push_bound_review(
+            &forge,
+            repo.as_ref(),
+            &mut log,
+            work.path(),
+            &url,
+            human("wez"),
+        )
+        .await
+        .expect("push publishes the review");
+
+        let published = ReviewState::load(&path)
+            .expect("reload session")
+            .comments
+            .iter()
+            .find(|c| c.id == comment)
+            .and_then(|c| c.origin.as_ref().map(|o| o.id.clone()))
+            .unwrap_or_else(|| "(unlinked)".to_string());
+        let join = |ids: &[Ulid]| {
+            ids.iter()
+                .map(Ulid::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let posted = join(&forge.posted.lock().expect("lock"));
+        let summary = format!(
+            "created: [{}]\n\
+             edited: [{}]\n\
+             resolved: [{}]\n\
+             verdict submitted: {}\n\
+             description published: {}\n\
+             comment origin: {published}\n\
+             posted standalone: [{posted}]",
+            join(&outcome.created),
+            join(&outcome.edited),
+            join(&outcome.resolved),
+            outcome.verdict_submitted,
+            outcome.description_published,
+        );
+        wince::assert_eq!(
+            summary,
+            format!(
+                "created: [{comment}]\n\
+                 edited: []\n\
+                 resolved: []\n\
+                 verdict submitted: false\n\
+                 description published: false\n\
+                 comment origin: pc-{comment}\n\
+                 posted standalone: [{comment}]"
+            )
+        );
+    }
+
+    // A repository whose only session never bound a pull request has nothing to
+    // push to, so a bare push is refused by name rather than reaching the
+    // network.
+    #[tokio::test]
+    async fn pushing_with_no_bound_session_is_refused() {
+        let data = tempfile::tempdir().expect("data tempdir");
+        let (_log, lock) = SessionLog::create(data.path(), "demo", |ulid| {
+            RecordBody::Session(SessionHeader {
+                ulid,
+                version: FORMAT_VERSION,
+                project: "demo".to_string(),
+                repo_root: Some("/repos/demo".to_string()),
+                cwd: "/repos/demo".to_string(),
+                source: SourceKind::Scm(ScmSource {
+                    scm: ScmType::Git,
+                    base: BaseRuleset::new("ref(name(deadbeef))"),
+                    tip: TipRule::Worktree,
+                    branch_hint: None,
+                }),
+                forge: None,
+            })
+        })
+        .expect("create session");
+        drop(lock);
+
+        let identity = ProjectIdentity {
+            canonical: "demo".to_string(),
+            repo_root: Some(PathBuf::from("/repos/demo")),
+            scm: Some(ScmType::Git),
+        };
+        let args = PushArgs {
+            pr: None,
+            session: None,
+            author: None,
+            agent: false,
+        };
+        let error = args
+            .locate_review(
+                &identity,
+                data.path(),
+                Path::new("."),
+                &config_with(ForgeTable::default()),
+                &TokenOverride::default(),
+            )
+            .await
+            .map(|_| ())
+            .expect_err("an unbound session cannot be pushed");
+        wince::assert_eq!(
+            error.to_string(),
+            "no session in this repository is bound to a pull request; pull one with `wiff \
+             forge pull` before pushing"
+                .to_string()
+        );
+    }
+
+    /// A session header for `project` bound to `forge`, with an inert
+    /// working-copy source, for populating a bucket without a repository.
+    fn bucket_header(project: &str, forge: Option<ForgeUrl>) -> impl FnOnce(Ulid) -> RecordBody {
+        let project = project.to_string();
+        move |ulid| {
+            RecordBody::Session(SessionHeader {
+                ulid,
+                version: FORMAT_VERSION,
+                project: project.clone(),
+                repo_root: Some("/repos/demo".to_string()),
+                cwd: "/repos/demo".to_string(),
+                source: SourceKind::Scm(ScmSource {
+                    scm: ScmType::Git,
+                    base: BaseRuleset::new("ref(name(deadbeef))"),
+                    tip: TipRule::Worktree,
+                    branch_hint: None,
+                }),
+                forge,
+            })
+        }
+    }
+
+    // A bare push targets the session bound to a pull request, not the most
+    // recently touched one: a later, unbound session in the same bucket (which
+    // recency-based selection would pick) is passed over for the bound review.
+    #[tokio::test]
+    async fn a_bare_push_targets_the_bound_session_not_the_most_recent() {
+        let data = tempfile::tempdir().expect("data tempdir");
+        let url = ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("valid url");
+        let (bound, lock) = SessionLog::create(
+            data.path(),
+            "demo",
+            bucket_header("demo", Some(url.clone())),
+        )
+        .expect("create bound session");
+        drop(lock);
+        // A later, unbound session: recency would prefer it, the binding must not.
+        let (unbound, lock) = SessionLog::create(data.path(), "demo", bucket_header("demo", None))
+            .expect("create unbound session");
+        drop(lock);
+
+        let identity = ProjectIdentity {
+            canonical: "demo".to_string(),
+            repo_root: Some(PathBuf::from("/repos/demo")),
+            scm: Some(ScmType::Git),
+        };
+        let args = PushArgs {
+            pr: None,
+            session: None,
+            author: None,
+            agent: false,
+        };
+        let (path, located, _forge) = args
+            .locate_review(
+                &identity,
+                data.path(),
+                Path::new("."),
+                &config_with(ForgeTable::default()),
+                &direct_token("t"),
+            )
+            .await
+            .expect("the bound session is located");
+        let summary = format!(
+            "url: {}\nis the bound session: {}\nis the unbound session: {}",
+            located.as_str(),
+            path == bound.path(),
+            path == unbound.path(),
+        );
+        wince::assert_eq!(
+            summary,
+            "url: https://github.com/octo/demo/pull/7\n\
+             is the bound session: true\n\
+             is the unbound session: false"
+                .to_string()
+        );
+    }
+
+    // Two reviews forked from one pull request (the `--new-session` workflow)
+    // share a binding, so a bare push cannot choose between them and names both
+    // by ULID for the user to pick with `--session`.
+    #[tokio::test]
+    async fn a_bare_push_across_same_pull_request_forks_names_each_by_ulid() {
+        let data = tempfile::tempdir().expect("data tempdir");
+        let url = ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("valid url");
+        let (first, lock) = SessionLog::create(
+            data.path(),
+            "demo",
+            bucket_header("demo", Some(url.clone())),
+        )
+        .expect("create first fork");
+        drop(lock);
+        let (second, lock) = SessionLog::create(
+            data.path(),
+            "demo",
+            bucket_header("demo", Some(url.clone())),
+        )
+        .expect("create second fork");
+        drop(lock);
+
+        let identity = ProjectIdentity {
+            canonical: "demo".to_string(),
+            repo_root: Some(PathBuf::from("/repos/demo")),
+            scm: Some(ScmType::Git),
+        };
+        let args = PushArgs {
+            pr: None,
+            session: None,
+            author: None,
+            agent: false,
+        };
+        let error = args
+            .locate_review(
+                &identity,
+                data.path(),
+                Path::new("."),
+                &config_with(ForgeTable::default()),
+                &direct_token("t"),
+            )
+            .await
+            .map(|_| ())
+            .expect_err("same-pull-request forks cannot be chosen between");
+        // The listing is most recent first; with no writes since creation, the
+        // later ULID sorts ahead.
+        let mut ulids = [first.ulid(), second.ulid()];
+        ulids.sort_by(|a, b| b.cmp(a));
+        wince::assert_eq!(
+            error.to_string(),
+            format!(
+                "several sessions here are bound to pull requests: {} \
+                 (https://github.com/octo/demo/pull/7), {} \
+                 (https://github.com/octo/demo/pull/7); name which to push with `wiff forge push \
+                 --session <ULID>`",
+                ulids[0], ulids[1],
+            )
+        );
+    }
+
+    // Naming one fork by ULID publishes exactly that session, reaching a fork a
+    // bare push or a URL (which resolves to the most recent) could not.
+    #[tokio::test]
+    async fn a_session_ulid_selects_one_same_pull_request_fork() {
+        let data = tempfile::tempdir().expect("data tempdir");
+        let url = ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("valid url");
+        let (older, lock) = SessionLog::create(
+            data.path(),
+            "demo",
+            bucket_header("demo", Some(url.clone())),
+        )
+        .expect("create older fork");
+        drop(lock);
+        let (newer, lock) = SessionLog::create(
+            data.path(),
+            "demo",
+            bucket_header("demo", Some(url.clone())),
+        )
+        .expect("create newer fork");
+        drop(lock);
+
+        let identity = ProjectIdentity {
+            canonical: "demo".to_string(),
+            repo_root: Some(PathBuf::from("/repos/demo")),
+            scm: Some(ScmType::Git),
+        };
+        let args = PushArgs {
+            pr: None,
+            session: Some(older.ulid().to_string()),
+            author: None,
+            agent: false,
+        };
+        let (path, located, _forge) = args
+            .locate_review(
+                &identity,
+                data.path(),
+                Path::new("."),
+                &config_with(ForgeTable::default()),
+                &direct_token("t"),
+            )
+            .await
+            .expect("the named fork is located");
+        let summary = format!(
+            "url: {}\nis the older fork: {}\nis the newer fork: {}",
+            located.as_str(),
+            path == older.path(),
+            path == newer.path(),
+        );
+        wince::assert_eq!(
+            summary,
+            "url: https://github.com/octo/demo/pull/7\n\
+             is the older fork: true\n\
+             is the newer fork: false"
+                .to_string()
+        );
+    }
+
+    // A syntactically valid ULID that names no session file reports that plainly
+    // rather than leaking the internal path through a raw I/O error.
+    #[tokio::test]
+    async fn a_session_ulid_naming_no_session_reports_it_plainly() {
+        let data = tempfile::tempdir().expect("data tempdir");
+        let identity = ProjectIdentity {
+            canonical: "demo".to_string(),
+            repo_root: Some(PathBuf::from("/repos/demo")),
+            scm: Some(ScmType::Git),
+        };
+        let ulid = Ulid::from_string("01BX5ZZKBKACTAV9WEVGEMMVRZ").expect("valid ulid");
+        let args = PushArgs {
+            pr: None,
+            session: Some(ulid.to_string()),
+            author: None,
+            agent: false,
+        };
+        let error = args
+            .locate_review(
+                &identity,
+                data.path(),
+                Path::new("."),
+                &config_with(ForgeTable::default()),
+                &direct_token("t"),
+            )
+            .await
+            .map(|_| ())
+            .expect_err("an unknown session is refused");
+        wince::assert_eq!(
+            format!("{error:#}"),
+            "`wiff forge push --session 01BX5ZZKBKACTAV9WEVGEMMVRZ` names no session in this \
+             repository"
                 .to_string()
         );
     }

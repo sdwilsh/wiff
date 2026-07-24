@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use anyhow::{Context, Result, bail};
 use octocrab::Octocrab;
+use octocrab::models::ReviewId;
 use serde::Deserialize;
 use serde::de::IgnoredAny;
 use serde_json::{Value, json};
@@ -359,7 +360,9 @@ impl GithubForge {
             .await
             .with_context(|| format!("submitting a review on {pr}"))?;
 
-        let mut placed = self.review_comments(&at, created.id).await?;
+        let mut placed = self
+            .placed_review_comments(&at, ReviewId::from(created.id))
+            .await?;
         if placed.len() != review.comments.len() {
             bail!(
                 "github created review {} ({}) with {} comments for {} submitted; \
@@ -505,27 +508,34 @@ impl GithubForge {
             .with_context(|| format!("{} is not a pull request URL", created.html_url))
     }
 
-    /// Read a submitted review's inline comments, following its pagination to
-    /// the end. The listing order is GitHub's own; the caller matches each back
-    /// to a submitted comment by anchor and body.
-    async fn review_comments(
+    /// Read the inline comments GitHub created for review `review_id`, resolved
+    /// to the anchor each sits on. The comments are read through the pull
+    /// request's comment listing rather than the review's own, since only that
+    /// listing reports a comment's line and side: the review-scoped listing
+    /// gives just a diff-offset position, which cannot key a comment back to the
+    /// local one it was submitted for. The listing order is GitHub's own; the
+    /// caller matches each back to a submitted comment by anchor and body.
+    async fn placed_review_comments(
         &self,
         at: &PullRequestId,
-        review_id: u64,
+        review_id: ReviewId,
     ) -> Result<Vec<PlacedComment>> {
-        let route = format!(
-            "/repos/{}/{}/pulls/{}/reviews/{}/comments",
-            at.owner, at.repo, at.number, review_id
-        );
-        let first: octocrab::Page<PlacedComment> = self
+        let first = self
             .crab
-            .get(&route, None::<&()>)
+            .pulls(&at.owner, &at.repo)
+            .list_comments(Some(at.number))
+            .send()
             .await
             .context("listing a submitted review's comments")?;
-        self.crab
+        let all = self
+            .crab
             .all_pages(first)
             .await
-            .context("listing a submitted review's comments")
+            .context("listing a submitted review's comments")?;
+        all.into_iter()
+            .filter(|comment| comment.pull_request_review_id == Some(review_id))
+            .map(PlacedComment::from_comment)
+            .collect()
     }
 }
 
@@ -995,7 +1005,7 @@ fn created_comment_ref(forge: &ForgeId, comment: PlacedComment) -> ExternalRef {
 
 /// Find the created comment that matches `outgoing`, returning its index in
 /// `placed`. GitHub does not contract the order of a review's comment listing,
-/// so a comment is bound to its forge object by its anchor -- path, end line,
+/// so a comment is bound to its forge object by its anchor -- path, line range,
 /// and side -- rather than by position. The body disambiguates two comments at
 /// the same anchor, but only then: GitHub may normalize a stored body (line
 /// endings, trailing whitespace), so requiring an exact body match on every
@@ -1007,15 +1017,16 @@ fn match_placed(placed: &[PlacedComment], outgoing: &OutgoingComment) -> Result<
         .anchor
         .as_ref()
         .context("a batched review comment must anchor inline")?;
-    let line = u64::from(anchor.end_line.get());
+    let line = anchor.end_line.get();
     let side = side_label(anchor.side);
     let at_anchor: Vec<usize> = placed
         .iter()
         .enumerate()
         .filter(|(_, made)| {
-            made.path == anchor.path
-                && made.line == Some(line)
-                && side_label(side_of(made.side.as_deref())) == side
+            made.anchor.path == anchor.path
+                && made.anchor.start_line == anchor.start_line
+                && made.anchor.end_line == anchor.end_line
+                && made.anchor.side == anchor.side
         })
         .map(|(index, _)| index)
         .collect();
@@ -1137,21 +1148,29 @@ struct CreatedObject {
     html_url: String,
 }
 
-/// A review comment read back after a batched submission, with the fields
-/// needed to key it to the local comment it was created for.
-#[derive(Deserialize)]
+/// A review comment read back after a batched submission, resolved to the
+/// anchor and body that key it to the local comment it was created for.
 struct PlacedComment {
     id: u64,
     html_url: String,
-    /// The changed file the comment anchors to.
-    path: String,
-    /// The end line the comment anchors to, absent for a comment GitHub has
-    /// marked outdated.
-    line: Option<u64>,
-    /// The diff side the end line sits on, `LEFT` or `RIGHT`, absent when GitHub
-    /// leaves it to default to the addition side.
-    side: Option<String>,
+    /// Where the comment sits on the diff, read the same way a fetched comment's
+    /// anchor is so that a line GitHub reports only as an original position
+    /// still resolves.
+    anchor: ForgeAnchor,
     body: String,
+}
+
+impl PlacedComment {
+    /// Resolve a read-back GitHub comment to the anchor and body it is keyed by.
+    fn from_comment(comment: octocrab::models::pulls::Comment) -> Result<Self> {
+        let anchor = anchor_of(&comment)?;
+        Ok(Self {
+            id: comment.id.into_inner(),
+            html_url: comment.html_url,
+            anchor,
+            body: comment.body,
+        })
+    }
 }
 
 /// Where a linked comment lives, used to choose the endpoint that edits it.

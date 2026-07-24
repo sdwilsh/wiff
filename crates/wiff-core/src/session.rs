@@ -567,6 +567,61 @@ pub fn session_bound_to(base: &Path, project: &str, url: &ForgeUrl) -> Result<Op
     Ok(None)
 }
 
+/// The pull request the session at `path` is bound to, or `None` when it is
+/// unbound or its header is not yet readable. Errors when the file is missing or
+/// cannot be read, so a caller naming a session by ULID learns that it does not
+/// exist rather than reading a missing file as "unbound".
+pub fn session_binding(path: &Path) -> Result<Option<ForgeUrl>> {
+    Ok(read_header(path)?.and_then(|header| header.forge))
+}
+
+/// A session bound to a pull request, as reported by [`forge_bound_sessions`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundSession {
+    /// The session's log file.
+    pub path: PathBuf,
+    /// The session's identifier. Several sessions can bind one pull request (a
+    /// fresh review forks a new one), so this is what tells them apart.
+    pub ulid: Ulid,
+    /// The pull request the session is bound to.
+    pub url: ForgeUrl,
+}
+
+/// Every session in `project` bound to a pull request, most recent first. A
+/// caller with no pull request in hand (a bare `wiff forge push`) uses this to
+/// find the review to publish: one bound session is unambiguous, while several
+/// mean the caller must name which by ULID.
+///
+/// A momentarily unreadable session errors rather than reading as "unbound", so
+/// a caller does not act on a partial view of the bucket and, say, publish the
+/// wrong review.
+pub fn forge_bound_sessions(base: &Path, project: &str) -> Result<Vec<BoundSession>> {
+    let mut bound = Vec::new();
+    for path in list_sessions(base, project)? {
+        match read_header(&path) {
+            Ok(Some(header)) => {
+                if let Some(url) = header.forge {
+                    bound.push(BoundSession {
+                        path,
+                        ulid: header.ulid,
+                        url,
+                    });
+                }
+            }
+            // A header not yet readable (an in-flight create or a truncated
+            // file) is simply not a binding to report.
+            Ok(None) => {}
+            // A first record that is not a header is a damaged session; skip it
+            // rather than aborting, so an unrelated broken session cannot hide a
+            // healthy bound one.
+            Err(Error::Decode(_) | Error::NotASession { .. }) => {}
+            // An I/O failure is not evidence of no binding, so it propagates.
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(bound)
+}
+
 /// Whether an scm source is the review of `branch` (a full ref name such as
 /// `refs/heads/topic`): a ref tip that names it, or a working-copy tip created
 /// on it. A `--change <branch>` session, whose committed ref tip holds the

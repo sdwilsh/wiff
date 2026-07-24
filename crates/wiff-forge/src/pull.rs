@@ -8,6 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use time::OffsetDateTime;
 use ulid::Ulid;
 use wiff_core::comment::{
     delete_event, import_create, import_disposition, import_edit, import_resolve,
@@ -66,34 +67,17 @@ pub fn reconcile_comments(
     for comment in order.iter().filter(|c| updates.contains(&c.origin)) {
         let id = id_by_origin[&comment.origin];
         let current = by_id[&id];
-        // Compare the forge against the marker the last sync recorded, not
-        // against the current local state: an unpushed local edit differs from
-        // the forge but must survive to be pushed, so only a forge-side change
-        // (the forge's body no longer matching the marker) imports. When both
-        // sides changed since the last sync the forge wins: its edit imports
-        // over the unpushed local one and advances the marker past it. That is
-        // the same last-writer-wins policy the description reconcile follows,
-        // and it keeps a linked comment convergent with the forge across
-        // machines rather than diverging silently.
-        //
-        // A comment reconciled here always has an origin and so was seeded a
-        // marker at its imported create or its link; the comparisons key off
-        // that marker. Were a marker ever absent both comparisons read as
-        // changed and this pull re-imports the forge's body and resolution,
-        // which is redundant but not lossy.
-        let synced = current.synced.as_ref();
-        let forge_body_marker = comment_body_marker(&comment.body);
-        if synced.map(|sync| &sync.body_marker) != Some(&forge_body_marker) {
-            events.push(import_edit(
-                id,
-                comment.author.clone(),
-                comment.origin.clone(),
-                comment.authored_at,
-                comment.body.clone(),
-            ));
+        if let Some(edit) = import_forge_body_edit(
+            current,
+            &comment.author,
+            &comment.origin,
+            comment.authored_at,
+            &comment.body,
+        ) {
+            events.push(edit);
         }
         let resolved = comment.resolution.is_some();
-        if synced.map(|sync| sync.resolved) != Some(resolved) {
+        if current.synced.as_ref().map(|sync| sync.resolved) != Some(resolved) {
             events.push(import_resolve(
                 id,
                 resolver(comment),
@@ -164,9 +148,11 @@ pub fn reconcile_comments(
 /// Reconcile the forge's `fetched` reviews against the `existing` folded
 /// comments, returning the events that import each review's verdict. A review
 /// imports as a review-level comment holding its summary, with the mapped
-/// disposition; a dismissed review has none. `number` is the current diff
-/// version the imported comment is authored against. `new_id` mints a stable id
-/// for each review new this pull.
+/// disposition; a dismissed review has none. A review with neither a summary nor
+/// a verdict is skipped: it is a bare container the forge created to hold a
+/// batch of inline comments, which import on their own. `number` is the current
+/// diff version the imported comment is authored against. `new_id` mints a
+/// stable id for each review new this pull.
 ///
 /// Unlike a comment, a review absent from `fetched` is not withdrawn: a forge
 /// dismisses a review rather than deleting it, and a dismissal arrives as a
@@ -203,14 +189,14 @@ pub fn reconcile_reviews(
         if updates.contains(&review.origin) {
             let id = id_by_origin[&review.origin];
             let current = by_id[&id];
-            if current.body != review.body {
-                events.push(import_edit(
-                    id,
-                    review.author.clone(),
-                    review.origin.clone(),
-                    review.authored_at,
-                    review.body.clone(),
-                ));
+            if let Some(edit) = import_forge_body_edit(
+                current,
+                &review.author,
+                &review.origin,
+                review.authored_at,
+                &review.body,
+            ) {
+                events.push(edit);
             }
             // A disposition change, including a dismissal that clears the
             // verdict, is attributed to the review's own author rather than
@@ -227,6 +213,13 @@ pub fn reconcile_reviews(
                 ));
             }
         } else {
+            // A review with neither a summary nor a verdict is a bare container
+            // the forge created to hold a batch of inline comments; those
+            // comments import on their own, so it mirrors nothing worth a
+            // review-level comment of its own.
+            if review.body.is_empty() && disposition.is_none() {
+                continue;
+            }
             let id = *id_by_origin
                 .entry(review.origin.clone())
                 .or_insert_with(&mut new_id);
@@ -275,6 +268,41 @@ pub fn reconcile_description(
         fetched.authored_at,
         marker,
     ))
+}
+
+/// Returns the edit to import when the forge body of `existing` has diverged
+/// from the marker recorded at its last sync, or `None` when they still agree.
+///
+/// The marker, not the current local body, is the baseline: an unpushed local
+/// edit differs from the forge yet must survive to be pushed, so only a
+/// forge-side change imports. When both sides changed since the last sync the
+/// forge wins, its edit importing over the unpushed local one and advancing the
+/// marker past it -- the same last-writer-wins policy the description reconcile
+/// follows, keeping a mirrored comment convergent with the forge across machines
+/// rather than diverging silently.
+///
+/// An existing mirrored comment was seeded a marker at its imported create or
+/// its link, so the comparison keys off that marker; were one ever absent the
+/// body reads as changed and the forge's body re-imports, redundant but not
+/// lossy.
+fn import_forge_body_edit(
+    existing: &CommentState,
+    author: &Author,
+    origin: &ExternalRef,
+    authored_at: OffsetDateTime,
+    forge_body: &str,
+) -> Option<RecordBody> {
+    let forge_marker = comment_body_marker(forge_body);
+    let synced_marker = existing.synced.as_ref().map(|sync| &sync.body_marker);
+    (synced_marker != Some(&forge_marker)).then(|| {
+        import_edit(
+            existing.id,
+            author.clone(),
+            origin.clone(),
+            authored_at,
+            forge_body.to_string(),
+        )
+    })
 }
 
 /// The forge object an `existing` comment mirrors when it is of `kind`, paired
