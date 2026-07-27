@@ -10,15 +10,16 @@ use anyhow::{Context, anyhow, bail};
 use clap::{Args, Subcommand};
 use ulid::Ulid;
 use wiff_config::Config;
-use wiff_core::record::{Author, ForgeUrl, TipRule};
+use wiff_core::record::{Author, ForgeUrl, SourceKind, TipRule};
 use wiff_core::session::{
     data_dir, forge_bound_sessions, session_binding, session_bound_to, session_file,
 };
+use wiff_core::source::CapturedDiff;
 use wiff_core::{BaseRuleset, GitSource, ProjectIdentity, ScmRepo, SessionLog};
 use wiff_forge::{
     DeclinedWrite, FetchedPullRequest, Forge, GithubForge, ImportRequest, PushOutcome,
-    ResyncOutcome, TokenOverride, import_pull_request, push, resolve_token, resync_pull_request,
-    select_pull_request_remote,
+    ResyncOutcome, TokenOverride, assemble_diff, import_pull_request, push, resolve_token,
+    resync_pull_request, select_pull_request_remote,
 };
 
 use super::{resolve_author, scm_repo};
@@ -374,8 +375,12 @@ async fn resolve_target(
     }
 }
 
-/// Mirror a fetched pull request into a session bound to the current repo,
-/// returning the session file to open. A session already bound to the pull
+/// Mirror a fetched pull request into a session, returning the session file to
+/// open. When the pull request belongs to the enclosing repository (one of its
+/// remotes addresses it) the review diffs its commits fetched into that repo;
+/// otherwise, whether there is no repository or none of its remotes match, the
+/// review diffs the blobs the forge serves and keys the session on a bucket read
+/// from the pull request URL. Either way a session already bound to the pull
 /// request is re-synced in place, attributing the rebased comments to `author`,
 /// unless `new_session` forces a fresh review alongside it.
 async fn mirror_pull_request(
@@ -386,12 +391,47 @@ async fn mirror_pull_request(
     author: Author,
     new_session: bool,
 ) -> anyhow::Result<PathBuf> {
-    let identity = ProjectIdentity::for_dir(cwd).map_err(|_| {
-        anyhow!(
-            "wiff forge pull mirrors a pull request into the current repository, but the current \
-             directory is not inside one; a repo-less pull is not supported yet"
-        )
-    })?;
+    if let Ok(identity) = ProjectIdentity::for_dir(cwd)
+        && belongs_to_repo(forge, url, &identity).await?
+    {
+        return mirror_into_repo(forge, url, cwd, base, author, new_session, identity).await;
+    }
+    mirror_without_repo(forge, url, cwd, base, author, new_session).await
+}
+
+/// Whether the pull request `url` belongs to the repository `identity` names: a
+/// remote of that repository addresses the same repository the pull request
+/// lives in. A checkout with no repository root, or none of whose remotes match,
+/// does not belong.
+async fn belongs_to_repo(
+    forge: &dyn Forge,
+    url: &ForgeUrl,
+    identity: &ProjectIdentity,
+) -> anyhow::Result<bool> {
+    let Some(root) = identity.repo_root.clone() else {
+        return Ok(false);
+    };
+    let repo = scm_repo(identity.scm, root)?;
+    for remote in repo.remotes().await? {
+        if forge.matches_remote(url, &remote.url)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Mirror the pull request into a session bound to the enclosing repository,
+/// diffing its commits fetched into repo-owned refs. A session already bound to
+/// the pull request is re-synced in place; otherwise a fresh one is imported.
+async fn mirror_into_repo(
+    forge: &dyn Forge,
+    url: &ForgeUrl,
+    cwd: &Path,
+    base: &Path,
+    author: Author,
+    new_session: bool,
+    identity: ProjectIdentity,
+) -> anyhow::Result<PathBuf> {
     let root = identity
         .repo_root
         .clone()
@@ -424,6 +464,63 @@ async fn mirror_pull_request(
             Ok(session_file(base, &identity.canonical, session))
         }
     }
+}
+
+/// Mirror the pull request into a session with no local checkout, keyed by the
+/// project bucket the forge reads from its URL. The review diffs the base and
+/// head blobs the forge serves; refreshing it re-fetches those blobs rather than
+/// re-resolving against a repository.
+async fn mirror_without_repo(
+    forge: &dyn Forge,
+    url: &ForgeUrl,
+    cwd: &Path,
+    base: &Path,
+    author: Author,
+    new_session: bool,
+) -> anyhow::Result<PathBuf> {
+    let identity = ProjectIdentity::for_forge(&forge.project_bucket(url)?);
+    let fetched = forge.fetch(url).await?;
+    let source = forge_diff_source(forge, &fetched).await?;
+    let existing = if new_session {
+        None
+    } else {
+        session_bound_to(base, &identity.canonical, url)?
+    };
+    match existing {
+        Some(path) => {
+            let mut log = SessionLog::open(&path)?;
+            resync_pull_request(&mut log, &source, &fetched, author).await?;
+            Ok(path)
+        }
+        None => {
+            let session = Ulid::new();
+            let request = ImportRequest {
+                session,
+                base,
+                identity: &identity,
+                cwd,
+            };
+            import_pull_request(&source, &fetched, &request).await?;
+            Ok(session_file(base, &identity.canonical, session))
+        }
+    }
+}
+
+/// Fetch the pull request's changed files and capture the diff assembled from
+/// their base and head contents as a forge source, recording the base and head
+/// commits as the version's provenance.
+async fn forge_diff_source(
+    forge: &dyn Forge,
+    fetched: &FetchedPullRequest,
+) -> anyhow::Result<CapturedDiff> {
+    let files = forge.fetch_changed_files(&fetched.url).await?;
+    Ok(CapturedDiff {
+        text: assemble_diff(&files),
+        source: SourceKind::Forge,
+        base_revision: Some(fetched.base_commit().clone()),
+        base_tip_relative: false,
+        head_revision: Some(fetched.head_commit().clone()),
+    })
 }
 
 /// Fetch and pin the pull request's head and target-branch commits in the
@@ -491,14 +588,15 @@ mod tests {
     use wiff_core::record::{
         AuthorKind, CommentCreate, CommentEvent, CommentEventKind, CommentTarget, Description,
         ExternalKind, ExternalRef, FORMAT_VERSION, ForgeId, RecordBody, RevisionId, ScmSource,
-        SessionHeader, SourceKind,
+        SessionHeader, SourceKind, VersionNumber,
     };
     use wiff_core::review::ReviewState;
     use wiff_core::session::LockWait;
     use wiff_core::source::FetchSource;
+    use wiff_diff::FileStatus;
     use wiff_forge::{
-        FetchedDescription, ForgeHost, ForgeTable, NewPullRequest, OutgoingComment, OutgoingReview,
-        SubmittedReview,
+        ChangedFile, Content, FetchedDescription, ForgeHost, ForgeTable, NewPullRequest,
+        OutgoingComment, OutgoingReview, SubmittedReview,
     };
 
     use super::*;
@@ -742,6 +840,15 @@ mod tests {
         fn pull_request_url(&self, _remote_url: &str, _id: &str) -> anyhow::Result<ForgeUrl> {
             unreachable!("mirroring a pull request does not resolve one by id")
         }
+
+        fn project_bucket(&self, _pr: &ForgeUrl) -> anyhow::Result<String> {
+            unreachable!("an in-repo mirror keys on the repository, not the URL")
+        }
+
+        fn matches_remote(&self, _pr: &ForgeUrl, _remote_url: &str) -> anyhow::Result<bool> {
+            // This fake stands in for a pull request that belongs to the repo.
+            Ok(true)
+        }
     }
 
     /// A human author with `name`.
@@ -899,6 +1006,337 @@ mod tests {
         );
     }
 
+    /// A forge that serves a fixed pull request and a fixed set of changed files,
+    /// for driving a repo-less mirror with no network and no local checkout.
+    struct BlobForge {
+        fetched: FetchedPullRequest,
+        files: Vec<ChangedFile>,
+    }
+
+    #[async_trait]
+    impl Forge for BlobForge {
+        async fn fetch(&self, _pr: &ForgeUrl) -> anyhow::Result<FetchedPullRequest> {
+            Ok(self.fetched.clone())
+        }
+
+        async fn fetch_changed_files(&self, _pr: &ForgeUrl) -> anyhow::Result<Vec<ChangedFile>> {
+            Ok(self.files.clone())
+        }
+
+        async fn submit_review(
+            &self,
+            _pr: &ForgeUrl,
+            _review: &OutgoingReview,
+        ) -> anyhow::Result<SubmittedReview> {
+            unreachable!("mirroring a pull request does not submit a review")
+        }
+
+        async fn post_comment(
+            &self,
+            _pr: &ForgeUrl,
+            _comment: &OutgoingComment,
+        ) -> anyhow::Result<ExternalRef> {
+            unreachable!("mirroring a pull request does not post comments")
+        }
+
+        async fn edit_comment(&self, _at: &ExternalRef, _body: &str) -> anyhow::Result<()> {
+            unreachable!("mirroring a pull request does not edit comments")
+        }
+
+        async fn set_resolved(&self, _at: &ExternalRef, _resolved: bool) -> anyhow::Result<()> {
+            unreachable!("mirroring a pull request does not resolve comments")
+        }
+
+        async fn set_description(
+            &self,
+            _pr: &ForgeUrl,
+            _description: &Description,
+        ) -> anyhow::Result<()> {
+            unreachable!("mirroring a pull request does not set a description")
+        }
+
+        async fn create_pull_request(&self, _req: &NewPullRequest) -> anyhow::Result<ForgeUrl> {
+            unreachable!("mirroring a pull request does not open one")
+        }
+
+        fn pull_request_url(&self, _remote_url: &str, _id: &str) -> anyhow::Result<ForgeUrl> {
+            unreachable!("mirroring a pull request does not resolve one by id")
+        }
+
+        fn project_bucket(&self, _pr: &ForgeUrl) -> anyhow::Result<String> {
+            Ok("github.com/octo/demo".to_string())
+        }
+
+        fn matches_remote(&self, _pr: &ForgeUrl, _remote_url: &str) -> anyhow::Result<bool> {
+            // This fake stands in for a pull request no local remote addresses.
+            Ok(false)
+        }
+    }
+
+    /// A `BlobForge` serving a pull request with no local checkout: the given
+    /// changed `files` and a fixed description, head, and base.
+    fn repoless_pull_request(files: &[ChangedFile]) -> BlobForge {
+        BlobForge {
+            fetched: FetchedPullRequest {
+                url: ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("valid url"),
+                description: FetchedDescription {
+                    origin: github_ref(ExternalKind::Description, "7"),
+                    author: human("octo"),
+                    content: Description {
+                        title: "PR title".to_string(),
+                        body: "PR body".to_string(),
+                    },
+                    authored_at: OffsetDateTime::UNIX_EPOCH,
+                },
+                head: FetchSource::Git {
+                    url: "https://github.com/octo/demo.git".to_string(),
+                    git_ref: "refs/pull/7/head".to_string(),
+                    commit: RevisionId("headsha".to_string()),
+                },
+                base: FetchSource::Git {
+                    url: "https://github.com/octo/demo.git".to_string(),
+                    git_ref: "refs/heads/main".to_string(),
+                    commit: RevisionId("basesha".to_string()),
+                },
+                comments: Vec::new(),
+                reviews: Vec::new(),
+            },
+            files: files.to_vec(),
+        }
+    }
+
+    /// One modified file whose head side becomes `after`.
+    fn modified(after: &str) -> Vec<ChangedFile> {
+        vec![ChangedFile {
+            status: FileStatus::Modified,
+            old_path: "mod.txt".to_string(),
+            new_path: "mod.txt".to_string(),
+            content: Content::Text {
+                before: "old\n".to_string(),
+                after: after.to_string(),
+            },
+        }]
+    }
+
+    // A pull request pulled outside any repository imports a bound session in a
+    // bucket keyed on its URL, capturing the diff assembled from the fetched
+    // blobs as a forge source. A second pull re-syncs that same session and,
+    // because the forge now serves different contents, captures a fresh version
+    // whose diff shows the new head side, confirming the re-fetch drives the
+    // refresh rather than a stale snapshot.
+    #[tokio::test]
+    async fn a_repoless_pull_imports_a_forge_sourced_session_then_resyncs() {
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+        let data = tempfile::tempdir().expect("data tempdir");
+        let url = ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("valid url");
+
+        let first = mirror_pull_request(
+            &repoless_pull_request(&modified("new\n")),
+            &url,
+            cwd.path(),
+            data.path(),
+            human("wez"),
+            false,
+        )
+        .await
+        .expect("first pull imports");
+        let resynced = mirror_pull_request(
+            &repoless_pull_request(&modified("newer\n")),
+            &url,
+            cwd.path(),
+            data.path(),
+            human("wez"),
+            false,
+        )
+        .await
+        .expect("second pull resyncs");
+
+        let log = SessionLog::open(&first).expect("open imported session");
+        let state = ReviewState::load(&first).expect("load imported session");
+        let latest = state.versions.last().expect("a captured version").number;
+        let v0 = log.read_diff(VersionNumber(0)).expect("read v0 diff");
+        let latest_diff = log.read_diff(latest).expect("read latest diff");
+        let bucket = first
+            .parent()
+            .and_then(|p| p.file_name())
+            .expect("session bucket")
+            .to_string_lossy()
+            .into_owned();
+        let source = match &state.session.source {
+            SourceKind::Forge => "forge",
+            SourceKind::Scm(_) => "scm",
+            SourceKind::Stdin => "stdin",
+        };
+        let summary = format!(
+            "bucket: {bucket}\n\
+             source: {source}\n\
+             repo root: {}\n\
+             bound to: {}\n\
+             resync reuses the session: {}\n\
+             description: {} / {}\n\
+             versions: {}\n\
+             v0 diff:\n{v0}\
+             latest diff (v{latest}):\n{latest_diff}",
+            state.session.repo_root.as_deref().unwrap_or("(none)"),
+            state
+                .session
+                .forge
+                .as_ref()
+                .map(ForgeUrl::as_str)
+                .unwrap_or("(none)"),
+            resynced == first,
+            state
+                .description
+                .as_ref()
+                .map(|d| d.content.title.clone())
+                .unwrap_or_default(),
+            state
+                .description
+                .as_ref()
+                .map(|d| d.content.body.clone())
+                .unwrap_or_default(),
+            state.versions.len(),
+        );
+        wince::assert_eq!(
+            summary,
+            "bucket: github.com_octo_demo\n\
+             source: forge\n\
+             repo root: (none)\n\
+             bound to: https://github.com/octo/demo/pull/7\n\
+             resync reuses the session: true\n\
+             description: PR title / PR body\n\
+             versions: 2\n\
+             v0 diff:\n\
+             diff --git a/mod.txt b/mod.txt\n\
+             --- a/mod.txt\n\
+             +++ b/mod.txt\n\
+             @@ -1 +1 @@\n\
+             -old\n\
+             +new\n\
+             latest diff (v1):\n\
+             diff --git a/mod.txt b/mod.txt\n\
+             --- a/mod.txt\n\
+             +++ b/mod.txt\n\
+             @@ -1 +1 @@\n\
+             -old\n\
+             +newer\n"
+                .to_string()
+        );
+    }
+
+    // A pull request whose URL no remote of the enclosing repository addresses
+    // is reviewed against the forge's blobs, not fetched into that unrelated
+    // repository: the session is stored in the URL-keyed bucket with a forge
+    // source and no repo root, where a repo-less pull of it would be too.
+    #[tokio::test]
+    async fn a_pull_in_an_unrelated_repository_falls_back_to_the_forge_bucket() {
+        let repo = tempfile::tempdir().expect("repo tempdir");
+        let data = tempfile::tempdir().expect("data tempdir");
+        git(repo.path(), &["init", "-q"]);
+        git(
+            repo.path(),
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/other/unrelated.git",
+            ],
+        );
+        let url = ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("valid url");
+
+        let path = mirror_pull_request(
+            &repoless_pull_request(&modified("new\n")),
+            &url,
+            repo.path(),
+            data.path(),
+            human("wez"),
+            false,
+        )
+        .await
+        .expect("pull falls back to a repo-less session");
+
+        let state = ReviewState::load(&path).expect("load session");
+        let bucket = path
+            .parent()
+            .and_then(|p| p.file_name())
+            .expect("session bucket")
+            .to_string_lossy()
+            .into_owned();
+        let source = match &state.session.source {
+            SourceKind::Forge => "forge",
+            SourceKind::Scm(_) => "scm",
+            SourceKind::Stdin => "stdin",
+        };
+        let summary = format!(
+            "bucket: {bucket}\n\
+             source: {source}\n\
+             repo root: {}\n\
+             bound to: {}",
+            state.session.repo_root.as_deref().unwrap_or("(none)"),
+            state
+                .session
+                .forge
+                .as_ref()
+                .map(ForgeUrl::as_str)
+                .unwrap_or("(none)"),
+        );
+        wince::assert_eq!(
+            summary,
+            "bucket: github.com_octo_demo\n\
+             source: forge\n\
+             repo root: (none)\n\
+             bound to: https://github.com/octo/demo/pull/7"
+                .to_string()
+        );
+    }
+
+    // The in-repo/repo-less dispatch reads the repository's real remotes and
+    // asks the real GitHub adapter whether any addresses the pull request: an
+    // `origin` naming the same repository (here in scp-style, `.git`-suffixed
+    // form) belongs, while one naming a different repository does not.
+    #[tokio::test]
+    async fn belongs_to_repo_matches_the_repository_remotes_against_the_adapter() {
+        let matching = tempfile::tempdir().expect("matching tempdir");
+        let unrelated = tempfile::tempdir().expect("unrelated tempdir");
+        git(matching.path(), &["init", "-q"]);
+        git(
+            matching.path(),
+            &["remote", "add", "origin", "git@github.com:octo/demo.git"],
+        );
+        git(unrelated.path(), &["init", "-q"]);
+        git(
+            unrelated.path(),
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/other/unrelated.git",
+            ],
+        );
+        let forge = GithubForge::new("t", None).expect("adapter");
+        let url = ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("valid url");
+
+        let identity_of = |dir: &Path| {
+            ProjectIdentity::for_dir(dir).expect("a git checkout resolves an identity")
+        };
+        let report = format!(
+            "matching remote belongs: {}\n\
+             unrelated remote belongs: {}",
+            belongs_to_repo(&forge, &url, &identity_of(matching.path()))
+                .await
+                .expect("classify matching"),
+            belongs_to_repo(&forge, &url, &identity_of(unrelated.path()))
+                .await
+                .expect("classify unrelated"),
+        );
+        wince::assert_eq!(
+            report,
+            "matching remote belongs: true\n\
+             unrelated remote belongs: false"
+                .to_string()
+        );
+    }
+
     /// A forge that hands back a fixed pull request on fetch and binds every
     /// comment it is asked to publish to a predictable forge object, recording
     /// the ULIDs it posted standalone. The inline batch and the standalone posts
@@ -976,6 +1414,14 @@ mod tests {
 
         fn pull_request_url(&self, _remote_url: &str, _id: &str) -> anyhow::Result<ForgeUrl> {
             unreachable!("pushing a review does not resolve one by id")
+        }
+
+        fn project_bucket(&self, _pr: &ForgeUrl) -> anyhow::Result<String> {
+            unreachable!("pushing a review keys on the repository, not the URL")
+        }
+
+        fn matches_remote(&self, _pr: &ForgeUrl, _remote_url: &str) -> anyhow::Result<bool> {
+            unreachable!("pushing a review does not test remotes")
         }
     }
 

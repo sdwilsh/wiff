@@ -105,6 +105,17 @@ impl ProjectIdentity {
             (None, None) => Err(Error::NoProject(cwd.to_path_buf())),
         }
     }
+
+    /// Resolve a repo-less project from a forge-derived `bucket` name, for a
+    /// session mirroring a pull request with no local checkout. `bucket` is
+    /// sanitized into a safe single path component.
+    pub fn for_forge(bucket: &str) -> Self {
+        Self {
+            canonical: sanitize(bucket),
+            repo_root: None,
+            scm: None,
+        }
+    }
 }
 
 /// The control directories that mark a workspace root, so discovery does not

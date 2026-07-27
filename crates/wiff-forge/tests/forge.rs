@@ -157,6 +157,14 @@ impl Forge for FakeForge {
     fn pull_request_url(&self, _remote_url: &str, _id: &str) -> Result<ForgeUrl> {
         unreachable!("this fake resolves no pull request by id")
     }
+
+    fn project_bucket(&self, _pr: &ForgeUrl) -> Result<String> {
+        unreachable!("this fake names no project bucket")
+    }
+
+    fn matches_remote(&self, _pr: &ForgeUrl, _remote_url: &str) -> Result<bool> {
+        unreachable!("this fake matches no remote")
+    }
 }
 
 #[tokio::test]

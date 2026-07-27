@@ -690,6 +690,31 @@ impl crate::Forge for GithubForge {
         Ok(ForgeUrl::parse(url.as_str())?)
     }
 
+    fn project_bucket(&self, pr: &ForgeUrl) -> Result<String> {
+        let at = PullRequestId::parse(pr)?;
+        // GitHub addresses an owner and repository case-insensitively, so lower
+        // them to match the casing the host itself ignores; the same PR pulled
+        // under differently-cased URLs then keys to one bucket.
+        Ok(format!(
+            "{}/{}/{}",
+            pr.host(),
+            at.owner.to_ascii_lowercase(),
+            at.repo.to_ascii_lowercase()
+        ))
+    }
+
+    fn matches_remote(&self, pr: &ForgeUrl, remote_url: &str) -> Result<bool> {
+        let at = PullRequestId::parse(pr)?;
+        // A remote this adapter cannot read as a github repository (a local path
+        // or another forge's host) simply does not address this pull request.
+        let Ok((web, owner, repo)) = parse_remote(remote_url) else {
+            return Ok(false);
+        };
+        Ok(web.host_str() == Some(pr.host().as_str())
+            && owner.eq_ignore_ascii_case(&at.owner)
+            && repo.eq_ignore_ascii_case(&at.repo))
+    }
+
     async fn submit_review(
         &self,
         pr: &ForgeUrl,
@@ -1774,6 +1799,61 @@ mod tests {
         wince::assert_eq!(
             error.to_string(),
             "https://gitlab.com/group/sub/demo.git is not a github repository remote URL"
+        );
+    }
+
+    #[tokio::test]
+    async fn project_bucket_names_the_host_owner_and_repository() {
+        let forge = GithubForge::new("t", None).expect("adapter");
+        // A differently-cased owner and repo name the same repository on GitHub,
+        // so both spellings key to one lowercased bucket.
+        let lower = ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("url");
+        let mixed = ForgeUrl::parse("https://github.com/Octo/Demo/pull/7").expect("url");
+        let buckets = format!(
+            "{}\n{}",
+            forge.project_bucket(&lower).expect("bucket"),
+            forge.project_bucket(&mixed).expect("bucket")
+        );
+        wince::assert_eq!(
+            buckets,
+            "github.com/octo/demo\ngithub.com/octo/demo".to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn matches_remote_compares_host_owner_and_repository() {
+        let forge = GithubForge::new("t", None).expect("adapter");
+        let pr = ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("url");
+        let cases = [
+            // The same repository in each of git's clone-URL spellings, then
+            // differently-cased and `.git`-suffixed forms the forge treats as
+            // equal, then a different repo, host, and a non-github remote.
+            "https://github.com/octo/demo.git",
+            "git@github.com:octo/demo.git",
+            "https://github.com/Octo/Demo",
+            "https://github.com/octo/other.git",
+            "https://gitlab.com/octo/demo.git",
+            "/srv/git/demo",
+        ];
+        let report = cases
+            .iter()
+            .map(|remote| {
+                format!(
+                    "{remote} -> {}",
+                    forge.matches_remote(&pr, remote).expect("match")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        wince::assert_eq!(
+            report,
+            "https://github.com/octo/demo.git -> true\n\
+             git@github.com:octo/demo.git -> true\n\
+             https://github.com/Octo/Demo -> true\n\
+             https://github.com/octo/other.git -> false\n\
+             https://gitlab.com/octo/demo.git -> false\n\
+             /srv/git/demo -> false"
+                .to_string()
         );
     }
 

@@ -89,4 +89,15 @@ pub trait Forge: Send + Sync {
     /// pull requests however it likes, wiff never parses it, and it is
     /// percent-encoded into the URL as-is.
     fn pull_request_url(&self, remote_url: &str, id: &str) -> Result<ForgeUrl>;
+
+    /// The project bucket a repo-less review of `pr` belongs to: a stable name
+    /// read from the pull request URL's host, owner, and repository, grouping
+    /// every repo-less review of one repository together.
+    fn project_bucket(&self, pr: &ForgeUrl) -> Result<String>;
+
+    /// Whether `remote_url`, a git clone URL, addresses the same repository the
+    /// pull request `pr` lives in: the same host, owner, and repository under
+    /// the forge's own equivalence (letter case, and the `.git` suffix). A clone
+    /// URL this forge cannot read as one of its repositories does not match.
+    fn matches_remote(&self, pr: &ForgeUrl, remote_url: &str) -> Result<bool>;
 }

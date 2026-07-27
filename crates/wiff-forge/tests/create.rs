@@ -152,6 +152,14 @@ impl Forge for FakeForge {
     fn pull_request_url(&self, _remote_url: &str, _id: &str) -> Result<ForgeUrl> {
         unreachable!("opening a pull request does not resolve one by id")
     }
+
+    fn project_bucket(&self, _pr: &ForgeUrl) -> Result<String> {
+        unreachable!("opening a pull request names no project bucket")
+    }
+
+    fn matches_remote(&self, _pr: &ForgeUrl, _remote_url: &str) -> Result<bool> {
+        unreachable!("opening a pull request matches no remote")
+    }
 }
 
 /// A repository whose preflight answers are fixed by construction, recording the

@@ -279,6 +279,14 @@ impl Forge for FakeForge {
     fn pull_request_url(&self, _remote_url: &str, _id: &str) -> Result<ForgeUrl> {
         unreachable!("push does not resolve a pull request by id")
     }
+
+    fn project_bucket(&self, _pr: &ForgeUrl) -> Result<String> {
+        unreachable!("push names no project bucket")
+    }
+
+    fn matches_remote(&self, _pr: &ForgeUrl, _remote_url: &str) -> Result<bool> {
+        unreachable!("push matches no remote")
+    }
 }
 
 /// A linked comment `id` by `author`: a create followed by the link push would
