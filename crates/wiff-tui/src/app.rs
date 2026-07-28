@@ -7467,10 +7467,10 @@ mod tests {
         // around it, so the reloaded document has more folds than the one first
         // rendered. The reload must grow the collapse state to match rather than
         // index past its end when rebuilding the view.
-        let mut lines: Vec<(LineKind, String, u32)> = (1..=20)
+        let mut lines: Vec<(LineKind, String, u32)> = (1..=30)
             .map(|n| (LineKind::Context, format!("ctx{n:02}"), n))
             .collect();
-        lines.push((LineKind::Added, "change!".to_string(), 21));
+        lines.push((LineKind::Added, "change!".to_string(), 31));
         let borrowed: Vec<(LineKind, &str, u32)> =
             lines.iter().map(|(k, t, n)| (*k, t.as_str(), *n)).collect();
         let diff = Diff {
@@ -7496,21 +7496,22 @@ mod tests {
             plain(&app, TEST_WIDTH),
             "Review [press c here to draft the review comment] [press e to write the description]\n",
             "modified  notes.txt\n",
-            "@@ -1,21 +1,21 @@\n",
-            "          ▸ [17 unchanged lines]  ctx17\n",
-            "  18   18   ctx18\n",
-            "  19   19   ctx19\n",
-            "  20   20   ctx20\n",
-            "       21 + change!\n",
+            "@@ -1,31 +1,31 @@\n",
+            "          ▸ [27 unchanged lines]  ctx27\n",
+            "  28   28   ctx28\n",
+            "  29   29   ctx29\n",
+            "  30   30   ctx30\n",
+            "       31 + change!\n",
         );
 
         // A comment far enough into the run that its kept context does not reach
-        // the file top splits that one fold into a fold above and below it.
+        // the file top splits that one fold into a fold above and below it, each
+        // long enough to fold.
         let comments = vec![line_comment(
             1,
             ("opus", AuthorKind::Agent),
             "notes.txt",
-            8,
+            10,
             "why?",
             false,
         )];
@@ -7521,23 +7522,23 @@ mod tests {
             plain(&app, TEST_WIDTH),
             "Review [press c here to draft the review comment] [press e to write the description]\n",
             "modified  notes.txt\n",
-            "@@ -1,21 +1,21 @@\n",
-            "          ▸ [4 unchanged lines]  ctx04\n",
-            "   5    5   ctx05\n",
-            "   6    6   ctx06\n",
+            "@@ -1,31 +1,31 @@\n",
+            "          ▸ [6 unchanged lines]  ctx06\n",
             "   7    7   ctx07\n",
+            "   8    8   ctx08\n",
+            "   9    9   ctx09\n",
             "┌ #1 opus (agent)  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse ┐\n",
             "│why?                                  │\n",
             "└──────────┬───────────────────────────┘\n",
-            "   8    8  └ctx08\n",
-            "   9    9   ctx09\n",
-            "  10   10   ctx10\n",
+            "  10   10  └ctx10\n",
             "  11   11   ctx11\n",
-            "          ▸ [6 unchanged lines]  ctx17\n",
-            "  18   18   ctx18\n",
-            "  19   19   ctx19\n",
-            "  20   20   ctx20\n",
-            "       21 + change!\n",
+            "  12   12   ctx12\n",
+            "  13   13   ctx13\n",
+            "          ▸ [14 unchanged lines]  ctx27\n",
+            "  28   28   ctx28\n",
+            "  29   29   ctx29\n",
+            "  30   30   ctx30\n",
+            "       31 + change!\n",
         );
     }
 }

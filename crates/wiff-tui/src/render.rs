@@ -51,9 +51,10 @@ pub(crate) const COLUMN_GUTTER_WIDTH: usize = LINENO_WIDTH + 3;
 /// The single-cell rule drawn between the two side-by-side columns.
 pub(crate) const COLUMN_DIVIDER: char = '\u{2502}';
 
-/// The shortest run of unchanged lines worth collapsing. Hiding a single line
-/// behind a one-line marker saves nothing, so only runs of two or more fold.
-const MIN_FOLD: usize = 2;
+/// The shortest run of unchanged lines worth collapsing. Shorter runs save too
+/// few rows to justify a fold marker, and their context is usually worth
+/// reading, so they are left expanded.
+const MIN_FOLD: usize = 5;
 
 /// The change-marker glyph for a collapsed fold, pointing right at the hidden
 /// rows the way a closed disclosure triangle does.
@@ -3083,10 +3084,10 @@ mod tests {
         // hidden lines.
         let mut lines: Vec<(LineKind, String, u32)> =
             vec![(LineKind::Context, "fn draw() {".to_string(), 1)];
-        for n in 2..=6 {
+        for n in 2..=10 {
             lines.push((LineKind::Context, format!("    let v{n} = {n};"), n));
         }
-        lines.push((LineKind::Added, "    let w = 7;".to_string(), 7));
+        lines.push((LineKind::Added, "    let w = 11;".to_string(), 11));
         let borrowed: Vec<(LineKind, &str, u32)> =
             lines.iter().map(|(k, t, n)| (*k, t.as_str(), *n)).collect();
         let diff = Diff {
@@ -3096,7 +3097,7 @@ mod tests {
         let markers: Vec<Line<'static>> = doc.folds.iter().map(|f| f.marker.clone()).collect();
         wince::snapshot_str!(
             dump(&markers),
-            "<#767b84|-|->          ▸ [3 unchanged lines]  fn draw() {\n"
+            "<#767b84|-|->          ▸ [7 unchanged lines]  fn draw() {\n"
         );
     }
 
@@ -3273,13 +3274,13 @@ mod tests {
     fn foldable_runs_keep_context_around_changes_and_fold_the_rest() {
         use LineKind::{Added as A, Context as C};
         // Leading, interior, and trailing runs of context, keeping one line on
-        // each side of the two changes.
-        let kinds = [C, C, C, A, C, C, C, C, C, A, C, C, C];
+        // each side of the two changes. The leading and trailing runs are long
+        // enough to fold; the interior run of four context lines is too short.
+        let kinds = [
+            C, C, C, C, C, C, C, A, C, C, C, C, C, C, A, C, C, C, C, C, C, C,
+        ];
         let none = vec![false; kinds.len()];
-        wince::assert_eq!(
-            super::foldable_runs(&kinds, 1, &none),
-            vec![0..2, 5..8, 11..13]
-        );
+        wince::assert_eq!(super::foldable_runs(&kinds, 1, &none), vec![0..6, 16..22]);
         // With enough context to reach across every gap, nothing folds.
         wince::assert_eq!(
             super::foldable_runs(&kinds, 5, &none),
@@ -3593,11 +3594,12 @@ mod tests {
     fn a_line_comment_inside_a_long_run_splits_the_fold_around_it() {
         // A comment on a context line far from the change keeps that line and
         // its surrounding context, leaving a fold both above and below it rather
-        // than hiding the commented line.
-        let mut lines: Vec<(LineKind, String, u32)> = (1..=19)
+        // than hiding the commented line. Both runs are long enough to fold on
+        // their own.
+        let mut lines: Vec<(LineKind, String, u32)> = (1..=29)
             .map(|n| (LineKind::Context, format!("ctx{n:02}"), n))
             .collect();
-        lines.push((LineKind::Added, "change!".to_string(), 20));
+        lines.push((LineKind::Added, "change!".to_string(), 30));
         let borrowed: Vec<(LineKind, &str, u32)> =
             lines.iter().map(|(k, t, n)| (*k, t.as_str(), *n)).collect();
         let diff = Diff {
@@ -3606,7 +3608,7 @@ mod tests {
         let comments = vec![comment(
             9,
             ("wez", AuthorKind::Human),
-            on_lines("notes.txt", 6, 6),
+            on_lines("notes.txt", 10, 10),
             "here",
         )];
         let doc = DiffView::new(theme()).unwrap().render_review(
@@ -3619,8 +3621,8 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_str!(
             dump(&markers),
-            "<#767b84|-|->          ▸ [2 unchanged lines]  ctx02\n",
-            "<#767b84|-|->          ▸ [7 unchanged lines]  ctx16\n",
+            "<#767b84|-|->          ▸ [6 unchanged lines]  ctx06\n",
+            "<#767b84|-|->          ▸ [13 unchanged lines]  ctx26\n",
         );
     }
 
