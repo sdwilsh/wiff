@@ -1685,16 +1685,22 @@ mod tests {
     async fn a_bare_push_across_same_pull_request_forks_names_each_by_ulid() {
         let data = tempfile::tempdir().expect("data tempdir");
         let url = ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("valid url");
-        let (first, lock) = SessionLog::create(
+        // Choose the forks' ULIDs so the second sorts ahead of the first,
+        // rather than leaving it to how Ulid::new randomizes the bits below the
+        // timestamp for two mints in the same millisecond. Recency then orders
+        // them unambiguously and the listing is deterministic.
+        let (first, lock) = SessionLog::create_with_ulid(
             data.path(),
             "demo",
+            Ulid::from_parts(1, 1),
             bucket_header("demo", Some(url.clone())),
         )
         .expect("create first fork");
         drop(lock);
-        let (second, lock) = SessionLog::create(
+        let (second, lock) = SessionLog::create_with_ulid(
             data.path(),
             "demo",
+            Ulid::from_parts(2, 2),
             bucket_header("demo", Some(url.clone())),
         )
         .expect("create second fork");
@@ -1722,10 +1728,8 @@ mod tests {
             .await
             .map(|_| ())
             .expect_err("same-pull-request forks cannot be chosen between");
-        // The listing is most recent first; with no writes since creation, the
-        // later ULID sorts ahead.
-        let mut ulids = [first.ulid(), second.ulid()];
-        ulids.sort_by(|a, b| b.cmp(a));
+        // The listing is most recent first, so the second fork, whose ULID
+        // sorts ahead, is named before the first.
         wince::assert_eq!(
             error.to_string(),
             format!(
@@ -1733,7 +1737,8 @@ mod tests {
                  (https://github.com/octo/demo/pull/7), {} \
                  (https://github.com/octo/demo/pull/7); name which to push with `wiff forge push \
                  --session <ULID>`",
-                ulids[0], ulids[1],
+                second.ulid(),
+                first.ulid(),
             )
         );
     }

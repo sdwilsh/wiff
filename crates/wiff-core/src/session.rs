@@ -449,8 +449,10 @@ pub fn list_projects(base: &Path) -> Result<Vec<String>> {
 /// List a project's session files, most recent first. Recency is the later of
 /// the session's creation time (decoded from the ULID file name) and the file's
 /// modification time; a session created earlier but written to more recently
-/// still sorts ahead. Equal recencies break on the file name, whose ULID is
-/// monotonic, so the order is total and deterministic.
+/// still sorts ahead. Equal recencies break on the file name; distinct ULIDs
+/// compare deterministically, so the order is total, though two sessions created
+/// in the same millisecond may break in either direction, since `Ulid::new`
+/// randomizes the bits below the timestamp rather than ordering them by mint.
 pub fn list_sessions(base: &Path, project: &str) -> Result<Vec<PathBuf>> {
     let dir = sessions_root(base).join(project);
     let entries = match std::fs::read_dir(&dir) {
