@@ -476,12 +476,17 @@ impl Review {
         diff: Diff,
         comparison: Option<(u32, HashMap<String, LineOrigin>)>,
     ) {
+        // Highlights depend only on the diff text, not on where comments
+        // attach, so an unchanged diff keeps them rather than re-parsing.
+        let diff_changed = self.diff != diff;
         self.diff = diff;
         self.comparing = comparison.map(|(from, before_origin)| Comparing {
             from,
             before_origin,
         });
-        self.rehighlight();
+        if diff_changed {
+            self.rehighlight();
+        }
     }
 
     /// The reference version the review is comparing against, or `None` when it
@@ -735,5 +740,39 @@ mod tests {
             dump(&deferred.document(layout).lines),
             dump(&eager.document(layout).lines)
         );
+    }
+
+    #[test]
+    fn re_showing_an_unchanged_diff_keeps_its_colors_without_reparsing() {
+        use wiff_diff::{Diff, FileStatus, LineKind};
+
+        use crate::render::ViewLayout;
+        use crate::render::testutil::{dump, file, theme};
+
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[
+                    (LineKind::Context, "let x = 1;", 1),
+                    (LineKind::Added, "let y = 2;", 2),
+                ],
+            )],
+        };
+        let author = Author {
+            name: "wez".to_string(),
+            kind: AuthorKind::Human,
+        };
+        let view = crate::render::DiffView::new(theme()).expect("view");
+        let layout = ViewLayout::default();
+
+        let mut review = super::Review::deferred(view, diff.clone(), author, 0, Vec::new(), None);
+        finish_highlighting(&mut review);
+        let colored = dump(&review.document(layout).lines);
+
+        // The compare picker's default after a refresh re-shows the same diff.
+        review.show_diff(diff, None);
+        wince::assert_eq!(review.highlighting(), false);
+        wince::assert_eq!(dump(&review.document(layout).lines), colored);
     }
 }
