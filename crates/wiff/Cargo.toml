@@ -17,6 +17,7 @@ clap.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
 tempfile.workspace = true
+time.workspace = true
 tokio = { workspace = true }
 toml.workspace = true
 toml_edit.workspace = true
@@ -30,5 +31,4 @@ wiff-tui.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
-time.workspace = true
 wince.workspace = true
