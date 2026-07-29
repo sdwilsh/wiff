@@ -10,6 +10,7 @@ workspace = true
 [dependencies]
 fancy-regex.workspace = true
 nix.workspace = true
+nucleo-matcher.workspace = true
 pulldown-cmark.workspace = true
 ratatui = { workspace = true, features = ["crossterm"] }
 serde = { workspace = true }

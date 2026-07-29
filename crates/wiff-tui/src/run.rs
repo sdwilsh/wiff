@@ -35,6 +35,7 @@ use crate::input::Input;
 use crate::key::Key;
 use crate::keymap::Keymap;
 use crate::notice::Notice;
+use crate::picker::Picker;
 use crate::render::{COLUMN_DIVIDER, color};
 
 /// How long the loop waits for a key before waking to pick up another actor's
@@ -153,11 +154,17 @@ pub fn draw<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
 
 /// The centered rectangle, content width, and visible line count for a scrolling
 /// modal overlay of `total` content lines and `content_width` columns floating
-/// over `area`. The border, spacer, and hint take four rows; the rest is the
-/// room the content has, so an overlay taller than that scrolls rather than
-/// overflowing.
-fn centered_modal(area: Rect, total: usize, content_width: usize) -> (Rect, usize, usize) {
-    let chrome = 4u16;
+/// over `area`. The border, spacer, and hint take four rows, plus `pinned_top`
+/// rows for anything pinned above the scrolling content (a filter prompt); the
+/// rest is the room the content has, so an overlay taller than that scrolls
+/// rather than overflowing.
+fn centered_modal(
+    area: Rect,
+    total: usize,
+    content_width: usize,
+    pinned_top: usize,
+) -> (Rect, usize, usize) {
+    let chrome = 4u16 + pinned_top as u16;
     let visible = total.min(area.height.saturating_sub(chrome) as usize);
     let inner = modal_inner_width(area, content_width);
     let width = (inner as u16 + 2).min(area.width);
@@ -189,8 +196,9 @@ fn render_picker(frame: &mut Frame, area: Rect, app: &mut App) {
     let lead = app
         .picker()
         .map_or(0, |p| p.note_height(modal_inner_width(area, content_width)));
+    let pinned_top = app.picker().map_or(0, Picker::prompt_height);
     let total = rows + lead;
-    let (rect, inner, visible) = centered_modal(area, total, content_width);
+    let (rect, inner, visible) = centered_modal(area, total, content_width, pinned_top);
     app.picker_set_viewport(visible, lead);
     let Some(picker) = app.picker() else {
         return;
@@ -206,6 +214,7 @@ fn render_picker(frame: &mut Frame, area: Rect, app: &mut App) {
             top: picker.top(),
             total,
             visible,
+            pinned_top,
         },
     );
 }
@@ -223,6 +232,9 @@ struct ScrollingModal<'a> {
     /// drawn only when the former exceeds the latter.
     total: usize,
     visible: usize,
+    /// Lines pinned above the scrolling window (a filter prompt), which the
+    /// scrollbar track starts below.
+    pinned_top: usize,
 }
 
 /// Draw `modal` into `rect`, clearing the cells behind it, framing it with a
@@ -249,7 +261,7 @@ fn render_scrolling_modal(frame: &mut Frame, rect: Rect, modal: ScrollingModal) 
             .begin_symbol(None)
             .end_symbol(None);
         let track = Rect {
-            y: rect.y + 1,
+            y: rect.y + 1 + modal.pinned_top as u16,
             height: modal.visible as u16,
             ..rect
         };
@@ -264,7 +276,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &mut App) {
     let Some((total, content_width)) = app.help().map(|h| (h.list_len(), h.width())) else {
         return;
     };
-    let (rect, inner, visible) = centered_modal(area, total, content_width);
+    let (rect, inner, visible) = centered_modal(area, total, content_width, 0);
     app.help_set_height(visible);
     let Some(help) = app.help() else {
         return;
@@ -280,6 +292,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &mut App) {
             top: help.top(),
             total,
             visible,
+            pinned_top: 0,
         },
     );
 }
@@ -293,7 +306,7 @@ fn render_notice(frame: &mut Frame, area: Rect, app: &mut App) {
     };
     let inner = modal_inner_width(area, content_width);
     let total = app.notice_wrap(inner);
-    let (rect, _, visible) = centered_modal(area, total, content_width);
+    let (rect, _, visible) = centered_modal(area, total, content_width, 0);
     app.notice_set_height(visible);
     let Some(notice) = app.notice() else {
         return;
@@ -309,6 +322,7 @@ fn render_notice(frame: &mut Frame, area: Rect, app: &mut App) {
             top: notice.top(),
             total,
             visible,
+            pinned_top: 0,
         },
     );
 }
@@ -323,7 +337,7 @@ fn render_working(frame: &mut Frame, area: Rect, app: &App) {
     let content_width = notice.width();
     let inner = modal_inner_width(area, content_width);
     let total = notice.wrap_to(inner);
-    let (rect, _, visible) = centered_modal(area, total, content_width);
+    let (rect, _, visible) = centered_modal(area, total, content_width, 0);
     notice.set_height(visible);
     render_scrolling_modal(
         frame,
@@ -336,6 +350,7 @@ fn render_working(frame: &mut Frame, area: Rect, app: &App) {
             top: notice.top(),
             total,
             visible,
+            pinned_top: 0,
         },
     );
 }
@@ -629,12 +644,28 @@ where
                 None => app.close_help(),
             }
         } else if app.picking() {
-            // Enter activates the highlight and escape closes the list; every
-            // other press resolves through the keymap so the list moves with the
-            // reviewer's own navigation bindings.
+            // Enter activates the highlight. The list starts in navigation mode,
+            // where the keymap moves the highlight with the reviewer's own
+            // bindings and escape closes the list. In a filterable list `/`
+            // enters filter mode; there a printable press edits the query,
+            // backspace trims it, and escape returns to navigation, while the
+            // arrows still move the highlight through the narrowed rows.
             match press.key {
                 Key::Enter => app.picker_activate(),
+                Key::Escape if app.picker_filtering() => app.picker_end_filter(),
                 Key::Escape => app.picker_cancel(),
+                Key::Backspace if app.picker_filtering() => app.picker_pop_query(),
+                Key::Char('/')
+                    if app.picker_filterable()
+                        && !app.picker_filtering()
+                        && !press.ctrl
+                        && !press.alt =>
+                {
+                    app.picker_begin_filter()
+                }
+                Key::Char(ch) if app.picker_filtering() && !press.ctrl && !press.alt => {
+                    app.picker_push_query(ch)
+                }
                 _ => {
                     if let Some(action) = input.press(press) {
                         app.picker_nav(action);

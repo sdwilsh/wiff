@@ -322,6 +322,9 @@ impl PickerRow<App> for FileRow {
 /// cursor to that comment's header.
 struct CommentRow {
     spans: Vec<RowSpan>,
+    /// The comment's full body, so the fuzzy filter finds a comment by text on
+    /// any line even though the row only shows the first line as a preview.
+    body: String,
     id: Ulid,
 }
 
@@ -332,6 +335,10 @@ impl PickerRow<App> for CommentRow {
 
     fn styled(&self) -> Option<Vec<RowSpan>> {
         Some(self.spans.clone())
+    }
+
+    fn additional_match_text(&self) -> String {
+        self.body.clone()
     }
 
     fn activate(self: Box<Self>, app: &mut App) {
@@ -663,6 +670,7 @@ impl App {
                 background: theme.background,
                 selected_bg: theme.cursor_bg,
                 text: theme.comment_fg,
+                match_highlight: theme.comment_author_fg,
                 hint: theme.fold_fg,
             },
             help_colors: HelpColors {
@@ -1826,7 +1834,10 @@ impl App {
             return;
         }
         let hint = self.picker_hint();
-        self.picker = Some(Picker::new("Jump to file", rows, &hint, self.picker_colors));
+        let filter_hint = self.picker_filter_hint();
+        self.picker = Some(
+            Picker::new("Jump to file", rows, &hint, self.picker_colors).filterable(&filter_hint),
+        );
     }
 
     /// Open the modal list of the diff's comments, each jumping to that comment
@@ -1929,18 +1940,18 @@ impl App {
                 ];
                 Box::new(CommentRow {
                     spans,
+                    body: entry.comment.body.clone(),
                     id: entry.comment.id,
                 }) as Box<dyn PickerRow<App>>
             })
             .collect();
 
         let hint = self.picker_hint();
-        self.picker = Some(Picker::new(
-            "Jump to comment",
-            rows,
-            &hint,
-            self.picker_colors,
-        ));
+        let filter_hint = self.picker_filter_hint();
+        self.picker = Some(
+            Picker::new("Jump to comment", rows, &hint, self.picker_colors)
+                .filterable(&filter_hint),
+        );
     }
 
     /// The two-column status marker for a comment and the color it is painted:
@@ -1982,7 +1993,9 @@ impl App {
             return;
         }
         let hint = self.picker_hint();
-        let mut picker = Picker::new("Theme", rows, &hint, self.picker_colors);
+        let filter_hint = self.picker_filter_hint();
+        let mut picker =
+            Picker::new("Theme", rows, &hint, self.picker_colors).filterable(&filter_hint);
         if let Some(index) = selected {
             picker.select(index);
         }
@@ -2063,7 +2076,9 @@ impl App {
             .map(|(label, request)| VersionRow::boxed(label, request))
             .collect();
         let hint = self.picker_hint();
-        let mut picker = Picker::new(title, rows, &hint, self.picker_colors);
+        let filter_hint = self.picker_filter_hint();
+        let mut picker =
+            Picker::new(title, rows, &hint, self.picker_colors).filterable(&filter_hint);
         if let Some(note) = note {
             picker.set_note(note);
         }
@@ -2210,6 +2225,13 @@ impl App {
         format!("{up}/{down} move  enter select  esc cancel")
     }
 
+    /// The key hint shown while a filterable list is in filter mode, naming the
+    /// query editing along with the select and the escape that returns to
+    /// navigation.
+    fn picker_filter_hint(&self) -> String {
+        "type to filter  enter select  esc navigate".to_string()
+    }
+
     /// Whether the modal list is open, so the host routes raw key presses to it
     /// rather than resolving them into actions.
     pub fn picking(&self) -> bool {
@@ -2245,6 +2267,52 @@ impl App {
             Action::Top => picker.to_top(),
             Action::Bottom => picker.to_bottom(),
             _ => {}
+        }
+    }
+
+    /// Whether the open modal list can be narrowed by a typed query, whether or
+    /// not the reviewer has entered filter mode. The host offers `/` to enter
+    /// filter mode only for such a list. False when no list is open.
+    pub fn picker_filterable(&self) -> bool {
+        self.picker.as_ref().is_some_and(Picker::is_filterable)
+    }
+
+    /// Whether the open modal list is in filter mode, so the host routes
+    /// printable presses into the query rather than resolving them into
+    /// navigation actions. False when no list is open.
+    pub fn picker_filtering(&self) -> bool {
+        self.picker.as_ref().is_some_and(Picker::filtering)
+    }
+
+    /// Enter filter mode on the open list, revealing the prompt. Does nothing
+    /// when no list is open or it cannot be filtered.
+    pub fn picker_begin_filter(&mut self) {
+        if let Some(picker) = self.picker.as_mut() {
+            picker.begin_filter();
+        }
+    }
+
+    /// Leave filter mode on the open list, clearing the query and widening it
+    /// back to every row. Does nothing when no list is open.
+    pub fn picker_end_filter(&mut self) {
+        if let Some(picker) = self.picker.as_mut() {
+            picker.end_filter();
+        }
+    }
+
+    /// Extend the open list's filter query with `ch` and renarrow its rows. Does
+    /// nothing when no list is open or it is not filtering.
+    pub fn picker_push_query(&mut self, ch: char) {
+        if let Some(picker) = self.picker.as_mut() {
+            picker.push_query(ch);
+        }
+    }
+
+    /// Delete the last character of the open list's filter query and renarrow.
+    /// Does nothing when no list is open or it is not filtering.
+    pub fn picker_pop_query(&mut self) {
+        if let Some(picker) = self.picker.as_mut() {
+            picker.pop_query();
         }
     }
 
@@ -2456,6 +2524,7 @@ impl App {
             background: theme.background,
             selected_bg: theme.cursor_bg,
             text: theme.comment_fg,
+            match_highlight: theme.comment_author_fg,
             hint: theme.fold_fg,
         };
         self.help_colors = HelpColors {
@@ -4755,10 +4824,10 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump_picker(&mut app),
-            "<#c0c5ce|#65737e|->> src/lib.rs                            \n",
-            "<#c0c5ce|#2b303b|->  notes.txt                             \n",
-            "<-|#2b303b|->                                        \n",
-            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
+            "<#c0c5ce|#65737e|->> src/lib.rs                                      \n",
+            "<#c0c5ce|#2b303b|->  notes.txt                                       \n",
+            "<-|#2b303b|->                                                  \n",
+            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel  / filter\n",
         );
     }
 
@@ -4798,10 +4867,10 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_str!(
             dump_picker(&mut app),
-            "<#c0c5ce|#65737e|->> <#c0c5ce|#65737e|->  <#c0c5ce|#65737e|->#2  src/lib.rs:2  wez   why 2?<#c0c5ce|#65737e|->      \n",
-            "<#c0c5ce|#2b303b|->  <#767b84|#2b303b|->✓ <#c0c5ce|#2b303b|->#1  src/lib.rs:1  opus  ok<#c0c5ce|#2b303b|->          \n",
-            "<-|#2b303b|->                                        \n",
-            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
+            "<#c0c5ce|#65737e|->> <#c0c5ce|#65737e|->  <#c0c5ce|#65737e|->#2  src/lib.rs:2  wez   why 2?<#c0c5ce|#65737e|->                \n",
+            "<#c0c5ce|#2b303b|->  <#767b84|#2b303b|->✓ <#c0c5ce|#2b303b|->#1  src/lib.rs:1  opus  ok<#c0c5ce|#2b303b|->                    \n",
+            "<-|#2b303b|->                                                  \n",
+            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel  / filter\n",
         );
     }
 
@@ -4875,12 +4944,12 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_str!(
             dump_picker(&mut app),
-            "<#c0c5ce|#65737e|->> <#a3be8c|#65737e|->* <#767b84|#65737e|s>#4  src/lib.rs:4  wez   withdrawn one\n",
-            "<#c0c5ce|#2b303b|->  <#c0c5ce|#2b303b|->  <#c0c5ce|#2b303b|->#1  src/lib.rs:1  wez   open one<#c0c5ce|#2b303b|->     \n",
-            "<#c0c5ce|#2b303b|->  <#d08770|#2b303b|->! <#c0c5ce|#2b303b|->#3  src/lib.rs:3  wez   shifted one<#c0c5ce|#2b303b|->  \n",
-            "<#c0c5ce|#2b303b|->  <#767b84|#2b303b|->✓ <#c0c5ce|#2b303b|->#2  src/lib.rs:2  opus  resolved one<#c0c5ce|#2b303b|-> \n",
-            "<-|#2b303b|->                                         \n",
-            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel \n",
+            "<#c0c5ce|#65737e|->> <#a3be8c|#65737e|->* <#767b84|#65737e|s>#4  src/lib.rs:4  wez   withdrawn one<#c0c5ce|#65737e|->         \n",
+            "<#c0c5ce|#2b303b|->  <#c0c5ce|#2b303b|->  <#c0c5ce|#2b303b|->#1  src/lib.rs:1  wez   open one<#c0c5ce|#2b303b|->              \n",
+            "<#c0c5ce|#2b303b|->  <#d08770|#2b303b|->! <#c0c5ce|#2b303b|->#3  src/lib.rs:3  wez   shifted one<#c0c5ce|#2b303b|->           \n",
+            "<#c0c5ce|#2b303b|->  <#767b84|#2b303b|->✓ <#c0c5ce|#2b303b|->#2  src/lib.rs:2  opus  resolved one<#c0c5ce|#2b303b|->          \n",
+            "<-|#2b303b|->                                                  \n",
+            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel  / filter\n",
         );
     }
 
@@ -4913,38 +4982,38 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump_picker(&mut app),
-            "<#c0c5ce|#2b303b|->  1337                                  \n",
-            "<#c0c5ce|#2b303b|->  Catppuccin Frappe                     \n",
-            "<#c0c5ce|#2b303b|->  Catppuccin Latte                      \n",
-            "<#c0c5ce|#2b303b|->  Catppuccin Macchiato                  \n",
-            "<#c0c5ce|#2b303b|->  Catppuccin Mocha                      \n",
-            "<#c0c5ce|#2b303b|->  Coldark-Cold                          \n",
-            "<#c0c5ce|#2b303b|->  Coldark-Dark                          \n",
-            "<#c0c5ce|#2b303b|->  DarkNeon                              \n",
-            "<#c0c5ce|#2b303b|->  Dracula                               \n",
-            "<#c0c5ce|#2b303b|->  GitHub                                \n",
-            "<#c0c5ce|#2b303b|->  InspiredGitHub                        \n",
-            "<#c0c5ce|#2b303b|->  Monokai Extended                      \n",
-            "<#c0c5ce|#2b303b|->  Monokai Extended Bright               \n",
-            "<#c0c5ce|#2b303b|->  Monokai Extended Light                \n",
-            "<#c0c5ce|#2b303b|->  Monokai Extended Origin               \n",
-            "<#c0c5ce|#2b303b|->  Nord                                  \n",
-            "<#c0c5ce|#2b303b|->  OneHalfDark                           \n",
-            "<#c0c5ce|#2b303b|->  OneHalfLight                          \n",
-            "<#c0c5ce|#2b303b|->  Solarized (dark)                      \n",
-            "<#c0c5ce|#2b303b|->  Solarized (light)                     \n",
-            "<#c0c5ce|#2b303b|->  Sublime Snazzy                        \n",
-            "<#c0c5ce|#2b303b|->  TwoDark                               \n",
-            "<#c0c5ce|#2b303b|->  base16-eighties.dark                  \n",
-            "<#c0c5ce|#2b303b|->  base16-mocha.dark                     \n",
-            "<#c0c5ce|#65737e|->> base16-ocean.dark                     \n",
-            "<#c0c5ce|#2b303b|->  base16-ocean.light                    \n",
-            "<#c0c5ce|#2b303b|->  gruvbox-dark                          \n",
-            "<#c0c5ce|#2b303b|->  gruvbox-light                         \n",
-            "<#c0c5ce|#2b303b|->  wez                                   \n",
-            "<#c0c5ce|#2b303b|->  zenburn                               \n",
-            "<-|#2b303b|->                                        \n",
-            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
+            "<#c0c5ce|#2b303b|->  1337                                            \n",
+            "<#c0c5ce|#2b303b|->  Catppuccin Frappe                               \n",
+            "<#c0c5ce|#2b303b|->  Catppuccin Latte                                \n",
+            "<#c0c5ce|#2b303b|->  Catppuccin Macchiato                            \n",
+            "<#c0c5ce|#2b303b|->  Catppuccin Mocha                                \n",
+            "<#c0c5ce|#2b303b|->  Coldark-Cold                                    \n",
+            "<#c0c5ce|#2b303b|->  Coldark-Dark                                    \n",
+            "<#c0c5ce|#2b303b|->  DarkNeon                                        \n",
+            "<#c0c5ce|#2b303b|->  Dracula                                         \n",
+            "<#c0c5ce|#2b303b|->  GitHub                                          \n",
+            "<#c0c5ce|#2b303b|->  InspiredGitHub                                  \n",
+            "<#c0c5ce|#2b303b|->  Monokai Extended                                \n",
+            "<#c0c5ce|#2b303b|->  Monokai Extended Bright                         \n",
+            "<#c0c5ce|#2b303b|->  Monokai Extended Light                          \n",
+            "<#c0c5ce|#2b303b|->  Monokai Extended Origin                         \n",
+            "<#c0c5ce|#2b303b|->  Nord                                            \n",
+            "<#c0c5ce|#2b303b|->  OneHalfDark                                     \n",
+            "<#c0c5ce|#2b303b|->  OneHalfLight                                    \n",
+            "<#c0c5ce|#2b303b|->  Solarized (dark)                                \n",
+            "<#c0c5ce|#2b303b|->  Solarized (light)                               \n",
+            "<#c0c5ce|#2b303b|->  Sublime Snazzy                                  \n",
+            "<#c0c5ce|#2b303b|->  TwoDark                                         \n",
+            "<#c0c5ce|#2b303b|->  base16-eighties.dark                            \n",
+            "<#c0c5ce|#2b303b|->  base16-mocha.dark                               \n",
+            "<#c0c5ce|#65737e|->> base16-ocean.dark                               \n",
+            "<#c0c5ce|#2b303b|->  base16-ocean.light                              \n",
+            "<#c0c5ce|#2b303b|->  gruvbox-dark                                    \n",
+            "<#c0c5ce|#2b303b|->  gruvbox-light                                   \n",
+            "<#c0c5ce|#2b303b|->  wez                                             \n",
+            "<#c0c5ce|#2b303b|->  zenburn                                         \n",
+            "<-|#2b303b|->                                                  \n",
+            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel  / filter\n",
         );
     }
 
@@ -5004,11 +5073,11 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump_picker(&mut app),
-            "<#c0c5ce|#65737e|->> the latest diff (v2) (showing now)    \n",
-            "<#c0c5ce|#2b303b|->  changes since v1                      \n",
-            "<#c0c5ce|#2b303b|->  changes since v0                      \n",
-            "<-|#2b303b|->                                        \n",
-            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
+            "<#c0c5ce|#65737e|->> the latest diff (v2) (showing now)              \n",
+            "<#c0c5ce|#2b303b|->  changes since v1                                \n",
+            "<#c0c5ce|#2b303b|->  changes since v0                                \n",
+            "<-|#2b303b|->                                                  \n",
+            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel  / filter\n",
         );
     }
 
@@ -5024,11 +5093,11 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump_picker(&mut app),
-            "<#c0c5ce|#2b303b|->  the latest diff (v2)                  \n",
-            "<#c0c5ce|#65737e|->> changes since v1 (showing now)        \n",
-            "<#c0c5ce|#2b303b|->  changes since v0                      \n",
-            "<-|#2b303b|->                                        \n",
-            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
+            "<#c0c5ce|#2b303b|->  the latest diff (v2)                            \n",
+            "<#c0c5ce|#65737e|->> changes since v1 (showing now)                  \n",
+            "<#c0c5ce|#2b303b|->  changes since v0                                \n",
+            "<-|#2b303b|->                                                  \n",
+            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel  / filter\n",
         );
     }
 
@@ -5276,10 +5345,10 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump_picker(&mut app),
-            "<#c0c5ce|#65737e|->> the latest diff (v1) (showing now)    \n",
-            "<#c0c5ce|#2b303b|->  changes since v0                      \n",
-            "<-|#2b303b|->                                        \n",
-            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
+            "<#c0c5ce|#65737e|->> the latest diff (v1) (showing now)              \n",
+            "<#c0c5ce|#2b303b|->  changes since v0                                \n",
+            "<-|#2b303b|->                                                  \n",
+            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel  / filter\n",
         );
     }
 
@@ -5303,7 +5372,7 @@ mod tests {
             "<#c0c5ce|#65737e|->> the latest diff (v1) (showing now)                           \n",
             "<#c0c5ce|#2b303b|->  changes since v0                                             \n",
             "<-|#2b303b|->                                                               \n",
-            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel                       \n",
+            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel  / filter             \n",
         );
     }
 
@@ -5317,11 +5386,11 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump_picker(&mut app),
-            "<#c0c5ce|#2b303b|->  the latest diff (v2)                  \n",
-            "<#c0c5ce|#65737e|->> changes since v1 (showing now)        \n",
-            "<#c0c5ce|#2b303b|->  changes since v0                      \n",
-            "<-|#2b303b|->                                        \n",
-            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
+            "<#c0c5ce|#2b303b|->  the latest diff (v2)                            \n",
+            "<#c0c5ce|#65737e|->> changes since v1 (showing now)                  \n",
+            "<#c0c5ce|#2b303b|->  changes since v0                                \n",
+            "<-|#2b303b|->                                                  \n",
+            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel  / filter\n",
         );
     }
 
@@ -5336,11 +5405,11 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump_picker(&mut app),
-            "<#c0c5ce|#65737e|->> the latest diff (v2) (showing now)    \n",
-            "<#c0c5ce|#2b303b|->  changes since v1 (your last comments) \n",
-            "<#c0c5ce|#2b303b|->  changes since v0                      \n",
-            "<-|#2b303b|->                                        \n",
-            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
+            "<#c0c5ce|#65737e|->> the latest diff (v2) (showing now)              \n",
+            "<#c0c5ce|#2b303b|->  changes since v1 (your last comments)           \n",
+            "<#c0c5ce|#2b303b|->  changes since v0                                \n",
+            "<-|#2b303b|->                                                  \n",
+            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel  / filter\n",
         );
     }
 
