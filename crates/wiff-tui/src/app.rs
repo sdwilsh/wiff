@@ -317,6 +317,21 @@ impl PickerRow<App> for FileRow {
     }
 }
 
+/// A candidate file for an explore review in the add-file list.
+struct AddFileRow {
+    path: String,
+}
+
+impl PickerRow<App> for AddFileRow {
+    fn label(&self) -> String {
+        self.path.clone()
+    }
+
+    fn activate(self: Box<Self>, app: &mut App) {
+        app.pending_add_file = Some(self.path);
+    }
+}
+
 /// A comment in the modal list: its status marker, location, author, and body
 /// start as styled fragments, and its stable identity, so choosing it jumps the
 /// cursor to that comment's header.
@@ -533,6 +548,15 @@ pub struct App {
     /// The publish phase confirmed from a publish prompt, cleared when the host
     /// takes it to perform.
     pending_publish: Option<PublishStep>,
+    /// Whether this review can widen its file set, true only for an explore
+    /// session.
+    can_add_files: bool,
+    /// Whether the reviewer asked to add a file, present until the host reads it
+    /// to walk the repository and open the picker over the candidates.
+    pending_file_list: bool,
+    /// The file the reviewer chose to add, present until the host reads it to
+    /// widen the review and reload over the new version.
+    pending_add_file: Option<String>,
     /// The default a quit resolves to, from the host's configured on-exit policy.
     exit_default: ExitDefault,
     /// Whether each of the document's folds is currently collapsed.
@@ -640,6 +664,9 @@ impl App {
             compare_on_cancel: None,
             pending_refresh: false,
             pending_publish: None,
+            can_add_files: false,
+            pending_file_list: false,
+            pending_add_file: None,
             exit_default: ExitDefault::Prompt,
             collapsed,
             comment_collapsed,
@@ -709,6 +736,13 @@ impl App {
     /// Set the default a quit resolves to, from the host's on-exit policy.
     pub fn with_exit_default(mut self, default: ExitDefault) -> Self {
         self.exit_default = default;
+        self
+    }
+
+    /// Allow the reviewer to widen the reviewed file set, which only an explore
+    /// session can do. When false the add-file action does nothing.
+    pub fn with_add_files(mut self, can_add_files: bool) -> Self {
+        self.can_add_files = can_add_files;
         self
     }
 
@@ -1004,6 +1038,7 @@ impl App {
             Action::PickTheme => self.open_theme_picker(),
             Action::Help => self.open_help(),
             Action::CompareVersions => self.open_compare_picker(),
+            Action::AddFile => self.request_add_file(),
             Action::ResolveComment => return self.resolve_comment(),
             Action::DeleteComment => return self.delete_comment(),
             Action::SetVerdict => return self.set_verdict(),
@@ -2090,6 +2125,77 @@ impl App {
     /// clearing it.
     pub fn take_pending_compare(&mut self) -> Option<CompareRequest> {
         self.pending_compare.take()
+    }
+
+    /// Record that the reviewer wants to widen the reviewed file set, for the
+    /// host to walk the repository and open the add-file picker over the
+    /// candidates. Does nothing unless this is an explore review.
+    fn request_add_file(&mut self) {
+        if self.can_add_files {
+            self.pending_file_list = true;
+        }
+    }
+
+    /// Take whether the reviewer asked to add a file, clearing it.
+    pub fn take_pending_file_list(&mut self) -> bool {
+        std::mem::take(&mut self.pending_file_list)
+    }
+
+    /// Open the add-file list over `files`, the repository-relative paths the
+    /// host found that the review can add, each widening the review to that file
+    /// when chosen. Reports when there is nothing to add rather than opening an
+    /// empty list.
+    pub fn open_add_file_picker(&mut self, files: Vec<String>) {
+        if files.is_empty() {
+            self.set_message("no files to add".to_string());
+            return;
+        }
+        let rows: Vec<Box<dyn PickerRow<App>>> = files
+            .into_iter()
+            .map(|path| Box::new(AddFileRow { path }) as Box<dyn PickerRow<App>>)
+            .collect();
+        let hint = self.picker_hint();
+        let filter_hint = self.picker_filter_hint();
+        self.picker = Some(
+            Picker::new("Add a file", rows, &hint, self.picker_colors).filterable(&filter_hint),
+        );
+    }
+
+    /// Take the file the reviewer chose to add, if any, clearing it.
+    pub fn take_pending_add_file(&mut self) -> Option<String> {
+        self.pending_add_file.take()
+    }
+
+    /// Expand every fold of the file at repository-relative `path` and move the
+    /// cursor to its header, returning whether it was found. The host calls this
+    /// after widening an explore review so the freshly added file opens fully
+    /// rather than as a collapsed run of context the reviewer must unfold.
+    pub fn move_to_file(&mut self, path: &str) -> bool {
+        let Some(file) = self.document.files.iter().position(|name| name == path) else {
+            return false;
+        };
+        for fold in 0..self.document.folds.len() {
+            let start = self.document.folds[fold].start;
+            if self.document.rows[start].file == file {
+                self.collapsed[fold] = false;
+            }
+        }
+        self.rebuild_view();
+        let Some(row) = self
+            .document
+            .rows
+            .iter()
+            .position(|meta| meta.file == file && matches!(meta.kind, RowKind::FileHeader))
+        else {
+            return false;
+        };
+        match self.locate_document_row(row) {
+            Some(index) => {
+                self.move_to(index);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Open a modal asking whether to recapture the source, for a launch where
@@ -4853,6 +4959,100 @@ mod tests {
         app.picker_cancel();
         wince::assert_eq!(app.picking(), false);
         wince::assert_eq!(app.cursor(), 0);
+    }
+
+    #[test]
+    fn add_file_does_nothing_without_an_explore_review() {
+        let mut app = App::new(document(), 8, &theme());
+        app.update(Action::AddFile);
+        wince::assert_eq!(
+            (app.take_pending_file_list(), app.picking()),
+            (false, false)
+        );
+    }
+
+    #[test]
+    fn add_file_on_an_explore_review_requests_the_file_list() {
+        // An explore review answers the add-file action by asking the host to
+        // walk the repository and hand back the candidates.
+        let mut app = App::new(document(), 8, &theme()).with_add_files(true);
+        app.update(Action::AddFile);
+        wince::assert_eq!(app.take_pending_file_list(), true);
+    }
+
+    #[test]
+    fn the_add_file_picker_filters_its_candidates_and_choosing_queues_the_add() {
+        // The picker opens over the candidate paths the host walked. Filtering
+        // to one narrows the list, and choosing it queues that path for the host
+        // to widen the review with.
+        let mut app = App::new(document(), 8, &theme()).with_add_files(true);
+        app.open_add_file_picker(vec![
+            "src/lib.rs".to_string(),
+            "src/main.rs".to_string(),
+            "README.md".to_string(),
+        ]);
+        wince::assert_eq!(app.picking(), true);
+        app.picker_begin_filter();
+        for ch in "main".chars() {
+            app.picker_push_query(ch);
+        }
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump_picker(&mut app),
+            "<#c0c5ce|#2b303b|->> main█                                           \n",
+            "<#c0c5ce|#65737e|->> <#c0c5ce|#65737e|->src/<#8fa1b3|#65737e|->main<#c0c5ce|#65737e|->.rs<#c0c5ce|#65737e|->                                     \n",
+            "<-|#2b303b|->                                                  \n",
+            "<#767b84|#2b303b|->  type to filter  enter select  esc navigate      \n",
+        );
+        app.picker_activate();
+        wince::assert_eq!(
+            (app.picking(), app.take_pending_add_file()),
+            (false, Some("src/main.rs".to_string()))
+        );
+    }
+
+    #[test]
+    fn moving_to_an_added_file_expands_its_folded_context() {
+        // A second file of all-context lines folds into a marker by default.
+        // Moving to it, as the host does after widening an explore review,
+        // expands the fold and moves the cursor to its header with the body
+        // shown rather than collapsed.
+        let context: Vec<(LineKind, String, u32)> = (1..=10)
+            .map(|n| (LineKind::Context, format!("line{n:02}"), n))
+            .collect();
+        let borrowed: Vec<(LineKind, &str, u32)> = context
+            .iter()
+            .map(|(k, t, n)| (*k, t.as_str(), *n))
+            .collect();
+        let diff = Diff {
+            files: vec![
+                file(
+                    "src/lib.rs",
+                    FileStatus::Modified,
+                    &[(LineKind::Added, "let y = 2;", 1)],
+                ),
+                file("notes.txt", FileStatus::Modified, &borrowed),
+            ],
+        };
+        let document = DiffView::new(theme()).unwrap().render(&diff);
+        let mut app = App::new(document, 12, &theme());
+        wince::assert_eq!(app.move_to_file("notes.txt"), true);
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
+            "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+            "<#f6f6f8|#65737e|b>modified  notes.txt<-|#65737e|->                     \n",
+            "<#96b5b4|-|->@@ -1,10 +1,10 @@\n",
+            "<#7d828c|-|->   1    1 ▾ <#c0c5ce|-|->line01\n",
+            "<#7d828c|-|->   2    2 │ <#c0c5ce|-|->line02\n",
+            "<#7d828c|-|->   3    3 │ <#c0c5ce|-|->line03\n",
+            "<#7d828c|-|->   4    4 │ <#c0c5ce|-|->line04\n",
+            "<#7d828c|-|->   5    5 │ <#c0c5ce|-|->line05\n",
+            "<#7d828c|-|->   6    6 │ <#c0c5ce|-|->line06\n",
+            "<#7d828c|-|->   7    7 │ <#c0c5ce|-|->line07\n",
+        );
     }
 
     #[test]

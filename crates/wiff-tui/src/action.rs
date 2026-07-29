@@ -238,6 +238,9 @@ declare_actions! {
         // Reconciles the pull request's forge state, then sends the review back.
         /// Publish the review to the forge
         Publish,
+        // A no-op outside an explore review, whose file set is fixed by its diff.
+        /// Add a file to the review
+        AddFile,
         /// Compare against an earlier version
         CompareVersions,
         /// Open the file in your editor
@@ -350,6 +353,7 @@ mod tests {
             "  save = Commit pending comments\n",
             "  refresh = Capture a new diff version\n",
             "  publish = Publish the review to the forge\n",
+            "  add_file = Add a file to the review\n",
             "  compare_versions = Compare against an earlier version\n",
             "  open_in_editor = Open the file in your editor\n",
             "  suspend = Suspend to the shell\n",

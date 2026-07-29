@@ -158,7 +158,7 @@ pub(crate) fn normalize_path(root: &Path, input: &str) -> anyhow::Result<String>
 
 /// Join a path's components with forward slashes, the spelling a capture stores
 /// and a comment target matches against.
-fn to_slash(path: &Path) -> String {
+pub(crate) fn to_slash(path: &Path) -> String {
     path.components()
         .map(|component| component.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()

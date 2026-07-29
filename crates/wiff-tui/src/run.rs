@@ -48,52 +48,58 @@ const POLL_INTERVAL: Duration = Duration::from_millis(750);
 /// cycle.
 const HIGHLIGHT_POLL_INTERVAL: Duration = Duration::from_millis(30);
 
-/// Run the review loop over `app`, resolving key events through `keymap`, until
-/// a quit action ends it. A [`Action::Refresh`] is handed to `refresh`, which
-/// recaptures the diff and reloads the app in place, and a [`Action::Save`] to
-/// `save`, which commits the pending drafts and keeps the review open; both
-/// report their own outcome through the app's status line. When the reviewer
-/// chooses a version to compare against, `compare` reconstructs that diff and
-/// shows it in place. An [`Action::Publish`] and each confirmed publish phase
-/// are handed to `publish`, which drives the pull-and-push round-trip to the
-/// forge. After each key and whenever the review sits idle the loop
-/// calls `sync`, which picks up another actor's updates to the session and folds
-/// them into the app, returning whether it changed anything so the loop repaints
-/// only when it did. The terminal is put into raw mode on an alternate screen for the
-/// duration and restored before returning. Returns how the reviewer chose to
-/// leave together with any buffered draft edits still to commit.
-pub fn run<R, S, Y, C, P>(
-    app: App,
-    keymap: Keymap,
-    callbacks: Callbacks<R, S, Y, C, P>,
-) -> io::Result<(Exit, Vec<RecordBody>)>
-where
-    R: FnMut(&mut App),
-    S: FnMut(&mut App),
-    Y: FnMut(&mut App) -> bool,
-    C: FnMut(&mut App, CompareRequest),
-    P: FnMut(&mut App, PublishStep),
-{
-    let mut terminal = TerminalGuard::enter()?;
-    event_loop(&mut terminal.terminal, app, keymap, callbacks)
+/// A host callback that updates the review in place.
+type Hook<'a> = Box<dyn FnMut(&mut App) + 'a>;
+
+/// A host callback that updates the review in place and reports whether it
+/// changed anything.
+type ReportingHook<'a> = Box<dyn FnMut(&mut App) -> bool + 'a>;
+
+/// A host callback that updates the review in place given a chosen value.
+type ChoiceHook<'a, T> = Box<dyn FnMut(&mut App, T) + 'a>;
+
+/// The host operations the review loop calls back into when the reviewer asks
+/// for something that reads or writes the session on disk, which the app never
+/// touches itself. Each is called with the app to update in place; a failure is
+/// the host's to report through the app's status line or a modal notice.
+pub struct Hooks<'a> {
+    /// Recapture the source as a new version and reload the review over it.
+    pub refresh: Hook<'a>,
+    /// Commit the pending draft comments, keeping the review open.
+    pub save: Hook<'a>,
+    /// Fold in another actor's committed changes, returning whether anything
+    /// changed so the loop repaints only when it did.
+    pub sync: ReportingHook<'a>,
+    /// Reconstruct a chosen version comparison and show it in place.
+    pub compare: ChoiceHook<'a, CompareRequest>,
+    /// Perform a publish phase: open the prompt, reconcile the forge, or send.
+    pub publish: ChoiceHook<'a, PublishStep>,
+    /// Walk the repository for files an explore review can add and open the
+    /// picker over them.
+    pub list_files: Hook<'a>,
+    /// Widen an explore review with the chosen path, reload over the new
+    /// version, and move the cursor to the added file.
+    pub add_file: ChoiceHook<'a, String>,
 }
 
-/// The host-side effects [`run`] reaches back to as the reviewer drives the
-/// loop. The review UI owns the diff and the cursor but not the session on disk
-/// or the forge; each callback is where it steps out to that world when an
-/// action or a confirmed prompt resolves.
-pub struct Callbacks<R, S, Y, C, P> {
-    /// Recapture the diff and reload the app over the new version.
-    pub refresh: R,
-    /// Commit the pending drafts, keeping the review open.
-    pub save: S,
-    /// Fold in another actor's committed changes, returning whether anything
-    /// changed.
-    pub sync: Y,
-    /// Reconstruct the chosen version's diff and show it in place.
-    pub compare: C,
-    /// Perform a publish phase: open the prompt, reconcile, or send.
-    pub publish: P,
+/// Run the review loop over `app`, resolving key events through `keymap`, until
+/// a quit action ends it. Everything that touches the session on disk or the
+/// forge is handed to the matching hook in `hooks`: a [`Action::Refresh`]
+/// recaptures and reloads the app in place, a [`Action::Save`] commits the
+/// pending drafts and keeps the review open, choosing a version to compare
+/// against reconstructs that diff, an [`Action::Publish`] and each confirmed
+/// publish phase drive the pull-and-push round-trip to the forge, and
+/// [`Action::AddFile`] walks the repository and, on a choice, widens an explore
+/// review; each reports its own outcome through the app's status line. After
+/// each key and whenever the review sits idle the loop calls the sync hook,
+/// which picks up another actor's updates to the session and folds them into the
+/// app, returning whether it changed anything so the loop repaints only when it
+/// did. The terminal is put into raw mode on an alternate screen for the
+/// duration and restored before returning. Returns how the reviewer chose to
+/// leave together with any buffered draft edits still to commit.
+pub fn run(app: App, keymap: Keymap, hooks: Hooks) -> io::Result<(Exit, Vec<RecordBody>)> {
+    let mut terminal = TerminalGuard::enter()?;
+    event_loop(&mut terminal.terminal, app, keymap, hooks)
 }
 
 /// Draw the current view: the visible lines over all but the last screen row,
@@ -540,27 +546,12 @@ fn draw_editor_box(
 }
 
 /// Draw and handle events until a quit action ends the loop.
-fn event_loop<B, R, S, Y, C, P>(
+fn event_loop<B: Backend>(
     terminal: &mut Terminal<B>,
     mut app: App,
     keymap: Keymap,
-    callbacks: Callbacks<R, S, Y, C, P>,
-) -> io::Result<(Exit, Vec<RecordBody>)>
-where
-    B: Backend,
-    R: FnMut(&mut App),
-    S: FnMut(&mut App),
-    Y: FnMut(&mut App) -> bool,
-    C: FnMut(&mut App, CompareRequest),
-    P: FnMut(&mut App, PublishStep),
-{
-    let Callbacks {
-        mut refresh,
-        mut save,
-        mut sync,
-        mut compare,
-        mut publish,
-    } = callbacks;
+    mut hooks: Hooks,
+) -> io::Result<(Exit, Vec<RecordBody>)> {
     let mut input = Input::new(keymap);
     // Repaint only when the view might have changed, so an idle poll that finds
     // no session update does not redraw. Set the first time through to paint the
@@ -590,7 +581,7 @@ where
             POLL_INTERVAL
         };
         if !event::poll(timeout)? {
-            if !modal && sync(&mut app) {
+            if !modal && (hooks.sync)(&mut app) {
                 dirty = true;
             }
             continue;
@@ -685,11 +676,13 @@ where
                     if app.begin_refresh_working() {
                         draw(terminal, &mut app)?;
                     }
-                    refresh(&mut app);
+                    (hooks.refresh)(&mut app);
                     app.end_working();
                 }
-                Update::Passed(Action::Save) => save(&mut app),
-                Update::Passed(Action::Publish) => publish(&mut app, PublishStep::Requested),
+                Update::Passed(Action::Save) => (hooks.save)(&mut app),
+                Update::Passed(Action::Publish) => {
+                    (hooks.publish)(&mut app, PublishStep::Requested)
+                }
                 Update::Passed(Action::Suspend) => {
                     suspend()?;
                     // The alternate screen comes back blank on resume, so
@@ -702,7 +695,13 @@ where
         // A version chosen from the compare picker is reconstructed and shown in
         // place by the host, which reads the journalled diffs off disk.
         if let Some(request) = app.take_pending_compare() {
-            compare(&mut app, request);
+            (hooks.compare)(&mut app, request);
+        }
+        if app.take_pending_file_list() {
+            (hooks.list_files)(&mut app);
+        }
+        if let Some(path) = app.take_pending_add_file() {
+            (hooks.add_file)(&mut app, path);
         }
         // A refresh chosen from the launch prompt recaptures the source, just as
         // the refresh action does, painting the forge busy modal first when the
@@ -711,7 +710,7 @@ where
             if app.begin_refresh_working() {
                 draw(terminal, &mut app)?;
             }
-            refresh(&mut app);
+            (hooks.refresh)(&mut app);
             app.end_working();
         }
         // A publish phase confirmed from a publish prompt is performed by the
@@ -721,7 +720,7 @@ where
         if let Some(step) = app.take_pending_publish() {
             app.begin_publishing(step);
             draw(terminal, &mut app)?;
-            publish(&mut app, step);
+            (hooks.publish)(&mut app, step);
             app.end_working();
         }
         // A quit action or a confirmed picker choice settles how to leave.
@@ -738,7 +737,7 @@ where
         // syncing per key costs almost nothing when the file is untouched.
         if !(app.composing() || app.searching() || app.picking() || app.helping() || app.noticing())
         {
-            sync(&mut app);
+            (hooks.sync)(&mut app);
         }
     }
 }

@@ -4,7 +4,7 @@
 
 mod comment;
 mod description;
-mod explore;
+pub(crate) mod explore;
 mod forge;
 mod new;
 mod refresh;

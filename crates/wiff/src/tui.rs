@@ -4,6 +4,7 @@
 //! loads the latest captured diff, renders it, and runs the terminal loop, then
 //! keeps or removes the session according to how the reviewer chose to leave.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -15,14 +16,16 @@ use wiff_core::session::{SessionWatcher, read_records, remove_session, session_b
 use wiff_core::source::ScmRepo;
 use wiff_core::{
     AnchorFailures, CapturedDiff, LockWait, RefreshOutcome, ReviewState, SessionLog, SidebandHash,
-    capture_draft_anchors, compare_versions, refresh_session, widen_explore,
+    capture_draft_anchors, compare_versions, explore_file_set, refresh_session, widen_explore,
 };
+use wiff_diff::decode_text;
 use wiff_forge::{Forge, PushOutcome, ResyncOutcome, TokenOverride, push};
 use wiff_tui::{
-    App, Callbacks, CommentSync, CompareRequest, DiffView, Exit, ExitDefault, KeyHints,
-    PublishStep, Review, Theme, run,
+    App, CommentSync, CompareRequest, DiffView, Exit, ExitDefault, Hooks, KeyHints, PublishStep,
+    Review, Theme, run,
 };
 
+use crate::command::explore::to_slash;
 use crate::command::{
     connect_forge, explore_root, recapture_diff, reconcile_before_push, scm_repo,
 };
@@ -92,6 +95,7 @@ pub fn open(
     );
     let mut app = App::reviewing(review, 0, &theme)
         .with_exit_default(exit_default(config.on_exit))
+        .with_add_files(matches!(state.session.source, SourceKind::Explore))
         .with_keymap(keymap.clone())
         .with_wrap_content(config.wrap_lines)
         .with_show_line_numbers(config.show_line_numbers)
@@ -133,16 +137,6 @@ pub fn open(
             app.show_notice("Refresh failed", err.to_string());
         }
     };
-    let save = |app: &mut App| {
-        if let Err(err) = save_in_place(session_path, app) {
-            app.set_message(format!("save failed: {err}"));
-        }
-    };
-    let compare = |app: &mut App, request: CompareRequest| {
-        if let Err(err) = compare_in_place(session_path, config.tab_width, app, request) {
-            app.set_message(format!("compare failed: {err}"));
-        }
-    };
     // Publishing runs in confirmed phases the reviewer steps through: the key
     // press opens a prompt, accepting it reconciles the forge and (unless that
     // pulled in changes to read first) sends the review back. A failure at any
@@ -182,35 +176,49 @@ pub fn open(
     // human) has committed to this session and fold them in. The watcher is a
     // cheap stat, so it costs nothing while the file is untouched.
     let mut watcher = SessionWatcher::new(session_path);
-    let sync = |app: &mut App| {
-        let Some(fingerprint) = watcher.changed() else {
-            return false;
-        };
-        // Act only on a successful read. A read that fails because a line is
-        // still being appended leaves the change unacknowledged, so the next
-        // wakeup retries it once the line is whole.
-        let Ok(summary) = reload_committed(session_path, app) else {
-            return false;
-        };
-        watcher.acknowledge(fingerprint);
-        if summary.is_empty() {
-            return false;
-        }
-        app.set_message(sync_report(&summary));
-        true
+    let hooks = Hooks {
+        refresh: Box::new(refresh),
+        save: Box::new(|app: &mut App| {
+            if let Err(err) = save_in_place(session_path, app) {
+                app.set_message(format!("save failed: {err}"));
+            }
+        }),
+        sync: Box::new(move |app: &mut App| {
+            let Some(fingerprint) = watcher.changed() else {
+                return false;
+            };
+            // Act only on a successful read. A read that fails because a line is
+            // still being appended leaves the change unacknowledged, so the next
+            // wakeup retries it once the line is whole.
+            let Ok(summary) = reload_committed(session_path, app) else {
+                return false;
+            };
+            watcher.acknowledge(fingerprint);
+            if summary.is_empty() {
+                return false;
+            }
+            app.set_message(sync_report(&summary));
+            true
+        }),
+        compare: Box::new(|app: &mut App, request: CompareRequest| {
+            if let Err(err) = compare_in_place(session_path, config.tab_width, app, request) {
+                app.set_message(format!("compare failed: {err}"));
+            }
+        }),
+        publish: Box::new(publish),
+        list_files: Box::new(|app: &mut App| match addable_files(session_path) {
+            Ok(files) => app.open_add_file_picker(files),
+            Err(err) => app.show_notice("Add file failed", err.to_string()),
+        }),
+        add_file: Box::new(|app: &mut App, path: String| {
+            if let Err(err) = add_file_in_place(session_path, &author, config.tab_width, app, path)
+            {
+                app.show_notice("Add file failed", err.to_string());
+            }
+        }),
     };
 
-    let (exit, drafts) = run(
-        app,
-        keymap,
-        Callbacks {
-            refresh,
-            save,
-            sync,
-            compare,
-            publish,
-        },
-    )?;
+    let (exit, drafts) = run(app, keymap, hooks)?;
     resolve_exit(exit, session_path, drafts)
 }
 
@@ -311,6 +319,92 @@ fn refresh_in_place(
     // moved out from under the review leads the list, where the reviewer is
     // already choosing which range to look at.
     app.offer_compare_after_refresh(viewing, last_commented, base_shift_note(&outcome));
+    Ok(())
+}
+
+/// The repository-relative paths an explore review could add: every file under
+/// the review root, walked with `.gitignore` and `.ignore` conventions honored,
+/// less the files already under review and any that cannot be read as text.
+/// Dotfiles are offered (CI config and the like are prime review targets); only
+/// the version control's own `.git` store is skipped. Sorted so the picker lists
+/// them in a stable order.
+fn addable_files(session_path: &Path) -> anyhow::Result<Vec<String>> {
+    let state = ReviewState::load(session_path)?;
+    let root = explore_root(&state.session);
+    let under_review: HashSet<String> = explore_file_set(&state).into_iter().collect();
+    let mut files: Vec<String> = ignore::WalkBuilder::new(&root)
+        .hidden(false)
+        .filter_entry(|entry| entry.file_name() != ".git")
+        .build()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_some_and(|kind| kind.is_file()))
+        .filter_map(|entry| {
+            let relative = entry.path().strip_prefix(&root).ok()?;
+            let path = to_slash(relative);
+            if under_review.contains(&path) {
+                return None;
+            }
+            // Reading each candidate to reject binaries keeps the picker from
+            // offering a path the add would refuse. A synchronous read fits the
+            // human-scale trees explore reviews target; a large tree would want a
+            // background walk (nucleo's worker pool) rather than this read.
+            let bytes = std::fs::read(entry.path()).ok()?;
+            decode_text(bytes).map(|_| path)
+        })
+        .collect();
+    files.sort();
+    Ok(files)
+}
+
+/// Widen the explore review with `path`, reload `app` over the new version, and
+/// move the cursor to the added file. When the file was already under review the
+/// widen writes nothing; the cursor still moves to it. Rebasing the existing
+/// comments onto the new version is attributed to `author`.
+fn add_file_in_place(
+    session_path: &Path,
+    author: &Author,
+    tab_width: usize,
+    app: &mut App,
+    path: String,
+) -> anyhow::Result<()> {
+    let state = ReviewState::load(session_path)?;
+    let root = explore_root(&state.session);
+    let mut log = SessionLog::open(session_path)?;
+    let widened = widen_explore(
+        &mut log,
+        &root,
+        std::slice::from_ref(&path),
+        author.clone(),
+        LockWait::NonBlock,
+    )?;
+    let Some(outcome) = widened else {
+        app.set_message(format!("{path} is already under review"));
+        debug_assert!(
+            app.move_to_file(&path),
+            "a file under review must be locatable in the document"
+        );
+        return Ok(());
+    };
+    let state = ReviewState::load(session_path)?;
+    let latest = state
+        .latest_version()
+        .context("the widened session has no captured diff")?
+        .number;
+    let latest_diff = parse_diff(&log.read_diff(latest)?, tab_width)?;
+    let comments: Vec<_> = state
+        .comments
+        .iter()
+        .filter(|comment| !comment.deleted)
+        .cloned()
+        .collect();
+    app.refresh(latest_diff, comments, latest.get(), |authored_version| {
+        parse_diff(&log.read_diff(VersionNumber(authored_version))?, tab_width).map_err(Into::into)
+    })?;
+    app.set_message(format!("added {path} (v{})", outcome.version));
+    debug_assert!(
+        app.move_to_file(&path),
+        "a just-widened file must be locatable in the reloaded document"
+    );
     Ok(())
 }
 
@@ -827,7 +921,7 @@ mod tests {
     use wiff_core::session::{SessionLog, SessionWatcher, read_records};
     use wiff_core::{
         CapturedDiff, DraftComment, LockWait, ProjectIdentity, RefreshOutcome, ReviewState,
-        ScmType, create_session,
+        ScmType, capture_explore, create_session,
     };
     use wiff_diff::{LineNo, Side};
     use wiff_forge::{DeclinedWrite, PushOutcome, ResyncOutcome};
@@ -836,9 +930,9 @@ mod tests {
     };
 
     use super::{
-        commit_drafts, compare_in_place, push_report, recapture, reconcile_note, refresh_in_place,
-        refresh_report, reload_after_reconcile, reload_committed, save_in_place, source_changed,
-        sync_report,
+        addable_files, commit_drafts, compare_in_place, push_report, recapture, reconcile_note,
+        refresh_in_place, refresh_report, reload_after_reconcile, reload_committed, save_in_place,
+        source_changed, sync_report,
     };
     use crate::command::{DiffSelection, capture_scm_diff};
     use crate::testutil::git;
@@ -997,6 +1091,48 @@ mod tests {
              refresh the review, or quit this session and start (or resume) a \
              session from the current state of the repo if that is what you wish \
              to review."
+        );
+    }
+
+    #[test]
+    fn addable_files_omits_the_reviewed_set_and_binary_files() {
+        // An explore session over one file. The candidate list a reviewer can add
+        // covers the other text files under the root, sorted, with the file
+        // already under review and the binary one both left out. A dotfile under
+        // a dot-directory is offered (CI config is a review target); the `.git`
+        // store is skipped.
+        let root = tempfile::tempdir().expect("root tempdir");
+        let data = tempfile::tempdir().expect("data tempdir");
+        std::fs::create_dir_all(root.path().join("src")).expect("create src");
+        std::fs::create_dir_all(root.path().join(".github/workflows")).expect("create workflows");
+        std::fs::create_dir_all(root.path().join(".git")).expect("create git");
+        std::fs::write(root.path().join("src/lib.rs"), "pub fn a() {}\n").expect("write lib");
+        std::fs::write(root.path().join("src/main.rs"), "fn main() {}\n").expect("write main");
+        std::fs::write(root.path().join("README.md"), "# demo\n").expect("write readme");
+        std::fs::write(root.path().join(".github/workflows/ci.yml"), "on: push\n")
+            .expect("write ci");
+        std::fs::write(root.path().join(".git/config"), "[core]\n").expect("write git config");
+        std::fs::write(root.path().join("logo.bin"), b"PNG\x00\x01\x02data").expect("write bin");
+
+        let identity = ProjectIdentity {
+            canonical: "demo".to_string(),
+            repo_root: Some(root.path().to_path_buf()),
+            scm: None,
+        };
+        let capture = capture_explore(root.path(), &["src/lib.rs".into()]);
+        let log = create_session(data.path(), &identity, root.path(), &capture.captured, None)
+            .expect("create session");
+        let session_path = log.path().to_path_buf();
+        drop(log);
+
+        let files = addable_files(&session_path).expect("list files");
+        wince::assert_eq!(
+            files,
+            vec![
+                ".github/workflows/ci.yml".to_string(),
+                "README.md".to_string(),
+                "src/main.rs".to_string(),
+            ]
         );
     }
 
