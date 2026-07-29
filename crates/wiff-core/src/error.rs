@@ -130,6 +130,16 @@ pub enum Error {
     /// A session's records are internally inconsistent and cannot be folded.
     #[error("inconsistent session log: {0}")]
     InconsistentLog(String),
+
+    /// A path could not be included in an explore review because it is not
+    /// readable as line-oriented text: it is missing, or it is binary.
+    #[error("cannot include {path} in the review: {reason}")]
+    UnreadablePath {
+        /// The offending path, in the review's own spelling.
+        path: String,
+        /// Why it could not be included.
+        reason: String,
+    },
 }
 
 impl Error {

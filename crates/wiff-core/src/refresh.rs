@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::path::Path;
 
 use wiff_diff::Diff;
 use wiff_diff::parse::parse;
@@ -20,9 +21,9 @@ use crate::rebase::rebase_line_comment;
 use crate::record::{
     Author, CommentReanchor, Confidence, DiffVersionRecord, RevisionId, VersionNumber,
 };
-use crate::review::fold;
+use crate::review::{ReviewState, fold};
 use crate::session::{LockWait, SessionLog};
-use crate::source::CapturedDiff;
+use crate::source::{CapturedDiff, capture_explore};
 
 /// A tally of a refresh: the version it captured and how its comments fared.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -87,14 +88,34 @@ pub fn refresh_session(
     author: Author,
     wait: LockWait,
 ) -> Result<Option<RefreshOutcome>> {
+    refresh_session_with(log, author, wait, |_state| Ok(captured.clone()))
+}
+
+/// Capture the diff `capture` produces as the session's next version and rebase
+/// its comments onto it, like [`refresh_session`], but with the diff computed
+/// under the held session lock from the freshly folded [`ReviewState`]. A
+/// capture whose content depends on the current state, such as an explore review
+/// whose reviewed file set lives in its latest version, must read that state
+/// atomically with the append it produces, or a concurrent writer's version is
+/// lost. Returns `None` when the captured diff matches the current version.
+pub fn refresh_session_with<F>(
+    log: &mut SessionLog,
+    author: Author,
+    wait: LockWait,
+    capture: F,
+) -> Result<Option<RefreshOutcome>>
+where
+    F: FnOnce(&ReviewState) -> Result<CapturedDiff>,
+{
     let (mut lock, records) = log.lock_and_sync(wait)?;
     let state = fold(&records)?;
+    let captured = capture(&state)?;
     let latest = state.latest_version().ok_or(Error::NoDiffVersion)?;
     if latest.diff_hash == SidebandHash::of(captured.text.as_bytes()) {
         return Ok(None);
     }
     let number = latest.number.next();
-    let base_shift = base_shift(latest, captured);
+    let base_shift = base_shift(latest, &captured);
     let new_diff = parse(&captured.text)?;
 
     write_diff_version(
@@ -153,4 +174,54 @@ pub fn refresh_session(
         )?;
     }
     Ok(Some(outcome))
+}
+
+/// The after-side paths of `state`'s latest version, the reviewed file set of an
+/// explore review: each file is recorded there as an all-context modification.
+pub fn explore_file_set(state: &ReviewState) -> Vec<String> {
+    state
+        .latest_version()
+        .map(|version| {
+            version
+                .files
+                .iter()
+                .map(|file| file.new_path.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Widen an explore review's file set with `requested` and capture the result as
+/// the session's next version, rebasing comments onto it. The current file set
+/// is read from the latest version and the union with `requested` captured under
+/// the held session lock, so two concurrent widens cannot each drop the other's
+/// addition. `root` is the directory the paths are read under. Returns `None`
+/// when every requested path is already under review, so nothing changed.
+///
+/// A requested path that cannot be read as text fails the widen with no version
+/// written. A path already under review that has since vanished is tolerated: it
+/// drops out of the capture and its comments go outdated.
+pub fn widen_explore(
+    log: &mut SessionLog,
+    root: &Path,
+    requested: &[String],
+    author: Author,
+    wait: LockWait,
+) -> Result<Option<RefreshOutcome>> {
+    refresh_session_with(log, author, wait, |state| {
+        let mut paths = explore_file_set(state);
+        paths.extend(requested.iter().cloned());
+        let capture = capture_explore(root, &paths);
+        if let Some((path, reason)) = capture
+            .skipped
+            .iter()
+            .find(|(path, _)| requested.contains(path))
+        {
+            return Err(Error::UnreadablePath {
+                path: path.clone(),
+                reason: reason.describe().to_string(),
+            });
+        }
+        Ok(capture.captured)
+    })
 }

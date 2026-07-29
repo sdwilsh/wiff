@@ -3,11 +3,13 @@
 
 use anyhow::bail;
 use clap::Args;
-use wiff_core::record::{SessionHeader, SourceKind};
+use wiff_core::record::SourceKind;
 use wiff_core::review::ReviewState;
-use wiff_core::{CapturedDiff, LockWait, RefreshOutcome, SessionLog, refresh_session};
+use wiff_core::{
+    CapturedDiff, LockWait, RefreshOutcome, SessionLog, refresh_session, widen_explore,
+};
 
-use super::{read_piped_stdin, recapture_diff, resolve_author, resolve_session};
+use super::{explore_root, read_piped_stdin, recapture_diff, resolve_author, resolve_session};
 
 /// Arguments for `wiff refresh`.
 #[derive(Debug, Args)]
@@ -32,10 +34,19 @@ impl RefreshArgs {
     pub async fn run(self) -> anyhow::Result<()> {
         let path = resolve_session(self.session.as_deref(), self.project.as_deref())?;
         let state = ReviewState::load(&path)?;
-        let captured = recapture(&state.session).await?;
         let author = resolve_author(self.agent, self.author)?;
         let mut log = SessionLog::open(&path)?;
-        match refresh_session(&mut log, &captured, author, LockWait::Block)? {
+        // An explore review re-reads its file set from the latest version under
+        // the session lock rather than recapturing an scm range; widening with
+        // no new paths is that re-read.
+        let outcome = if matches!(state.session.source, SourceKind::Explore) {
+            let root = explore_root(&state.session);
+            widen_explore(&mut log, &root, &[], author, LockWait::Block)?
+        } else {
+            let captured = recapture(&state).await?;
+            refresh_session(&mut log, &captured, author, LockWait::Block)?
+        };
+        match outcome {
             Some(outcome) => report(&outcome),
             None => {
                 let current = state.latest_version().map(|v| v.number.get()).unwrap_or(0);
@@ -48,8 +59,8 @@ impl RefreshArgs {
 
 /// Recapture the diff from the session's original source: rerun the SCM for a
 /// regenerable source, or read a fresh diff piped on stdin for a stdin source.
-async fn recapture(header: &SessionHeader) -> anyhow::Result<CapturedDiff> {
-    if let Some(captured) = recapture_diff(header).await? {
+async fn recapture(state: &ReviewState) -> anyhow::Result<CapturedDiff> {
+    if let Some(captured) = recapture_diff(state).await? {
         return Ok(captured);
     }
     match read_piped_stdin().await? {

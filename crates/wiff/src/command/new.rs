@@ -11,7 +11,7 @@ use wiff_core::record::{Author, Description, SourceKind};
 use wiff_core::session::data_dir;
 use wiff_core::{
     BaseRuleset, CapturedDiff, IfNeeded, ProjectIdentity, RefreshOutcome, SessionLog,
-    create_session, parse_ruleset, reuse_or_create,
+    capture_explore, create_session, parse_ruleset, reuse_or_create,
 };
 use wiff_forge::TokenOverride;
 
@@ -39,6 +39,14 @@ pub struct NewArgs {
     /// configured `base_revision_rules` instead of pinning at the current commit.
     #[arg(long)]
     from_base: bool,
+    /// Open an empty review over existing code rather than a change. Add files to
+    /// it with `wiff explore add` or the in-review file picker; each is captured
+    /// at its current state with no change implied.
+    #[arg(
+        long,
+        conflicts_with_all = ["cached", "change", "from_base", "base", "if_needed"]
+    )]
+    explore: bool,
     /// Review against an explicit base ruleset, overriding the default base and
     /// `--from-base`; `--base empty` reviews the whole history to the root.
     #[arg(long, value_name = "RULESET", conflicts_with = "from_base")]
@@ -80,7 +88,9 @@ impl NewArgs {
         if self.if_needed {
             return self.ensure_session(&identity, &cwd, &captured);
         }
-        if captured.text.trim().is_empty() {
+        // An explore session opens empty by design, so the empty-capture check
+        // that guards a change review does not apply to it.
+        if !self.explore && captured.text.trim().is_empty() {
             bail!("no changes to review");
         }
         let base = data_dir()?;
@@ -138,6 +148,17 @@ impl NewArgs {
         identity: &ProjectIdentity,
         config: &Config,
     ) -> anyhow::Result<CapturedDiff> {
+        // An explore session starts with no files; its capture is an empty
+        // all-context diff that later adds widen. With no files to read, the
+        // root only matters once files are added, so a repo-less session falls
+        // back to the current directory here.
+        if self.explore {
+            let root = identity
+                .repo_root
+                .clone()
+                .unwrap_or_else(|| Path::new(".").to_path_buf());
+            return Ok(capture_explore(&root, &[]).captured);
+        }
         // A named git selection and a piped diff pull in opposite directions.
         // Detect a piped diff by its non-terminal stdin before committing to a
         // (blocking) read, so the conflict is reported at once rather than after
@@ -342,6 +363,20 @@ mod tests {
             error.kind(),
             clap::error::ErrorKind::MissingRequiredArgument
         );
+    }
+
+    #[test]
+    fn explore_conflicts_with_a_git_selection() {
+        let error = TestCli::try_parse_from(["new", "--explore", "--cached"])
+            .map(|_| ())
+            .unwrap_err();
+        wince::assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn explore_is_accepted_with_no_tui() {
+        let args = args_from(&["--explore", "--no-tui"]);
+        wince::assert_eq!((args.explore, args.no_tui), (true, true));
     }
 
     #[test]

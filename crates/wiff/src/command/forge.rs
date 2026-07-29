@@ -1182,6 +1182,8 @@ mod tests {
             SourceKind::Forge => "forge",
             SourceKind::Scm(_) => "scm",
             SourceKind::Stdin => "stdin",
+            SourceKind::Explore => "explore",
+            SourceKind::Unknown => "unknown",
         };
         let summary = format!(
             "bucket: {bucket}\n\
@@ -1282,6 +1284,8 @@ mod tests {
             SourceKind::Forge => "forge",
             SourceKind::Scm(_) => "scm",
             SourceKind::Stdin => "stdin",
+            SourceKind::Explore => "explore",
+            SourceKind::Unknown => "unknown",
         };
         let summary = format!(
             "bucket: {bucket}\n\

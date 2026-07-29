@@ -840,37 +840,41 @@ fn an_unrecognized_record_type_is_a_corrupt_log() {
 
 #[test]
 fn a_newer_format_version_is_refused() {
+    // A version far past this build, fixed so the test needs no update on the
+    // next format bump.
     let mut newer = header();
-    newer.version = FORMAT_VERSION + 1;
+    newer.version = u32::MAX;
     let records = vec![rec(0, RecordBody::Session(newer))];
 
     let error = fold(&records).unwrap_err();
     wince::assert_eq!(
         matches!(error, Error::UnsupportedVersion { found, supported }
-            if found == FORMAT_VERSION + 1 && supported == FORMAT_VERSION),
+            if found == u32::MAX && supported == FORMAT_VERSION),
         true
     );
     wince::snapshot_display!(
         error,
-        "session format version 5 does not match supported version 4"
+        "session format version 4294967295 does not match supported version 5"
     );
 }
 
 #[test]
 fn an_older_format_version_is_refused() {
+    // The first format version, fixed so the test needs no update on the next
+    // format bump.
     let mut older = header();
-    older.version = FORMAT_VERSION - 1;
+    older.version = 1;
     let records = vec![rec(0, RecordBody::Session(older))];
 
     let error = fold(&records).unwrap_err();
     wince::assert_eq!(
         matches!(error, Error::UnsupportedVersion { found, supported }
-            if found == FORMAT_VERSION - 1 && supported == FORMAT_VERSION),
+            if found == 1 && supported == FORMAT_VERSION),
         true
     );
     wince::snapshot_display!(
         error,
-        "session format version 3 does not match supported version 4"
+        "session format version 1 does not match supported version 5"
     );
 }
 

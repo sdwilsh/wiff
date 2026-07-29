@@ -40,9 +40,13 @@ pub use error::{Error, Result};
 pub use hash::SidebandHash;
 pub use identity::{ProjectIdentity, ScmType};
 pub use rebase::{RebaseOutcome, rebase_line_comment};
-pub use refresh::{BaseShift, RefreshOutcome, refresh_session};
+pub use refresh::{
+    BaseShift, RefreshOutcome, explore_file_set, refresh_session, refresh_session_with,
+    widen_explore,
+};
 pub use review::{CommentState, DescriptionState, ReviewState, fold};
 pub use session::{LockWait, ProjectLock, SessionLock, SessionLog};
 pub use source::{
-    CapturedDiff, DiffSource, FetchSource, GitSource, Remote, ScmRepo, TrackingBranch,
+    CapturedDiff, DiffSource, ExploreCapture, FetchSource, GitSource, Remote, ScmRepo, SkipReason,
+    TrackingBranch, capture_explore,
 };

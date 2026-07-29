@@ -4,6 +4,7 @@
 
 mod comment;
 mod description;
+mod explore;
 mod forge;
 mod new;
 mod refresh;
@@ -21,12 +22,17 @@ use tokio::io::AsyncReadExt;
 use ulid::Ulid;
 use wiff_config::Config;
 use wiff_core::record::{Author, AuthorKind, ScmSource, SessionHeader, SourceKind, TipRule};
+use wiff_core::review::ReviewState;
 use wiff_core::session::{active_session, data_dir, session_file};
 use wiff_core::source::{GitRepo, HeadBranch, ScmRepo, head_branch};
-use wiff_core::{BaseRuleset, CapturedDiff, DiffSource, GitSource, ProjectIdentity, ScmType};
+use wiff_core::{
+    BaseRuleset, CapturedDiff, DiffSource, GitSource, ProjectIdentity, ScmType, capture_explore,
+    explore_file_set,
+};
 
 use self::comment::CommentArgs;
 use self::description::DescriptionArgs;
+use self::explore::ExploreArgs;
 use self::forge::ForgeArgs;
 pub(crate) use self::forge::{connect_forge, reconcile_before_push};
 use self::new::NewArgs;
@@ -46,6 +52,8 @@ pub enum Command {
     Session(SessionArgs),
     /// Capture a new diff version into a session and rebase comments.
     Refresh(RefreshArgs),
+    /// Manage the file set of an explore review.
+    Explore(ExploreArgs),
     /// Add or manage comments.
     Comment(CommentArgs),
     /// Set or show the review's description.
@@ -68,6 +76,7 @@ impl Command {
             Command::Render(args) => args.run(),
             Command::Session(args) => args.run(),
             Command::Refresh(args) => args.run().await,
+            Command::Explore(args) => args.run(),
             Command::Resume(args) => args.run(),
             Command::Forge(args) => args.run().await,
             Command::SkillPath => skill::run(),
@@ -204,11 +213,15 @@ async fn pinned_or(base: Option<BaseRuleset>, root: &Path) -> anyhow::Result<Bas
     }
 }
 
-/// Recapture a session's diff from the source recorded in its `header`, or
-/// `None` when that source is a one-shot diff (piped on stdin) that cannot be
+/// Recapture a session's diff from the source recorded in its header, or `None`
+/// when that source is a one-shot diff (piped on stdin) that cannot be
 /// regenerated. Both `wiff refresh` and the in-TUI refresh flow through here, so
 /// the mapping from a recorded source back to a live capture lives in one place.
-pub(crate) async fn recapture_diff(header: &SessionHeader) -> anyhow::Result<Option<CapturedDiff>> {
+/// The whole `state` is taken, not just its header, because an explore refresh
+/// re-reads the file set recorded in the latest version rather than a range
+/// recorded in the header.
+pub(crate) async fn recapture_diff(state: &ReviewState) -> anyhow::Result<Option<CapturedDiff>> {
+    let header = &state.session;
     let ScmSource {
         scm,
         base,
@@ -216,8 +229,13 @@ pub(crate) async fn recapture_diff(header: &SessionHeader) -> anyhow::Result<Opt
         branch_hint,
     } = match &header.source {
         SourceKind::Scm(scm_source) => scm_source.clone(),
-        SourceKind::Stdin => return Ok(None),
+        SourceKind::Stdin | SourceKind::Unknown => return Ok(None),
         SourceKind::Forge => bail!("a forge session cannot yet be recaptured"),
+        // An explore capture re-reads the files recorded in the latest version
+        // from disk. A vanished file drops out of the capture and its comments
+        // go outdated; there is no branch or base to guard, so switching
+        // branches while reading code never blocks a refresh.
+        SourceKind::Explore => return Ok(Some(recapture_explore(state))),
     };
     let root = header
         .repo_root
@@ -296,6 +314,25 @@ fn branch_context_moved(created_on: Option<&str>, now: &str) -> anyhow::Error {
              resume) a session from the current state of the repo."
         ),
     }
+}
+
+/// Re-read the explore session's file set from disk into a fresh all-context
+/// capture, for detecting whether the files on disk have moved on. The lock-held
+/// widen path is what a refresh writes through; this is the advisory read.
+pub(crate) fn recapture_explore(state: &ReviewState) -> CapturedDiff {
+    let paths = explore_file_set(state);
+    capture_explore(&explore_root(&state.session), &paths).captured
+}
+
+/// The directory an explore session's paths are read under: the repository root
+/// when the session has one, else the directory it was created from, canonical
+/// so a path normalized against it and later joined to it resolve to the same
+/// file even when the root is reached through a symlink.
+pub(crate) fn explore_root(header: &SessionHeader) -> PathBuf {
+    let literal = Path::new(header.repo_root.as_ref().unwrap_or(&header.cwd));
+    literal
+        .canonicalize()
+        .unwrap_or_else(|_| literal.to_path_buf())
 }
 
 /// A ref name with its `refs/heads/` prefix dropped for display, leaving the

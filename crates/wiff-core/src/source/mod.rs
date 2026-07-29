@@ -9,6 +9,7 @@
 //! yielding a clone of itself, so a diff obtained by any means (piped on stdin,
 //! read from a file, fetched over RPC) integrates through the same trait.
 
+pub mod explore;
 pub mod git;
 
 use std::path::Path;
@@ -20,6 +21,7 @@ use crate::error::Result;
 use crate::identity::ScmType;
 use crate::record::{RevisionId, SourceKind};
 
+pub use explore::{ExploreCapture, SkipReason, capture_explore};
 pub use git::{GitRepo, GitSource};
 
 /// The checked-out branch of a repository, distinguishing a real detached head

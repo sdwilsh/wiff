@@ -20,7 +20,7 @@ use crate::identity::ScmType;
 /// The session format version, bumped when the record schema changes
 /// incompatibly. A log whose header version differs from this, older or newer,
 /// is refused rather than misread.
-pub const FORMAT_VERSION: u32 = 4;
+pub const FORMAT_VERSION: u32 = 5;
 
 /// A record's 0-based position in its session log and its stable id within the
 /// session. The same integer is a comment's `created_seq`/`updated_seq` and the
@@ -318,16 +318,29 @@ pub enum SourceKind {
     Stdin,
     /// A diff fetched from a forge pull request.
     Forge,
+    /// An all-context capture of a fixed set of files at their working-copy
+    /// state, for reading and annotating existing code rather than a change.
+    /// The reviewed file set is the file set of the latest captured version.
+    Explore,
+    /// A source kind this build does not recognize, written by a newer wiff. The
+    /// header still deserializes so folding can refuse the session with a version
+    /// mismatch rather than a raw decode error; a matching-version log never
+    /// writes one.
+    #[serde(other)]
+    Unknown,
 }
 
 impl SourceKind {
     /// Whether a new diff version can be captured for this source.
     pub fn regenerable(&self) -> bool {
         match self {
-            SourceKind::Scm(_) => true,
+            // An explore capture re-reads its files from disk, so it regenerates
+            // like an scm range does.
+            SourceKind::Scm(_) | SourceKind::Explore => true,
             // A stdin diff is a one-shot snapshot, and forge recapture is not
-            // yet wired.
-            SourceKind::Stdin | SourceKind::Forge => false,
+            // yet wired. An unknown source is from a newer format this build
+            // cannot regenerate.
+            SourceKind::Stdin | SourceKind::Forge | SourceKind::Unknown => false,
         }
     }
 
@@ -337,6 +350,8 @@ impl SourceKind {
             SourceKind::Scm(source) => format!("{} {}", source.scm, source.tip.describe()),
             SourceKind::Stdin => "stdin".to_string(),
             SourceKind::Forge => "forge".to_string(),
+            SourceKind::Explore => "explore".to_string(),
+            SourceKind::Unknown => "unknown".to_string(),
         }
     }
 }
@@ -909,6 +924,19 @@ mod tests {
         wince::assert_eq!(back, source);
         wince::assert_eq!(source.regenerable(), true);
         wince::assert_eq!(source.describe(), "git revision".to_string());
+    }
+
+    #[test]
+    fn an_unrecognized_source_kind_deserializes_to_unknown() {
+        // A source kind written by a newer wiff must still parse, so folding can
+        // refuse the session with a version mismatch rather than a raw serde
+        // error. It is not a regenerable, describable source.
+        let source: SourceKind =
+            serde_json::from_str(r#"{"kind":"time_machine","era":"future"}"#).expect("deserialize");
+        wince::assert_eq!(
+            (source.clone(), source.regenerable(), source.describe()),
+            (SourceKind::Unknown, false, "unknown".to_string())
+        );
     }
 
     #[test]

@@ -95,9 +95,21 @@ impl CommentAddArgs {
     /// Append a comment to a session and report its id.
     async fn run(self) -> anyhow::Result<()> {
         let path = resolve_session(self.session.as_deref(), self.project.as_deref())?;
-        let target = self.target(&path)?;
-        let body = comment_body(self.body.clone()).await?;
         let author = resolve_author(self.agent, self.author.clone())?;
+        // On an explore review, commenting on a file not yet under review adds
+        // it first, so `--file` doubles as the way to bring a file in. This is a
+        // no-op on any other kind of session, and returns the file's stored
+        // spelling for the target to anchor against.
+        let file = match &self.file {
+            Some(file) => Some(super::explore::ensure_file_present(
+                &path,
+                file,
+                author.clone(),
+            )?),
+            None => None,
+        };
+        let target = self.target(&path, file)?;
+        let body = comment_body(self.body.clone()).await?;
         let mut log = SessionLog::open(&path)?;
         let added = DraftComment {
             author,
@@ -112,8 +124,10 @@ impl CommentAddArgs {
 
     /// Resolve the comment's target from the target-selecting flags. A
     /// `--reply-to` reference is resolved against `path`'s folded state so it
-    /// accepts a comment number as readily as a ULID.
-    fn target(&self, path: &Path) -> anyhow::Result<CommentTarget> {
+    /// accepts a comment number as readily as a ULID. `file` is the resolved
+    /// `--file` value, already normalized to the stored spelling for an explore
+    /// session.
+    fn target(&self, path: &Path, file: Option<String>) -> anyhow::Result<CommentTarget> {
         if self.review {
             return Ok(CommentTarget::Review);
         }
@@ -122,7 +136,7 @@ impl CommentAddArgs {
                 id: resolve_comment_ref(path, reference)?,
             });
         }
-        let Some(file) = self.file.clone() else {
+        let Some(file) = file else {
             bail!("specify a target with --file, --line, --review, or --reply-to");
         };
         match &self.line {

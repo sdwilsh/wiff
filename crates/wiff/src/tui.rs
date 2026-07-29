@@ -9,14 +9,13 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use wiff_config::{Config, OnExit};
 use wiff_core::record::{
-    Author, AuthorKind, CommentEventKind, ForgeUrl, RecordBody, SessionHeader, SourceKind,
-    VersionNumber,
+    Author, AuthorKind, CommentEventKind, ForgeUrl, RecordBody, SourceKind, VersionNumber,
 };
 use wiff_core::session::{SessionWatcher, read_records, remove_session, session_binding};
 use wiff_core::source::ScmRepo;
 use wiff_core::{
     AnchorFailures, CapturedDiff, LockWait, RefreshOutcome, ReviewState, SessionLog, SidebandHash,
-    capture_draft_anchors, compare_versions, refresh_session,
+    capture_draft_anchors, compare_versions, refresh_session, widen_explore,
 };
 use wiff_forge::{Forge, PushOutcome, ResyncOutcome, TokenOverride, push};
 use wiff_tui::{
@@ -24,7 +23,9 @@ use wiff_tui::{
     PublishStep, Review, Theme, run,
 };
 
-use crate::command::{connect_forge, recapture_diff, reconcile_before_push, scm_repo};
+use crate::command::{
+    connect_forge, explore_root, recapture_diff, reconcile_before_push, scm_repo,
+};
 
 /// Parse unified diff `text` and expand its tabs to spaces at `tab_width` column
 /// stops. Raw tabs are never rendered, since they would break the review's
@@ -262,9 +263,17 @@ fn refresh_in_place(
     let viewing = app.comparing_from();
     let state = ReviewState::load(session_path)?;
     let prior_latest = state.latest_version().map(|v| v.number.get());
-    let captured = recapture(&state.session)?;
     let mut log = SessionLog::open(session_path)?;
-    let outcome = match refresh_session(&mut log, &captured, author.clone(), LockWait::NonBlock)? {
+    // An explore review re-reads its file set from the latest version under the
+    // session lock; every other source recaptures its recorded range.
+    let refreshed = if matches!(state.session.source, SourceKind::Explore) {
+        let root = explore_root(&state.session);
+        widen_explore(&mut log, &root, &[], author.clone(), LockWait::NonBlock)?
+    } else {
+        let captured = recapture(&state)?;
+        refresh_session(&mut log, &captured, author.clone(), LockWait::NonBlock)?
+    };
+    let outcome = match refreshed {
         Some(outcome) => outcome,
         None => {
             let current = prior_latest.unwrap_or(0);
@@ -697,17 +706,17 @@ fn source_changed(state: &ReviewState) -> bool {
     let Some(latest) = state.latest_version() else {
         return false;
     };
-    let recaptured = block_on(recapture_diff(&state.session));
+    let recaptured = block_on(recapture_diff(state));
     matches!(recaptured, Ok(Some(captured)) if SidebandHash::of(captured.text.as_bytes()) != latest.diff_hash)
 }
 
 /// Recapture the diff from the session's original source. A stdin source cannot
 /// be reread inside the TUI, since stdin is now the terminal, so it is directed
 /// to the `wiff refresh` command instead.
-fn recapture(header: &SessionHeader) -> anyhow::Result<CapturedDiff> {
+fn recapture(state: &ReviewState) -> anyhow::Result<CapturedDiff> {
     // The event loop runs on a tokio worker, so block on the async recapture
     // without standing up a nested runtime.
-    let captured = block_on(recapture_diff(header))?;
+    let captured = block_on(recapture_diff(state))?;
     captured.context(
         "this session's diff came from stdin; refresh it with `wiff refresh` and a new piped diff",
     )
@@ -842,16 +851,24 @@ mod tests {
         }
     }
 
-    /// A bare session header from `source`, for exercising recapture routing.
-    fn source_header(source: SourceKind) -> SessionHeader {
-        SessionHeader {
-            ulid: Ulid(1),
-            version: wiff_core::record::FORMAT_VERSION,
-            project: "demo".to_string(),
-            repo_root: Some("/repos/demo".to_string()),
-            cwd: "/repos/demo".to_string(),
-            source,
-            forge: None,
+    /// A bare review state with `source` and no versions, for exercising
+    /// recapture routing.
+    fn source_state(source: SourceKind) -> ReviewState {
+        ReviewState {
+            session: SessionHeader {
+                ulid: Ulid(1),
+                version: wiff_core::record::FORMAT_VERSION,
+                project: "demo".to_string(),
+                repo_root: Some("/repos/demo".to_string()),
+                cwd: "/repos/demo".to_string(),
+                source,
+                forge: None,
+            },
+            versions: Vec::new(),
+            description: None,
+            comments: Vec::new(),
+            verdicts: Vec::new(),
+            pushed_verdicts: Vec::new(),
         }
     }
 
@@ -925,7 +942,7 @@ mod tests {
         // is directed to the `wiff refresh` command instead of being reread.
         // The recapture blocks on the runtime, so it needs one even though the
         // stdin arm never reaches git.
-        let error = recapture(&source_header(SourceKind::Stdin)).unwrap_err();
+        let error = recapture(&source_state(SourceKind::Stdin)).unwrap_err();
         wince::assert_eq!(
             error.to_string(),
             "this session's diff came from stdin; refresh it with `wiff refresh` and a new piped diff"
@@ -970,7 +987,7 @@ mod tests {
         // Switch to an unrelated branch, then attempt to recapture the session.
         git(repo.path(), &["checkout", "-q", "-b", "other"]);
         let state = ReviewState::load(&session_path).expect("load state");
-        let error = recapture(&state.session).unwrap_err();
+        let error = recapture(&state).unwrap_err();
         wince::snapshot_display!(
             error,
             "This review session was created from a commit based on branch \
@@ -1023,7 +1040,7 @@ mod tests {
         // Check out a branch, then attempt to recapture the detached session.
         git(repo.path(), &["checkout", "-q", "topic"]);
         let state = ReviewState::load(&session_path).expect("load state");
-        let error = recapture(&state.session).unwrap_err();
+        let error = recapture(&state).unwrap_err();
         wince::snapshot_display!(
             error,
             "This review session was created without a recorded branch but the \

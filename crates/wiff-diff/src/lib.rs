@@ -5,6 +5,7 @@
 //! and [`generated_files`] recognition for collapsing machine-written files.
 //! This crate is pure diff machinery with no session or IO state.
 
+pub mod content;
 pub mod generated_files;
 pub mod highlight;
 pub mod intraline;
@@ -15,6 +16,7 @@ pub mod reconstitute;
 pub mod section;
 pub mod tabs;
 
+pub use content::decode_text;
 pub use generated_files::{GeneratedError, GeneratedMatchers, GeneratedReason};
 pub use highlight::{
     HighlightError, HighlightedLine, Highlighter, LiveHighlighter, ParsedSide, Parser, Rgb, Style,

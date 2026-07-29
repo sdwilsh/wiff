@@ -135,6 +135,9 @@ struct SessionRow {
     comments: usize,
     /// How many of those are still open (unresolved).
     open: usize,
+    /// The number of files in the latest captured version, shown for an explore
+    /// session whose reviewed set is that file list.
+    files: usize,
 }
 
 /// Summarize a project's sessions, most recent first, marking the active one.
@@ -156,6 +159,7 @@ fn session_rows(
         let open = live.filter(|c| !c.resolved).count();
         let base_revision = state.latest_version().and_then(|v| v.base_revision.clone());
         let head_revision = state.latest_version().and_then(|v| v.head_revision.clone());
+        let files = state.latest_version().map(|v| v.files.len()).unwrap_or(0);
         rows.push(SessionRow {
             ulid: state.session.ulid,
             source: state.session.source,
@@ -167,6 +171,7 @@ fn session_rows(
             active: active.as_deref() == Some(path.as_path()),
             comments,
             open,
+            files,
         });
     }
     Ok(rows)
@@ -223,6 +228,8 @@ fn headline(row: &SessionRow) -> String {
         SourceKind::Scm(scm) => scm_headline(scm),
         SourceKind::Stdin => "stdin snapshot".to_string(),
         SourceKind::Forge => "forge".to_string(),
+        SourceKind::Explore => "exploring code".to_string(),
+        SourceKind::Unknown => "unknown source".to_string(),
     }
 }
 
@@ -266,6 +273,11 @@ fn detail(row: &SessionRow, now: OffsetDateTime) -> String {
             format!("{range}  not regenerable  {times}")
         }
         SourceKind::Stdin => format!("one-shot diff, not regenerable  {times}"),
+        SourceKind::Explore => {
+            let plural = if row.files == 1 { "" } else { "s" };
+            format!("{} file{plural} under review  {times}", row.files)
+        }
+        SourceKind::Unknown => format!("unrecognized source, not regenerable  {times}"),
     }
 }
 
@@ -371,6 +383,7 @@ mod tests {
             active: false,
             comments,
             open,
+            files: 0,
         }
     }
 
@@ -419,6 +432,7 @@ mod tests {
                     active: true,
                     comments: 3,
                     open: 1,
+                    files: 0,
                 },
                 // `wiff new --from-base`: the same working copy, its base taken
                 // from the configured whole-branch ruleset instead.
@@ -437,6 +451,7 @@ mod tests {
                     active: false,
                     comments: 0,
                     open: 0,
+                    files: 0,
                 },
                 // `wiff forge fetch`: a pinned range with both endpoints, and
                 // the pull request URL as its identity.
@@ -457,6 +472,7 @@ mod tests {
                     active: false,
                     comments: 5,
                     open: 2,
+                    files: 0,
                 },
                 // A working copy captured on a detached head names no branch.
                 SessionRow {
@@ -470,6 +486,7 @@ mod tests {
                     active: false,
                     comments: 0,
                     open: 0,
+                    files: 0,
                 },
                 // A diff piped in on stdin: a one-shot snapshot.
                 SessionRow {
@@ -483,6 +500,7 @@ mod tests {
                     active: false,
                     comments: 1,
                     open: 0,
+                    files: 0,
                 },
             ],
         )];
@@ -522,6 +540,7 @@ mod tests {
                     active: true,
                     comments: 1,
                     open: 0,
+                    files: 0,
                 }],
             ),
             (
@@ -537,6 +556,7 @@ mod tests {
                     active: false,
                     comments: 2,
                     open: 2,
+                    files: 0,
                 }],
             ),
         ];

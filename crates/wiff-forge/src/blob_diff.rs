@@ -8,7 +8,7 @@
 use std::fmt::Write;
 
 use similar::TextDiff;
-use wiff_diff::FileStatus;
+use wiff_diff::{FileStatus, decode_text};
 
 /// One changed file of a repo-less pull request, with the contents needed to
 /// render its portion of the unified diff.
@@ -51,14 +51,13 @@ impl Content {
     }
 }
 
-/// Decode one side's bytes to text, treating an untouched side as empty. Returns
-/// `None` when the bytes are not valid UTF-8 or hold a NUL, the signal that the
-/// file is binary.
+/// Decode one side's bytes to text, treating an untouched side (the base of an
+/// add, the head of a delete) as empty. Returns `None` when the present bytes
+/// are binary.
 fn decode_side(bytes: Option<Vec<u8>>) -> Option<String> {
     match bytes {
         None => Some(String::new()),
-        Some(bytes) if bytes.contains(&0) => None,
-        Some(bytes) => String::from_utf8(bytes).ok(),
+        Some(bytes) => decode_text(bytes),
     }
 }
 
