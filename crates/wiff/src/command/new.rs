@@ -176,7 +176,7 @@ impl NewArgs {
         } else if self.cached {
             DiffSelection::Staged
         } else {
-            DiffSelection::Worktree
+            DiffSelection::WorkingCopy
         }
     }
 

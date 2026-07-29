@@ -71,7 +71,7 @@ mod tests {
                 "project": "demo",
                 "repo_root": "/repos/demo",
                 "cwd": "/repos/demo",
-                "source": "git worktree"
+                "source": "git working copy"
             },
             "files": [
                 {

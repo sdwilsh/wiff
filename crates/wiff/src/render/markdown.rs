@@ -281,7 +281,7 @@ mod tests {
             "# Review 00000000000000000000000000\n",
             "\n",
             "- project: demo\n",
-            "- source: git worktree\n",
+            "- source: git working copy\n",
             "- version: v0 (1 file)\n",
             "\n",
             "## Description\n",

@@ -116,7 +116,7 @@ pub(crate) fn resolve_author(agent: bool, name: Option<String>) -> anyhow::Resul
 #[derive(Debug, Clone)]
 pub(crate) enum DiffSelection {
     /// The uncommitted working tree.
-    Worktree,
+    WorkingCopy,
     /// The staged index against its base.
     Staged,
     /// The changes a named branch, change, or revision introduces.
@@ -175,9 +175,9 @@ async fn git_source(
     base: Option<BaseRuleset>,
 ) -> anyhow::Result<GitSource> {
     Ok(match selection {
-        DiffSelection::Worktree => {
+        DiffSelection::WorkingCopy => {
             let base = pinned_or(base, &root).await?;
-            GitSource::worktree(root, base)
+            GitSource::working_copy(root, base)
         }
         DiffSelection::Staged => {
             let base = pinned_or(base, &root).await?;
@@ -233,7 +233,7 @@ pub(crate) async fn recapture_diff(header: &SessionHeader) -> anyhow::Result<Opt
     // that has since moved onto a branch as just such a mismatch. A committed tip
     // resolves the same revision regardless of what is checked out and needs no
     // guard.
-    if matches!(tip, TipRule::Worktree | TipRule::Index) {
+    if matches!(tip, TipRule::WorkingCopy | TipRule::Index) {
         match head_branch(Path::new(&root), scm) {
             HeadBranch::On(now) if branch_hint.as_deref() == Some(now.as_str()) => {}
             HeadBranch::Detached if branch_hint.is_none() => {}
@@ -261,7 +261,7 @@ pub(crate) async fn recapture_diff(header: &SessionHeader) -> anyhow::Result<Opt
         }
     }
     let source = match tip {
-        TipRule::Worktree => GitSource::worktree(root, base),
+        TipRule::WorkingCopy => GitSource::working_copy(root, base),
         TipRule::Index => GitSource::index(root, base),
         other => GitSource::revision(root, base, other),
     };

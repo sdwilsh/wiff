@@ -353,7 +353,7 @@ pub struct ScmSource {
     /// How the tip of the reviewed range is resolved.
     pub tip: TipRule,
     /// The full ref name (e.g. `refs/heads/topic`) the session was created on.
-    /// Present for a [`Worktree`](TipRule::Worktree) or [`Index`](TipRule::Index)
+    /// Present for a [`WorkingCopy`](TipRule::WorkingCopy) or [`Index`](TipRule::Index)
     /// tip, which names no branch of its own; `None` on a detached head, or for a
     /// tip that already names a ref.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -365,7 +365,7 @@ pub struct ScmSource {
 #[serde(tag = "rule", rename_all = "snake_case")]
 pub enum TipRule {
     /// The uncommitted working copy.
-    Worktree,
+    WorkingCopy,
     /// The staged index against its base. Git-specific.
     Index,
     /// A named branch or bookmark, re-resolved every refresh.
@@ -392,7 +392,7 @@ impl TipRule {
     /// listing or header.
     pub fn describe(&self) -> &'static str {
         match self {
-            TipRule::Worktree => "worktree",
+            TipRule::WorkingCopy => "working copy",
             TipRule::Index => "index",
             TipRule::Ref { .. } | TipRule::ChangeId { .. } | TipRule::Pinned { .. } => "revision",
         }
@@ -912,17 +912,17 @@ mod tests {
     }
 
     #[test]
-    fn a_worktree_source_serializes_its_branch_hint() {
+    fn a_working_copy_source_serializes_its_branch_hint() {
         let source = SourceKind::Scm(ScmSource {
             scm: ScmType::Git,
             base: BaseRuleset::new("ref(name(deadbeef))"),
-            tip: TipRule::Worktree,
+            tip: TipRule::WorkingCopy,
             branch_hint: Some("refs/heads/topic".to_string()),
         });
         let json = serde_json::to_string(&source).expect("serialize");
         wince::assert_eq!(
             json,
-            r#"{"kind":"scm","scm":"git","base":"ref(name(deadbeef))","tip":{"rule":"worktree"},"branch_hint":"refs/heads/topic"}"#
+            r#"{"kind":"scm","scm":"git","base":"ref(name(deadbeef))","tip":{"rule":"working_copy"},"branch_hint":"refs/heads/topic"}"#
                 .to_string()
         );
         let back: SourceKind = serde_json::from_str(&json).expect("deserialize");

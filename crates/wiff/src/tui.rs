@@ -571,7 +571,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn refresh_refuses_when_the_working_copy_is_on_a_different_branch() {
-        // A worktree session records the branch it was created on. Switching the
+        // A working copy session records the branch it was created on. Switching the
         // repository to another branch and refreshing would diff the pinned base
         // against an unrelated working tree, so recapture refuses with the two
         // branches named rather than capturing a misleading version.
@@ -593,7 +593,7 @@ mod tests {
         let captured = capture_scm_diff(
             Some(ScmType::Git),
             repo.path().to_path_buf(),
-            DiffSelection::Worktree,
+            DiffSelection::WorkingCopy,
             None,
         )
         .await
@@ -621,7 +621,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn refresh_refuses_a_detached_head_session_once_a_branch_is_checked_out() {
-        // A worktree session captured on a detached head records no branch. Once
+        // A working copy session captured on a detached head records no branch. Once
         // a branch is checked out the working tree is a different context than
         // the one the pinned base was chosen against, so recapture refuses rather
         // than diffing the base against an unrelated tree.
@@ -646,7 +646,7 @@ mod tests {
         let captured = capture_scm_diff(
             Some(ScmType::Git),
             repo.path().to_path_buf(),
-            DiffSelection::Worktree,
+            DiffSelection::WorkingCopy,
             None,
         )
         .await
@@ -757,7 +757,7 @@ mod tests {
         let captured = capture_scm_diff(
             Some(ScmType::Git),
             repo.path().to_path_buf(),
-            DiffSelection::Worktree,
+            DiffSelection::WorkingCopy,
             None,
         )
         .await
@@ -871,7 +871,7 @@ mod tests {
         let captured = capture_scm_diff(
             Some(ScmType::Git),
             repo.path().to_path_buf(),
-            DiffSelection::Worktree,
+            DiffSelection::WorkingCopy,
             None,
         )
         .await
@@ -991,7 +991,7 @@ showing the latest diff (v1)
         let captured = capture_scm_diff(
             Some(ScmType::Git),
             repo.path().to_path_buf(),
-            DiffSelection::Worktree,
+            DiffSelection::WorkingCopy,
             None,
         )
         .await
@@ -1306,7 +1306,7 @@ new file mode 100644
         let captured = capture_scm_diff(
             Some(ScmType::Git),
             repo.path().to_path_buf(),
-            DiffSelection::Worktree,
+            DiffSelection::WorkingCopy,
             None,
         )
         .await
@@ -1361,7 +1361,7 @@ new file mode 100644
             "# Review SESSION\n",
             "\n",
             "- project: demo\n",
-            "- source: git worktree\n",
+            "- source: git working copy\n",
             "- version: v0 (1 file)\n",
             "\n",
             "## Comments\n",
@@ -1405,7 +1405,7 @@ new file mode 100644
         let captured = capture_scm_diff(
             Some(ScmType::Git),
             repo.path().to_path_buf(),
-            DiffSelection::Worktree,
+            DiffSelection::WorkingCopy,
             None,
         )
         .await
@@ -1471,7 +1471,7 @@ new file mode 100644
             "# Review SESSION\n",
             "\n",
             "- project: demo\n",
-            "- source: git worktree\n",
+            "- source: git working copy\n",
             "- version: v1 (1 file)\n",
             "\n",
             "## Comments\n",
@@ -1514,7 +1514,7 @@ new file mode 100644
         let captured = capture_scm_diff(
             Some(ScmType::Git),
             repo.path().to_path_buf(),
-            DiffSelection::Worktree,
+            DiffSelection::WorkingCopy,
             None,
         )
         .await
@@ -1614,7 +1614,7 @@ new file mode 100644
         let captured = capture_scm_diff(
             Some(ScmType::Git),
             repo.path().to_path_buf(),
-            DiffSelection::Worktree,
+            DiffSelection::WorkingCopy,
             None,
         )
         .await

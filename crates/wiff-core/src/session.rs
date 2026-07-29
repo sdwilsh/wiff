@@ -631,7 +631,7 @@ pub fn session_binding(path: &Path) -> Result<Option<ForgeUrl>> {
 /// forge source belongs to `wiff forge pull`.
 ///
 /// The match includes the branch the session was created on, since two branches
-/// can share one worktree recipe (`merge-base(trunk)..worktree`) and telling
+/// can share one working copy recipe (`merge-base(trunk)..working copy`) and telling
 /// their sessions apart by that branch is what stops a run on one branch from
 /// refreshing the other's session. A run on a different checked-out ref (a
 /// rename, or a detached head) therefore starts a fresh session rather than
@@ -724,7 +724,7 @@ pub fn forge_bound_sessions(base: &Path, project: &str) -> Result<Vec<BoundSessi
 fn source_names_branch(source: &ScmSource, branch: &str) -> bool {
     match &source.tip {
         TipRule::Ref { name } => name == branch,
-        TipRule::Worktree | TipRule::Index => source.branch_hint.as_deref() == Some(branch),
+        TipRule::WorkingCopy | TipRule::Index => source.branch_hint.as_deref() == Some(branch),
         TipRule::ChangeId { .. } | TipRule::Pinned { .. } => false,
     }
 }

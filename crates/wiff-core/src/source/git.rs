@@ -741,7 +741,7 @@ impl ScmRepo for GitRepo {
 
     async fn working_tree_is_clean(&self) -> Result<bool> {
         // A non-ignored untracked file counts as unclean, matching what a
-        // worktree review captures: it records such files as intent-to-add
+        // working copy review captures: it records such files as intent-to-add
         // additions, so publishing a HEAD that omits them would send something
         // other than what was reviewed. Porcelain's default untracked mode
         // respects .gitignore, the same exclusion the capture applies.
@@ -890,11 +890,11 @@ pub struct GitSource {
 
 impl GitSource {
     /// A source reviewing the uncommitted working copy against `base`.
-    pub fn worktree(repo_root: impl Into<PathBuf>, base: BaseRuleset) -> Self {
+    pub fn working_copy(repo_root: impl Into<PathBuf>, base: BaseRuleset) -> Self {
         Self {
             repo: GitRepo::new(repo_root),
             base,
-            tip: TipRule::Worktree,
+            tip: TipRule::WorkingCopy,
         }
     }
 
@@ -955,7 +955,7 @@ impl GitSource {
     /// when HEAD is unborn.
     async fn resolve_tip(&self) -> Result<RevisionId> {
         match &self.tip {
-            TipRule::Worktree | TipRule::Index => {
+            TipRule::WorkingCopy | TipRule::Index => {
                 match self.repo.resolve_ref("HEAD").await? {
                     Some(head) => Ok(head),
                     None => self.repo.empty().await?.ok_or_else(|| {
@@ -984,7 +984,7 @@ impl GitSource {
     /// index and record only the untracked, non-ignored files there as
     /// intent-to-add; modifications and deletions still show because they are
     /// never staged into the throwaway.
-    async fn capture_worktree(&self, base: &RevisionId) -> Result<String> {
+    async fn capture_working_copy(&self, base: &RevisionId) -> Result<String> {
         let index = self.repo.seed_temp_index().await?;
         // git add --intent-to-add writes an empty blob into the object database,
         // which fails when .git is mounted read-only. Redirect object writes to a
@@ -1043,7 +1043,7 @@ impl DiffSource for GitSource {
             })?;
         let base = resolved.revision;
         let (text, head_revision) = match &self.tip {
-            TipRule::Worktree => (self.capture_worktree(&base).await?, None),
+            TipRule::WorkingCopy => (self.capture_working_copy(&base).await?, None),
             TipRule::Index => (
                 self.repo
                     .diff(
@@ -1066,7 +1066,7 @@ impl DiffSource for GitSource {
             ),
         };
         let branch_hint = match &self.tip {
-            TipRule::Worktree | TipRule::Index => self.repo.symbolic_ref("HEAD").await?,
+            TipRule::WorkingCopy | TipRule::Index => self.repo.symbolic_ref("HEAD").await?,
             _ => None,
         };
         Ok(CapturedDiff {
@@ -1455,7 +1455,7 @@ index HASHES
     }
 
     #[tokio::test]
-    async fn a_worktree_source_captures_untracked_files_with_a_read_only_git() {
+    async fn a_working_copy_source_captures_untracked_files_with_a_read_only_git() {
         let repo = tempfile::tempdir().expect("tempdir");
         let home = tempfile::tempdir().expect("home");
         git(repo.path(), home.path(), &["init", "-q", "-b", "main"]);
@@ -1481,7 +1481,7 @@ index HASHES
         // then restore so the tempdir can be cleaned up.
         let git_dir = repo.path().join(".git");
         set_readonly_recursively(&git_dir, true);
-        let result = GitSource::worktree(repo.path(), base.clone())
+        let result = GitSource::working_copy(repo.path(), base.clone())
             .capture()
             .await;
         set_readonly_recursively(&git_dir, false);
@@ -1508,8 +1508,8 @@ index HASHES
             SourceKind::Scm(ScmSource {
                 scm: ScmType::Git,
                 base,
-                tip: TipRule::Worktree,
-                // The worktree sits on main, recorded as the discovery hint.
+                tip: TipRule::WorkingCopy,
+                // The working copy sits on main, recorded as the discovery hint.
                 branch_hint: Some("refs/heads/main".to_string()),
             })
         );
@@ -2188,12 +2188,12 @@ index HASHES
 
         let committed = repo.working_tree_is_clean().await.expect("clean check");
 
-        // An ignored file leaves the tree clean: a worktree review excludes it,
+        // An ignored file leaves the tree clean: a working copy review excludes it,
         // so it is not part of what publishing would send.
         std::fs::write(r.join("ignored.txt"), "junk\n").expect("write");
         let with_ignored = repo.working_tree_is_clean().await.expect("clean check");
 
-        // A non-ignored untracked file makes it dirty: a worktree review would
+        // A non-ignored untracked file makes it dirty: a working copy review would
         // capture it as a new-file addition absent from HEAD.
         std::fs::write(r.join("scratch.txt"), "new\n").expect("write");
         let with_untracked = repo.working_tree_is_clean().await.expect("clean check");

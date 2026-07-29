@@ -22,7 +22,7 @@ fn header(ulid: Ulid) -> RecordBody {
         source: SourceKind::Scm(ScmSource {
             scm: ScmType::Git,
             base: BaseRuleset::new("ref(name(deadbeef))"),
-            tip: TipRule::Worktree,
+            tip: TipRule::WorkingCopy,
             branch_hint: None,
         }),
         forge: None,
@@ -246,11 +246,11 @@ fn ref_source(name: &str) -> SourceKind {
     })
 }
 
-fn worktree_source_on(branch: &str) -> SourceKind {
+fn working_copy_source_on(branch: &str) -> SourceKind {
     SourceKind::Scm(ScmSource {
         scm: ScmType::Git,
         base: BaseRuleset::new("ref(name(deadbeef))"),
-        tip: TipRule::Worktree,
+        tip: TipRule::WorkingCopy,
         branch_hint: Some(branch.to_string()),
     })
 }
@@ -327,7 +327,7 @@ fn discovery_matches_a_working_copy_session_by_its_branch_hint() {
     let (matching, lock) = SessionLog::create(
         base.path(),
         "demo",
-        scm_header(worktree_source_on("refs/heads/topic")),
+        scm_header(working_copy_source_on("refs/heads/topic")),
     )
     .unwrap();
     drop(lock);
@@ -335,7 +335,7 @@ fn discovery_matches_a_working_copy_session_by_its_branch_hint() {
     let (_newer, lock) = SessionLog::create(
         base.path(),
         "demo",
-        scm_header(worktree_source_on("refs/heads/other")),
+        scm_header(working_copy_source_on("refs/heads/other")),
     )
     .unwrap();
     drop(lock);
@@ -456,7 +456,7 @@ fn forge_header(url: &str) -> impl FnOnce(Ulid) -> RecordBody {
             project: "demo".to_string(),
             repo_root: Some("/repos/demo".to_string()),
             cwd: "/repos/demo".to_string(),
-            source: worktree_source_on("refs/heads/topic"),
+            source: working_copy_source_on("refs/heads/topic"),
             forge,
         })
     }
@@ -594,7 +594,7 @@ fn stdin_header(ulid: Ulid) -> RecordBody {
 #[test]
 fn source_selection_finds_the_most_recent_session_capturing_the_same_range() {
     let base = tempfile::tempdir().unwrap();
-    let wanted = worktree_source_on("refs/heads/topic");
+    let wanted = working_copy_source_on("refs/heads/topic");
 
     // An older session captures the wanted range; a more recent one captures a
     // different range, so recipe (not recency alone) is what selects.
@@ -638,7 +638,12 @@ fn source_selection_ignores_a_session_bound_to_a_pull_request() {
     drop(lock);
 
     wince::assert_eq!(
-        session_with_source(base.path(), "demo", &worktree_source_on("refs/heads/topic")).unwrap(),
+        session_with_source(
+            base.path(),
+            "demo",
+            &working_copy_source_on("refs/heads/topic")
+        )
+        .unwrap(),
         None
     );
 }
@@ -680,7 +685,12 @@ fn source_selection_never_matches_a_stdin_source_in_either_direction() {
     );
     // An scm query skips the stdin session rather than mistaking it for a match.
     wince::assert_eq!(
-        session_with_source(base.path(), "demo", &worktree_source_on("refs/heads/topic")).unwrap(),
+        session_with_source(
+            base.path(),
+            "demo",
+            &working_copy_source_on("refs/heads/topic")
+        )
+        .unwrap(),
         None
     );
 }

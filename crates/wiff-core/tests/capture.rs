@@ -441,7 +441,7 @@ fn topic_capture(text: &str) -> CapturedDiff {
         source: SourceKind::Scm(ScmSource {
             scm: ScmType::Git,
             base: BaseRuleset::new("merge-base(trunk)"),
-            tip: TipRule::Worktree,
+            tip: TipRule::WorkingCopy,
             branch_hint: Some("refs/heads/topic".to_string()),
         }),
         base_revision: None,

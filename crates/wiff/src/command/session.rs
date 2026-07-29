@@ -184,11 +184,11 @@ mod tests {
     use wiff_core::{BaseRuleset, ScmType};
 
     /// A git working-tree source, the common case a listing row shows.
-    fn worktree_source() -> SourceKind {
+    fn working_copy_source() -> SourceKind {
         SourceKind::Scm(ScmSource {
             scm: ScmType::Git,
             base: BaseRuleset::new("ref(name(deadbeef))"),
-            tip: TipRule::Worktree,
+            tip: TipRule::WorkingCopy,
             branch_hint: None,
         })
     }
@@ -204,7 +204,7 @@ mod tests {
             vec![
                 SessionRow {
                     ulid: ulid("00000000000000000000000001"),
-                    source: worktree_source(),
+                    source: working_copy_source(),
                     active: true,
                     comments: 3,
                     open: 1,
@@ -220,7 +220,7 @@ mod tests {
         )];
         let out = render_list(&groups, false);
         let expected = "\
-* 00000000000000000000000001  git worktree  3 comments, 1 open
+* 00000000000000000000000001  git working copy  3 comments, 1 open
   00000000000000000000000002  stdin  0 comments, 0 open
 ";
         wince::assert_eq!(out, expected.to_string());
@@ -233,7 +233,7 @@ mod tests {
                 "demo".to_string(),
                 vec![SessionRow {
                     ulid: ulid("00000000000000000000000001"),
-                    source: worktree_source(),
+                    source: working_copy_source(),
                     active: true,
                     comments: 1,
                     open: 0,
@@ -253,7 +253,7 @@ mod tests {
         let out = render_list(&groups, true);
         let expected = "\
 demo
-  * 00000000000000000000000001  git worktree  1 comment, 0 open
+  * 00000000000000000000000001  git working copy  1 comment, 0 open
 other
     00000000000000000000000002  stdin  2 comments, 2 open
 ";

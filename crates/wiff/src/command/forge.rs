@@ -1562,7 +1562,7 @@ mod tests {
                 source: SourceKind::Scm(ScmSource {
                     scm: ScmType::Git,
                     base: BaseRuleset::new("ref(name(deadbeef))"),
-                    tip: TipRule::Worktree,
+                    tip: TipRule::WorkingCopy,
                     branch_hint: None,
                 }),
                 forge: None,
@@ -1615,7 +1615,7 @@ mod tests {
                 source: SourceKind::Scm(ScmSource {
                     scm: ScmType::Git,
                     base: BaseRuleset::new("ref(name(deadbeef))"),
-                    tip: TipRule::Worktree,
+                    tip: TipRule::WorkingCopy,
                     branch_hint: None,
                 }),
                 forge,
