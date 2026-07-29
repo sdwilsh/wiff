@@ -48,6 +48,28 @@ wiff comment add --agent --session 01J8ZC0FEXAMPLEULID26 --review --body "..."
 - `--project <name>` forces the project when the working directory cannot name
   it on its own.
 
+## Exploring existing code
+
+Not every review is about a change. To annotate existing code, open an explore
+review: an empty session over the current working copy, to which you add the
+files you want to comment on.
+
+```bash
+wiff new --no-tui --explore
+wiff explore add src/lib.rs src/parser.rs
+```
+
+- `wiff new --explore` creates the review with no files yet. Add `--no-tui` when
+  you are driving it from the command line rather than handing it to a human.
+- `wiff explore add <PATH>...` brings files into the review, each captured at its
+  current state. Re-adding a file already under review does nothing.
+- You do not have to add a file before commenting on it: `wiff comment add --file
+  F ...` on an explore review adds `F` first when it is not yet present, so
+  `--file` doubles as the way to bring a file in.
+
+Everything else, reading with `wiff render` and leaving or revising comments,
+works the same as on a diff review.
+
 ## Reading a review
 
 Start here when asked to read a review or to address the comments it holds.

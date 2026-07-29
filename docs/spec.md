@@ -150,6 +150,12 @@ can give). v0 implementations:
   so `wiff refresh` can capture a new `DiffVersion`.
 - **stdin unified diff**: parses a unified diff piped in, with whatever context
   it happens to carry. Not regenerable; such a session is a one-shot snapshot.
+- **explore**: reviews existing code rather than a change. It reads a chosen set
+  of files at their working-copy state and synthesizes an all-context diff (every
+  line identical before and after), so comments anchor to real code with no
+  change implied. The set starts empty and widens as files are added; a refresh
+  re-reads the same set from disk. Regenerable, and content-hashed so re-adding a
+  file already under review captures nothing new.
 
 The diff parsing and hunk model are owned by wiff, not delegated to git
 plumbing, so all sources are handled uniformly.
@@ -261,9 +267,14 @@ an explicit subcommand, so behavior is unambiguous. Subcommands (v0):
 - `wiff new`: create a session from a source and launch the TUI. Source flags
   select the diff: `--cached` for the staged index, `--rev <REF>` for the
   changes a revision introduces, `--head` as sugar for `--rev HEAD`, or a
-  unified diff read from stdin when piped. `--no-tui` creates the session
-  without launching the TUI. `--project <name>` forces the project bucket when
-  it cannot be derived from the cwd.
+  unified diff read from stdin when piped. `--explore` opens an empty review over
+  existing code instead of a change; files are added to it afterwards. `--no-tui`
+  creates the session without launching the TUI. `--project <name>` forces the
+  project bucket when it cannot be derived from the cwd.
+- `wiff explore add <PATH>...`: widen an explore review's file set, capturing
+  each added file at its current state and rebasing existing comments onto the
+  new version. Applies only to a session created with `wiff new --explore`. The
+  in-review file picker (`A`) does the same from the TUI.
 - `wiff resume`: resume a session (the active one by default, or `--session`)
   and launch the TUI.
 - `wiff session list`: list sessions (optionally across all projects).
