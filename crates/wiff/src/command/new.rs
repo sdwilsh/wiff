@@ -1,14 +1,17 @@
 //! `wiff new`: create a review session from a captured diff.
 
 use std::io::IsTerminal;
+use std::path::Path;
 
 use anyhow::{Context, bail};
-use clap::Args;
+use clap::{ArgGroup, Args};
+use ulid::Ulid;
 use wiff_config::Config;
-use wiff_core::record::{Description, SourceKind};
+use wiff_core::record::{Author, Description, SourceKind};
 use wiff_core::session::data_dir;
 use wiff_core::{
-    BaseRuleset, CapturedDiff, ProjectIdentity, SessionLog, create_session, parse_ruleset,
+    BaseRuleset, CapturedDiff, IfNeeded, ProjectIdentity, RefreshOutcome, SessionLog,
+    create_session, parse_ruleset, reuse_or_create,
 };
 
 use super::{DiffSelection, capture_scm_diff, read_piped_stdin, resolve_author};
@@ -16,6 +19,11 @@ use crate::tui;
 
 /// Arguments for `wiff new`.
 #[derive(Debug, Args)]
+#[command(group(
+    // `--author`/`--agent` attribute either the initial description or a
+    // refresh's rebased comments, so one of those two flags must accompany them.
+    ArgGroup::new("attributable").args(["description", "if_needed"]).multiple(true)
+))]
 pub struct NewArgs {
     /// Review the staged index instead of the working tree, against the same
     /// base.
@@ -41,15 +49,23 @@ pub struct NewArgs {
     /// (the first line is the title, the rest the body).
     #[arg(long, value_name = "TEXT")]
     description: Option<String>,
-    /// The description author's display name.
-    #[arg(long, requires = "description")]
+    /// The acting author's display name: the initial description's author, and
+    /// under `--if-needed` who a refresh's rebased comments are attributed to.
+    #[arg(long, requires = "attributable")]
     author: Option<String>,
-    /// Attribute the initial description to an agent rather than a human.
-    #[arg(long, requires = "description")]
+    /// Act as an agent rather than a human when attributing the description and,
+    /// under `--if-needed`, a refresh's rebased comments.
+    #[arg(long, requires = "attributable")]
     agent: bool,
     /// Create the session without launching the review TUI.
     #[arg(long)]
     no_tui: bool,
+    /// Reuse the project's session for this same range when one exists: refresh
+    /// it in place if the working copy has moved on, leave it untouched when it
+    /// already matches, and create a session only when none does. Intended for
+    /// automation maintaining a review; requires `--no-tui`.
+    #[arg(long, requires = "no_tui")]
+    if_needed: bool,
 }
 
 impl NewArgs {
@@ -60,20 +76,57 @@ impl NewArgs {
         let identity = ProjectIdentity::for_dir_or_forced(&cwd, self.project.as_deref())?;
         let config = Config::load()?;
         let captured = self.capture_source(&identity, &config).await?;
-        let description = match &self.description {
-            Some(text) => {
-                let author = resolve_author(self.agent, self.author.clone())?;
-                Some((author, Description::from_message(text)))
-            }
-            None => None,
-        };
+        if self.if_needed {
+            return self.ensure_session(&identity, &cwd, &captured);
+        }
+        if captured.text.trim().is_empty() {
+            bail!("no changes to review");
+        }
         let base = data_dir()?;
-        let log = create_session(&base, &identity, &cwd, &captured, description)?;
+        let log = create_session(&base, &identity, &cwd, &captured, self.description()?)?;
         report_created(&log);
         if self.no_tui {
             return Ok(());
         }
         tui::open(log.path(), &config, false)
+    }
+
+    /// Satisfy `--if-needed`, reporting what it did.
+    fn ensure_session(
+        &self,
+        identity: &ProjectIdentity,
+        cwd: &Path,
+        captured: &CapturedDiff,
+    ) -> anyhow::Result<()> {
+        let base = data_dir()?;
+        let author = resolve_author(self.agent, self.author.clone())?;
+        match reuse_or_create(&base, identity, cwd, captured, author, self.description()?)? {
+            IfNeeded::Created(log) => report_created(&log),
+            IfNeeded::Unchanged(log) => {
+                warn_description_ignored(self.description.as_deref());
+                report_unchanged(log.ulid());
+            }
+            IfNeeded::Refreshed(log, outcome) => {
+                warn_description_ignored(self.description.as_deref());
+                report_refreshed(log.ulid(), &outcome);
+            }
+            // No session covers this range and there is nothing to open one
+            // from, the same dead end a plain `wiff new` reports on a clean tree.
+            IfNeeded::NothingToReview => bail!("no changes to review"),
+        }
+        Ok(())
+    }
+
+    /// The initial description and its resolved author, when `--description` was
+    /// given.
+    fn description(&self) -> anyhow::Result<Option<(Author, Description)>> {
+        match &self.description {
+            Some(text) => {
+                let author = resolve_author(self.agent, self.author.clone())?;
+                Ok(Some((author, Description::from_message(text))))
+            }
+            None => Ok(None),
+        }
     }
 
     /// Choose and run the diff source: a diff piped on stdin, else git.
@@ -152,6 +205,46 @@ fn report_created(log: &SessionLog) {
     println!("  sideband: {}", log.sideband_dir().display());
 }
 
+/// Warn on stderr that a `--description` given alongside `--if-needed` was
+/// ignored, since it only seeds a freshly created session and a reused one keeps
+/// its own description.
+fn warn_description_ignored(description: Option<&str>) {
+    if description.is_some() {
+        eprintln!(
+            "warning: --description was ignored; it seeds a new session and this run reused an \
+             existing one"
+        );
+    }
+}
+
+/// Report that `--if-needed` left a matching session untouched because it already
+/// describes the current state.
+fn report_unchanged(ulid: Ulid) {
+    println!("session {ulid} already describes the current state");
+}
+
+/// Report that `--if-needed` refreshed a matching session in place, warning on
+/// stderr when the review's base moved and tallying how its comments rebased.
+fn report_refreshed(ulid: Ulid, outcome: &RefreshOutcome) {
+    if let Some(shift) = &outcome.base_shift {
+        eprintln!(
+            "warning: the review's base moved from {} to {}; it now starts from a different commit",
+            shift.from, shift.to,
+        );
+    }
+    let total = outcome.exact + outcome.approximate + outcome.relocated + outcome.outdated;
+    println!(
+        "refreshed session {ulid}: captured v{}; rebased {total} comment{}: {} exact, {} shifted, \
+         {} moved, {} outdated",
+        outcome.version,
+        if total == 1 { "" } else { "s" },
+        outcome.exact,
+        outcome.approximate,
+        outcome.relocated,
+        outcome.outdated,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser;
@@ -223,6 +316,37 @@ mod tests {
              position 0: unknown base operator 'not'; use ref, parent, merge-base, empty, or an \
              scm-native expression (git, jj, hg, or sl)"
                 .to_string()
+        );
+    }
+
+    #[test]
+    fn if_needed_requires_no_tui() {
+        let error = TestCli::try_parse_from(["new", "--if-needed"])
+            .map(|_| ())
+            .unwrap_err();
+        wince::assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn author_without_a_description_or_if_needed_is_rejected() {
+        let error = TestCli::try_parse_from(["new", "--author", "wez"])
+            .map(|_| ())
+            .unwrap_err();
+        wince::assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn author_is_accepted_alongside_if_needed() {
+        let args = args_from(&["--no-tui", "--if-needed", "--author", "wez"]);
+        wince::assert_eq!(
+            (args.if_needed, args.no_tui, args.author),
+            (true, true, Some("wez".to_string()))
         );
     }
 }

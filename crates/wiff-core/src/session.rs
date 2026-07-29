@@ -94,6 +94,51 @@ pub enum LockWait {
     NonBlock,
 }
 
+/// The exclusive lock that serializes session creation within one project.
+///
+/// A session file is named by a freshly minted ULID, so two processes creating
+/// a session for the same range never collide on a path and would each write a
+/// separate file. Holding this lock across the "is there already a session for
+/// this range?" check and the create that follows makes that pair atomic: an
+/// idempotent `wiff new --if-needed` cannot scan, miss a session a concurrent
+/// creator is about to write, and duplicate it. Every creation path takes the
+/// lock, so the check is exclusive against all of them. Dropping the guard
+/// releases the lock.
+#[derive(Debug)]
+pub struct ProjectLock {
+    // The lock lives in the open file description and is released when the file
+    // is dropped; the field is held for that lifetime, never read.
+    #[allow(dead_code)]
+    file: Flock<std::fs::File>,
+}
+
+impl ProjectLock {
+    /// Acquire the creation lock for `project` under `base` per `wait`, creating
+    /// the project directory when it does not yet exist. Blocks until the lock
+    /// is free under [`LockWait::Block`]; fails immediately with
+    /// [`Error::Locked`] when it is held and `wait` is [`LockWait::NonBlock`].
+    pub fn acquire(base: &Path, project: &str, wait: LockWait) -> Result<Self> {
+        let dir = sessions_root(base).join(project);
+        std::fs::create_dir_all(&dir).map_err(|source| Error::io(&dir, source))?;
+        let path = dir.join(".lock");
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|source| Error::io(&path, source))?;
+        let arg = match wait {
+            LockWait::Block => FlockArg::LockExclusive,
+            LockWait::NonBlock => FlockArg::LockExclusiveNonblock,
+        };
+        let file = match Flock::lock(file, arg) {
+            Ok(locked) => locked,
+            Err((_, nix::errno::Errno::EAGAIN)) => return Err(Error::Locked(path)),
+            Err((_, errno)) => return Err(Error::io(&path, errno.into())),
+        };
+        Ok(Self { file })
+    }
+}
+
 impl SessionLog {
     /// The session's ULID.
     pub fn ulid(&self) -> Ulid {
@@ -575,6 +620,53 @@ pub fn session_bound_to(base: &Path, project: &str, url: &ForgeUrl) -> Result<Op
 /// exist rather than reading a missing file as "unbound".
 pub fn session_binding(path: &Path) -> Result<Option<ForgeUrl>> {
     Ok(read_header(path)?.and_then(|header| header.forge))
+}
+
+/// The most recent session in `project` capturing the same range the same way as
+/// `source` and not bound to a pull request, or `None` when none is. Used by
+/// `wiff new --if-needed` to find the session a re-run would otherwise duplicate,
+/// so it refreshes that session in place rather than starting a parallel one.
+/// Only an scm source can match: it names a recipe to re-resolve and compare,
+/// whereas a stdin source is a one-shot snapshot with no recipe to match and a
+/// forge source belongs to `wiff forge pull`.
+///
+/// The match includes the branch the session was created on, since two branches
+/// can share one worktree recipe (`merge-base(trunk)..worktree`) and telling
+/// their sessions apart by that branch is what stops a run on one branch from
+/// refreshing the other's session. A run on a different checked-out ref (a
+/// rename, or a detached head) therefore starts a fresh session rather than
+/// reusing the original.
+///
+/// A session whose header is in flight or corrupt is skipped rather than hiding
+/// a healthy match; only an I/O failure aborts the scan. A caller holding the
+/// project's creation lock across this check and the create it may follow leaves
+/// no in-flight partial present here in the first place.
+pub fn session_with_source(
+    base: &Path,
+    project: &str,
+    source: &SourceKind,
+) -> Result<Option<PathBuf>> {
+    if !matches!(source, SourceKind::Scm(_)) {
+        return Ok(None);
+    }
+    for path in list_sessions(base, project)? {
+        match read_header(&path) {
+            Ok(Some(header)) if header.forge.is_none() && &header.source == source => {
+                return Ok(Some(path));
+            }
+            // A header for another range, one still unreadable (an in-flight
+            // create or a truncated file), or a session bound to a pull request,
+            // is simply not this match.
+            Ok(_) => {}
+            // A first record that is not a header is a damaged session; skip it
+            // rather than aborting, so an unrelated broken session cannot hide a
+            // healthy one capturing this range.
+            Err(Error::Decode(_) | Error::NotASession { .. }) => {}
+            // An I/O failure is not evidence of a non-match, so it propagates.
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(None)
 }
 
 /// A session bound to a pull request, as reported by [`forge_bound_sessions`].

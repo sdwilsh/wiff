@@ -25,7 +25,9 @@ pub use base_ruleset::{
     BaseRuleset, DEFAULT_BASE_REVISION_RULES, ParseError, Reference, Rule, RuleOp, Ruleset,
     parse_ruleset,
 };
-pub use capture::{create_forge_session, create_session, write_diff_version};
+pub use capture::{
+    IfNeeded, create_forge_session, create_session, reuse_or_create, write_diff_version,
+};
 pub use comment::{
     AddedComment, AnchorFailures, DraftComment, capture_draft_anchors, delete_comment,
     set_disposition, set_resolved,
@@ -40,7 +42,7 @@ pub use identity::{ProjectIdentity, ScmType};
 pub use rebase::{RebaseOutcome, rebase_line_comment};
 pub use refresh::{BaseShift, RefreshOutcome, refresh_session};
 pub use review::{CommentState, DescriptionState, ReviewState, fold};
-pub use session::{LockWait, SessionLock, SessionLog};
+pub use session::{LockWait, ProjectLock, SessionLock, SessionLog};
 pub use source::{
     CapturedDiff, DiffSource, FetchSource, GitSource, Remote, ScmRepo, TrackingBranch,
 };

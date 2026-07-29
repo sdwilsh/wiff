@@ -6,14 +6,14 @@ use ulid::Ulid;
 use wiff_core::hash::SidebandHash;
 use wiff_core::record::{
     Author, AuthorKind, Description, DescriptionRecord, DiffVersionRecord, FORMAT_VERSION,
-    FileSummary, ForgeUrl, Record, RecordBody, RevisionId, SessionHeader, SourceKind,
-    VersionNumber,
+    FileSummary, ForgeUrl, Record, RecordBody, RevisionId, ScmSource, SessionHeader, SourceKind,
+    TipRule, VersionNumber,
 };
 use wiff_core::review::DescriptionState;
-use wiff_core::session::read_records;
+use wiff_core::session::{SessionLog, read_records};
 use wiff_core::{
-    CapturedDiff, DiffSource, LockWait, ProjectIdentity, ReviewState, create_forge_session,
-    create_session, set_description,
+    BaseRuleset, CapturedDiff, DiffSource, IfNeeded, LockWait, ProjectIdentity, ReviewState,
+    ScmType, create_forge_session, create_session, reuse_or_create, set_description,
 };
 use wiff_diff::FileStatus;
 
@@ -411,5 +411,174 @@ fn setting_the_description_after_creation_replaces_the_earlier_one() {
             origin: None,
             synced_marker: None,
         })
+    );
+}
+
+const DIFF_A: &str = "diff --git a/f.txt b/f.txt\n\
+     --- a/f.txt\n\
+     +++ b/f.txt\n\
+     @@ -1 +1 @@\n\
+     -old\n\
+     +new\n";
+const DIFF_B: &str = "diff --git a/f.txt b/f.txt\n\
+     --- a/f.txt\n\
+     +++ b/f.txt\n\
+     @@ -1 +1 @@\n\
+     -old\n\
+     +newer\n";
+
+fn actor() -> Author {
+    Author {
+        name: "wez".to_string(),
+        kind: AuthorKind::Human,
+    }
+}
+
+/// A working-tree capture of `text` on the `topic` branch.
+fn topic_capture(text: &str) -> CapturedDiff {
+    CapturedDiff {
+        text: text.to_string(),
+        source: SourceKind::Scm(ScmSource {
+            scm: ScmType::Git,
+            base: BaseRuleset::new("merge-base(trunk)"),
+            tip: TipRule::Worktree,
+            branch_hint: Some("refs/heads/topic".to_string()),
+        }),
+        base_revision: None,
+        base_tip_relative: false,
+        head_revision: None,
+    }
+}
+
+/// A capture of the same file on a different branch, a distinct range.
+fn other_capture(text: &str) -> CapturedDiff {
+    CapturedDiff {
+        text: text.to_string(),
+        source: SourceKind::Scm(ScmSource {
+            scm: ScmType::Git,
+            base: BaseRuleset::new("merge-base(trunk)"),
+            tip: TipRule::Ref {
+                name: "refs/heads/other".to_string(),
+            },
+            branch_hint: None,
+        }),
+        base_revision: None,
+        base_tip_relative: false,
+        head_revision: None,
+    }
+}
+
+fn render(outcome: &IfNeeded) -> String {
+    match outcome {
+        IfNeeded::Created(log) => format!("created {}", log.ulid()),
+        IfNeeded::Unchanged(log) => format!("unchanged {}", log.ulid()),
+        IfNeeded::Refreshed(log, o) => format!("refreshed {} v{}", log.ulid(), o.version),
+        IfNeeded::NothingToReview => "nothing to review".to_string(),
+    }
+}
+
+// Re-running reuse_or_create against the same range reuses one session: the
+// first run creates it, an identical diff leaves it untouched, a moved working
+// copy refreshes it in place, and a different range starts a session of its own.
+#[test]
+fn reuse_or_create_creates_then_reuses_then_refreshes_one_session() {
+    let data = tempfile::tempdir().expect("data tempdir");
+    let base = data.path();
+    let id = identity();
+    let cwd = Path::new("/work");
+
+    let first = reuse_or_create(base, &id, cwd, &topic_capture(DIFF_A), actor(), None)
+        .expect("first run creates");
+    let (topic_ulid, topic_path) = match &first {
+        IfNeeded::Created(log) => (log.ulid(), log.path().to_path_buf()),
+        other => panic!("expected a create, got {}", render(other)),
+    };
+    let reused = reuse_or_create(base, &id, cwd, &topic_capture(DIFF_A), actor(), None)
+        .expect("identical diff reuses");
+    let refreshed = reuse_or_create(base, &id, cwd, &topic_capture(DIFF_B), actor(), None)
+        .expect("moved working copy refreshes");
+    let other = reuse_or_create(base, &id, cwd, &other_capture(DIFF_A), actor(), None)
+        .expect("a different range creates");
+    let other_ulid = match &other {
+        IfNeeded::Created(log) => log.ulid(),
+        other => panic!("expected a create, got {}", render(other)),
+    };
+
+    let state = ReviewState::load(&topic_path).expect("load topic session");
+    let latest = state.versions.last().expect("a captured version").number;
+    let latest_diff = SessionLog::open(&topic_path)
+        .expect("open topic session")
+        .read_diff(latest)
+        .expect("read latest diff");
+    let report = format!(
+        "first: {}\n\
+         reuse: {}\n\
+         refresh: {}\n\
+         other: {} (distinct from topic: {})\n\
+         topic versions: {}\n\
+         topic latest diff:\n{latest_diff}",
+        render(&first),
+        render(&reused),
+        render(&refreshed),
+        render(&other),
+        other_ulid != topic_ulid,
+        state.versions.len(),
+    )
+    .replace(&topic_ulid.to_string(), "TOPIC")
+    .replace(&other_ulid.to_string(), "OTHER");
+
+    wince::snapshot_display!(
+        report,
+        "first: created TOPIC\n\
+         reuse: unchanged TOPIC\n\
+         refresh: refreshed TOPIC v1\n\
+         other: created OTHER (distinct from topic: true)\n\
+         topic versions: 2\n\
+         topic latest diff:\n\
+         diff --git a/f.txt b/f.txt\n\
+         --- a/f.txt\n\
+         +++ b/f.txt\n\
+         @@ -1 +1 @@\n\
+         -old\n\
+         +newer\n"
+    );
+}
+
+// An empty capture with no session is a dead end, but once a session exists the
+// same range reuses it: a reverted working copy refreshes to the empty diff
+// rather than starting over.
+#[test]
+fn reuse_or_create_reports_nothing_to_review_until_a_session_exists() {
+    let data = tempfile::tempdir().expect("data tempdir");
+    let base = data.path();
+    let id = identity();
+    let cwd = Path::new("/work");
+
+    let empty_first = reuse_or_create(base, &id, cwd, &topic_capture(""), actor(), None)
+        .expect("an empty capture is reported, not an error");
+    let created = reuse_or_create(base, &id, cwd, &topic_capture(DIFF_A), actor(), None)
+        .expect("a non-empty capture opens the session");
+    let ulid = match &created {
+        IfNeeded::Created(log) => log.ulid(),
+        other => panic!("expected a create, got {}", render(other)),
+    };
+    let empty_again = reuse_or_create(base, &id, cwd, &topic_capture(""), actor(), None)
+        .expect("an empty capture reuses the existing session");
+
+    let report = format!(
+        "empty first: {}\n\
+         created: {}\n\
+         empty again: {}",
+        render(&empty_first),
+        render(&created),
+        render(&empty_again),
+    )
+    .replace(&ulid.to_string(), "TOPIC");
+
+    wince::snapshot_display!(
+        report,
+        "empty first: nothing to review\n\
+         created: created TOPIC\n\
+         empty again: refreshed TOPIC v1"
     );
 }

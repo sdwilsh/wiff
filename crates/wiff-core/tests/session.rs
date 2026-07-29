@@ -6,8 +6,8 @@ use wiff_core::record::{
     RecordBody, ScmSource, Seq, SessionHeader, SourceKind, TipRule, VersionNumber,
 };
 use wiff_core::session::{
-    LockAttempt, LockWait, SessionLog, SyncState, active_session, list_projects, list_sessions,
-    read_records, remove_session, session_bound_to,
+    LockAttempt, LockWait, ProjectLock, SessionLog, SyncState, active_session, list_projects,
+    list_sessions, read_records, remove_session, session_bound_to, session_with_source,
 };
 use wiff_core::{BaseRuleset, ScmType};
 use wiff_diff::{LineNo, Side};
@@ -575,4 +575,112 @@ fn removing_a_session_deletes_the_log_and_sideband() {
     remove_session(log.path()).unwrap();
     wince::assert_eq!(log.path().exists(), false);
     wince::assert_eq!(sideband.exists(), false);
+}
+
+/// A stdin session, for asserting `session_with_source` neither offers it nor
+/// matches a stdin query.
+fn stdin_header(ulid: Ulid) -> RecordBody {
+    RecordBody::Session(SessionHeader {
+        ulid,
+        version: wiff_core::record::FORMAT_VERSION,
+        project: "demo".to_string(),
+        repo_root: Some("/repos/demo".to_string()),
+        cwd: "/repos/demo".to_string(),
+        source: SourceKind::Stdin,
+        forge: None,
+    })
+}
+
+#[test]
+fn source_selection_finds_the_most_recent_session_capturing_the_same_range() {
+    let base = tempfile::tempdir().unwrap();
+    let wanted = worktree_source_on("refs/heads/topic");
+
+    // An older session captures the wanted range; a more recent one captures a
+    // different range, so recipe (not recency alone) is what selects.
+    let (older, lock) =
+        SessionLog::create(base.path(), "demo", scm_header(wanted.clone())).unwrap();
+    let older_path = older.path().to_path_buf();
+    drop(lock);
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    let (_other_range, lock) = SessionLog::create(
+        base.path(),
+        "demo",
+        scm_header(ref_source("refs/heads/other")),
+    )
+    .unwrap();
+    drop(lock);
+
+    wince::assert_eq!(
+        session_with_source(base.path(), "demo", &wanted).unwrap(),
+        Some(older_path)
+    );
+
+    // A second session capturing the wanted range is more recent, so it wins.
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    let (newer, lock) =
+        SessionLog::create(base.path(), "demo", scm_header(wanted.clone())).unwrap();
+    drop(lock);
+    wince::assert_eq!(
+        session_with_source(base.path(), "demo", &wanted).unwrap(),
+        Some(newer.path().to_path_buf())
+    );
+}
+
+#[test]
+fn source_selection_ignores_a_session_bound_to_a_pull_request() {
+    let base = tempfile::tempdir().unwrap();
+    let url = "https://github.com/octo/demo/pull/7";
+
+    // The bound session's scm recipe is identical to the query, but it belongs
+    // to `wiff forge`, so `wiff new --if-needed` must never adopt it.
+    let (_bound, lock) = SessionLog::create(base.path(), "demo", forge_header(url)).unwrap();
+    drop(lock);
+
+    wince::assert_eq!(
+        session_with_source(base.path(), "demo", &worktree_source_on("refs/heads/topic")).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn a_held_project_lock_blocks_a_second_non_blocking_acquire() {
+    let base = tempfile::tempdir().unwrap();
+    let held = ProjectLock::acquire(base.path(), "demo", LockWait::Block).unwrap();
+
+    // A second acquirer that will not wait finds the lock held, and names it.
+    let contended = ProjectLock::acquire(base.path(), "demo", LockWait::NonBlock).unwrap_err();
+    let contended = contended
+        .to_string()
+        .replace(base.path().to_str().unwrap(), "BASE");
+    wince::snapshot_display!(
+        contended,
+        "session BASE/sessions/demo/.lock is locked by another process"
+    );
+
+    // The lock is exclusive per project, not global: another project is free.
+    ProjectLock::acquire(base.path(), "other", LockWait::NonBlock).unwrap();
+
+    // Releasing the guard lets the next acquirer take it.
+    drop(held);
+    ProjectLock::acquire(base.path(), "demo", LockWait::NonBlock).unwrap();
+}
+
+#[test]
+fn source_selection_never_matches_a_stdin_source_in_either_direction() {
+    let base = tempfile::tempdir().unwrap();
+
+    let (_stdin, lock) = SessionLog::create(base.path(), "demo", stdin_header).unwrap();
+    drop(lock);
+
+    // A stdin query has no recipe to compare, so it matches nothing.
+    wince::assert_eq!(
+        session_with_source(base.path(), "demo", &SourceKind::Stdin).unwrap(),
+        None
+    );
+    // An scm query skips the stdin session rather than mistaking it for a match.
+    wince::assert_eq!(
+        session_with_source(base.path(), "demo", &worktree_source_on("refs/heads/topic")).unwrap(),
+        None
+    );
 }

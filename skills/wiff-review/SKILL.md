@@ -11,6 +11,24 @@ through the `wiff` command line. The TUI belongs to the human: never launch or
 drive it. Do all of your work through the `wiff` subcommands below.
 
 If there is no session to act on, ask the user to start one with wiff first.
+The exception is when you are the automation that opens reviews (see below).
+
+## Opening or refreshing a review from automation
+
+When your job is to trigger reviews rather than review within a session a human
+opened, create-or-refresh the session for the current changes in one idempotent
+step:
+
+```bash
+wiff new --no-tui --if-needed
+```
+
+It creates a session when none exists for these changes, refreshes one in place
+when the working copy has moved on, and does nothing when it is already current.
+With no changes and no session yet, it exits non-zero with "no changes to
+review". By default it reviews the uncommitted working-tree changes; add
+`--from-base` to review the whole branch against its trunk instead. Requires
+`--no-tui`.
 
 ## Selecting the session
 

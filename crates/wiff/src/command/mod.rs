@@ -124,10 +124,11 @@ pub(crate) enum DiffSelection {
 }
 
 /// Capture `selection` from the repository at `root` using its detected `scm`.
-/// Errors when the repository is of a kind wiff cannot yet capture from, or when
-/// there is nothing to review, so callers need not repeat those checks. This is
-/// the single point that turns a selection into a running SCM command; adding a
-/// new source-control system means adding its arm here.
+/// Errors when the repository is of a kind wiff cannot yet capture from. The
+/// captured diff may be empty (a clean working tree); whether an empty capture
+/// is an error or a benign no-op is the calling command's decision. This is the
+/// single point that turns a selection into a running SCM command; adding a new
+/// source-control system means adding its arm here.
 pub(crate) async fn capture_scm_diff(
     scm: Option<ScmType>,
     root: PathBuf,
@@ -145,11 +146,7 @@ pub(crate) async fn capture_scm_diff(
             root.display()
         ),
     };
-    let captured = source.capture().await?;
-    if captured.text.trim().is_empty() {
-        bail!("no changes to review");
-    }
-    Ok(captured)
+    Ok(source.capture().await?)
 }
 
 /// A handle to the repository at `root` for the forge operations [`ScmRepo`]
