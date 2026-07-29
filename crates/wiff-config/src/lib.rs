@@ -15,7 +15,9 @@ use wiff_core::{AuthorDefaults, BaseRuleset, DEFAULT_BASE_REVISION_RULES};
 use wiff_diff::DEFAULT_TAB_WIDTH;
 use wiff_forge::ForgeTable;
 use wiff_tui::keymap::Keymap;
-use wiff_tui::render::{DEFAULT_DISPLAY_CONTEXT, DEFAULT_SIDE_BY_SIDE_MIN_WIDTH, DiffMode};
+use wiff_tui::render::{
+    DEFAULT_DISPLAY_CONTEXT, DEFAULT_MIN_FOLD, DEFAULT_SIDE_BY_SIDE_MIN_WIDTH, DiffMode,
+};
 use wiff_tui::{KeymapError, KeymapOverrides};
 
 /// The environment variable that overrides the config directory.
@@ -44,6 +46,9 @@ pub struct Config {
     /// runs fold away. This is a display choice, independent of how much context
     /// the diff was captured with.
     pub display_context: usize,
+    /// The shortest run of unchanged lines that folds away; shorter runs stay
+    /// expanded instead of collapsing behind a marker.
+    pub min_fold: usize,
     /// Columns per tab stop for diff display and comment editing.
     pub tab_width: usize,
     /// The editor command template for `open_in_editor`, with `{file}` and
@@ -95,6 +100,7 @@ impl Default for Config {
         Self {
             on_exit: OnExit::default(),
             display_context: DEFAULT_DISPLAY_CONTEXT,
+            min_fold: DEFAULT_MIN_FOLD,
             tab_width: DEFAULT_TAB_WIDTH,
             editor: None,
             wrap_lines: true,

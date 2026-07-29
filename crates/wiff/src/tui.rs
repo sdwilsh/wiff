@@ -65,6 +65,7 @@ pub fn open(session_path: &Path, config: &Config, offer_refresh: bool) -> anyhow
     let keymap = config.keymap()?;
     let view = DiffView::new(theme.clone())?
         .with_display_context(config.display_context)
+        .with_min_fold(config.min_fold)
         .with_section_matchers(sections)
         .with_generated_file_matches(generated)
         .with_key_hints(KeyHints::from_keymap(&keymap));

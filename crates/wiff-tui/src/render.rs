@@ -67,10 +67,10 @@ pub(crate) fn column_gutter_width(show_line_numbers: bool) -> usize {
 /// The single-cell rule drawn between the two side-by-side columns.
 pub(crate) const COLUMN_DIVIDER: char = '\u{2502}';
 
-/// The shortest run of unchanged lines worth collapsing. Shorter runs save too
-/// few rows to justify a fold marker, and their context is usually worth
-/// reading, so they are left expanded.
-const MIN_FOLD: usize = 5;
+/// The shortest run of unchanged lines worth collapsing when nothing overrides
+/// it. Shorter runs save too few rows to justify a fold marker, and their
+/// context is usually worth reading, so they are left expanded.
+pub const DEFAULT_MIN_FOLD: usize = 5;
 
 /// The change-marker glyph for a collapsed fold, pointing right at the hidden
 /// rows the way a closed disclosure triangle does.
@@ -577,6 +577,7 @@ pub struct DiffView {
     highlighter: Highlighter,
     theme: Theme,
     display_context: usize,
+    min_fold: usize,
     sections: SectionMatchers,
     generated: GeneratedMatchers,
     hints: KeyHints,
@@ -662,6 +663,7 @@ impl DiffView {
             highlighter: Highlighter::with_theme(&theme.syntax_theme)?,
             theme,
             display_context: DEFAULT_DISPLAY_CONTEXT,
+            min_fold: DEFAULT_MIN_FOLD,
             sections: SectionMatchers::builtins(),
             generated: GeneratedMatchers::builtins(),
             hints: KeyHints::default(),
@@ -691,6 +693,13 @@ impl DiffView {
     /// rest away.
     pub fn with_display_context(mut self, context: usize) -> Self {
         self.display_context = context;
+        self
+    }
+
+    /// Fold an unchanged run only when it is at least `min` lines long, leaving
+    /// shorter runs expanded.
+    pub fn with_min_fold(mut self, min: usize) -> Self {
+        self.min_fold = min;
         self
     }
 
@@ -1030,7 +1039,7 @@ impl DiffView {
             let runs = if generated.is_some() {
                 Vec::new()
             } else {
-                foldable_runs(&kinds, self.display_context, &anchored)
+                foldable_runs(&kinds, self.display_context, self.min_fold, &anchored)
             };
             let fold_marks = fold_column(&runs, hunk.lines.len());
             let emission = HunkEmission {
@@ -2280,14 +2289,20 @@ fn fold_column(runs: &[Range<usize>], len: usize) -> Vec<Option<char>> {
 }
 
 /// The runs of unchanged content lines to fold away, given `kinds` for one
-/// hunk's lines, the number of `context` lines to keep beside each change, and
-/// which lines are `anchored` by a comment.
+/// hunk's lines, the number of `context` lines to keep beside each change, the
+/// shortest run worth folding as `min_fold`, and which lines are `anchored` by a
+/// comment.
 ///
 /// A line is kept when it is a change, when it carries a comment, or when it is
 /// within `context` lines of either; the maximal runs of the remaining lines are
-/// folded, skipping any run too short to be worth collapsing. Keeping a comment's
-/// line splits an otherwise-foldable run around it rather than hiding it.
-fn foldable_runs(kinds: &[LineKind], context: usize, anchored: &[bool]) -> Vec<Range<usize>> {
+/// folded, skipping any run shorter than `min_fold`. Keeping a comment's line
+/// splits an otherwise-foldable run around it rather than hiding it.
+fn foldable_runs(
+    kinds: &[LineKind],
+    context: usize,
+    min_fold: usize,
+    anchored: &[bool],
+) -> Vec<Range<usize>> {
     let mut kept = vec![false; kinds.len()];
     for (i, kind) in kinds.iter().enumerate() {
         if matches!(kind, LineKind::Added | LineKind::Removed) || anchored[i] {
@@ -2305,7 +2320,7 @@ fn foldable_runs(kinds: &[LineKind], context: usize, anchored: &[bool]) -> Vec<R
         match (!kept_here, start) {
             (true, None) => start = Some(i),
             (false, Some(from)) => {
-                if i - from >= MIN_FOLD {
+                if i - from >= min_fold {
                     runs.push(from..i);
                 }
                 start = None;
@@ -3369,10 +3384,18 @@ mod tests {
             C, C, C, C, C, C, C, A, C, C, C, C, C, C, A, C, C, C, C, C, C, C,
         ];
         let none = vec![false; kinds.len()];
-        wince::assert_eq!(super::foldable_runs(&kinds, 1, &none), vec![0..6, 16..22]);
+        wince::assert_eq!(
+            super::foldable_runs(&kinds, 1, super::DEFAULT_MIN_FOLD, &none),
+            vec![0..6, 16..22]
+        );
+        // A lower fold minimum collapses the interior run too.
+        wince::assert_eq!(
+            super::foldable_runs(&kinds, 1, 2, &none),
+            vec![0..6, 9..13, 16..22]
+        );
         // With enough context to reach across every gap, nothing folds.
         wince::assert_eq!(
-            super::foldable_runs(&kinds, 5, &none),
+            super::foldable_runs(&kinds, 5, super::DEFAULT_MIN_FOLD, &none),
             Vec::<std::ops::Range<usize>>::new()
         );
     }

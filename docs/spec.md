@@ -639,6 +639,9 @@ after the rest of v0.
   after-side source column. The `diff_mode_auto`, `diff_mode_side_by_side`,
   `diff_mode_unified`, `diff_mode_only_after`, and `diff_mode_rendered` actions
   switch it within a session.
+- `display_context` (default 3) is how many unchanged lines are kept on each
+  side of a change before the rest of a run folds away; `min_fold` (default 5)
+  is the shortest such run that folds, with shorter runs left expanded.
 - `editor` is a command template (`{file}`, `{line}` placeholders) for
   `open_in_editor`; when unset, `$VISUAL` then `$EDITOR` then a default is used.
 - Machine-generated files (lock files, minified bundles, files whose head holds

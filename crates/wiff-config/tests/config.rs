@@ -21,6 +21,7 @@ fn a_full_config_parses_into_typed_settings() {
     let text = "\
 on_exit = \"keep\"
 display_context = 5
+min_fold = 3
 tab_width = 8
 editor = \"vim +{line} {file}\"
 wrap_lines = true
@@ -62,6 +63,7 @@ quit = [\"q\", \"ctrl-c\"]
         Config {
             on_exit: OnExit::Keep,
             display_context: 5,
+            min_fold: 3,
             tab_width: 8,
             editor: Some("vim +{line} {file}".to_string()),
             wrap_lines: true,
@@ -147,7 +149,7 @@ fn an_unknown_field_is_rejected() {
         "  |\n",
         "1 | wibble = true\n",
         "  | ^^^^^^\n",
-        "unknown field `wibble`, expected one of `on_exit`, `display_context`, `tab_width`, `editor`, `wrap_lines`, `show_line_numbers`, `diff_mode`, `side_by_side_min_width`, `nudge_to_detach`, `author`, `base_revision_rules`, `forge`, `section`, `generated`, `disable_default_keymap`, `keymap`\n",
+        "unknown field `wibble`, expected one of `on_exit`, `display_context`, `min_fold`, `tab_width`, `editor`, `wrap_lines`, `show_line_numbers`, `diff_mode`, `side_by_side_min_width`, `nudge_to_detach`, `author`, `base_revision_rules`, `forge`, `section`, `generated`, `disable_default_keymap`, `keymap`\n",
     );
 }
 
