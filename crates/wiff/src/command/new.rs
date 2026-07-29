@@ -13,6 +13,7 @@ use wiff_core::{
     BaseRuleset, CapturedDiff, IfNeeded, ProjectIdentity, RefreshOutcome, SessionLog,
     create_session, parse_ruleset, reuse_or_create,
 };
+use wiff_forge::TokenOverride;
 
 use super::{DiffSelection, capture_scm_diff, read_piped_stdin, resolve_author};
 use crate::tui;
@@ -88,7 +89,9 @@ impl NewArgs {
         if self.no_tui {
             return Ok(());
         }
-        tui::open(log.path(), &config, false)
+        // A freshly captured session is never bound to a pull request, so the
+        // publish flow has no forge to reach; the default overrides suffice.
+        tui::open(log.path(), &config, &TokenOverride::default(), false)
     }
 
     /// Satisfy `--if-needed`, reporting what it did.

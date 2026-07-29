@@ -28,12 +28,13 @@ use wiff_core::record::RecordBody;
 use wiff_diff::Rgb;
 
 use crate::action::Action;
-use crate::app::{App, CompareRequest, ComposeColumn, ComposeView, FloatView, Update};
+use crate::app::{App, CompareRequest, ComposeColumn, ComposeView, FloatView, PublishStep, Update};
 use crate::event::to_key_press;
 use crate::exit::Exit;
 use crate::input::Input;
 use crate::key::Key;
 use crate::keymap::Keymap;
+use crate::notice::Notice;
 use crate::render::{COLUMN_DIVIDER, color};
 
 /// How long the loop waits for a key before waking to pick up another actor's
@@ -52,30 +53,46 @@ const HIGHLIGHT_POLL_INTERVAL: Duration = Duration::from_millis(30);
 /// `save`, which commits the pending drafts and keeps the review open; both
 /// report their own outcome through the app's status line. When the reviewer
 /// chooses a version to compare against, `compare` reconstructs that diff and
-/// shows it in place. After each key and whenever the review sits idle the loop
+/// shows it in place. An [`Action::Publish`] and each confirmed publish phase
+/// are handed to `publish`, which drives the pull-and-push round-trip to the
+/// forge. After each key and whenever the review sits idle the loop
 /// calls `sync`, which picks up another actor's updates to the session and folds
 /// them into the app, returning whether it changed anything so the loop repaints
 /// only when it did. The terminal is put into raw mode on an alternate screen for the
 /// duration and restored before returning. Returns how the reviewer chose to
 /// leave together with any buffered draft edits still to commit.
-pub fn run(
+pub fn run<R, S, Y, C, P>(
     app: App,
     keymap: Keymap,
-    refresh: impl FnMut(&mut App),
-    save: impl FnMut(&mut App),
-    sync: impl FnMut(&mut App) -> bool,
-    compare: impl FnMut(&mut App, CompareRequest),
-) -> io::Result<(Exit, Vec<RecordBody>)> {
+    callbacks: Callbacks<R, S, Y, C, P>,
+) -> io::Result<(Exit, Vec<RecordBody>)>
+where
+    R: FnMut(&mut App),
+    S: FnMut(&mut App),
+    Y: FnMut(&mut App) -> bool,
+    C: FnMut(&mut App, CompareRequest),
+    P: FnMut(&mut App, PublishStep),
+{
     let mut terminal = TerminalGuard::enter()?;
-    event_loop(
-        &mut terminal.terminal,
-        app,
-        keymap,
-        refresh,
-        save,
-        sync,
-        compare,
-    )
+    event_loop(&mut terminal.terminal, app, keymap, callbacks)
+}
+
+/// The host-side effects [`run`] reaches back to as the reviewer drives the
+/// loop. The review UI owns the diff and the cursor but not the session on disk
+/// or the forge; each callback is where it steps out to that world when an
+/// action or a confirmed prompt resolves.
+pub struct Callbacks<R, S, Y, C, P> {
+    /// Recapture the diff and reload the app over the new version.
+    pub refresh: R,
+    /// Commit the pending drafts, keeping the review open.
+    pub save: S,
+    /// Fold in another actor's committed changes, returning whether anything
+    /// changed.
+    pub sync: Y,
+    /// Reconstruct the chosen version's diff and show it in place.
+    pub compare: C,
+    /// Perform a publish phase: open the prompt, reconcile, or send.
+    pub publish: P,
 }
 
 /// Draw the current view: the visible lines over all but the last screen row,
@@ -124,6 +141,11 @@ pub fn draw<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
         }
         if app.noticing() {
             render_notice(frame, doc_area, app);
+        }
+        // The busy modal paints last, over any prompt it replaced, while a
+        // blocking host operation holds the loop.
+        if app.working().is_some() {
+            render_working(frame, doc_area, app);
         }
     })?;
     Ok(())
@@ -276,6 +298,33 @@ fn render_notice(frame: &mut Frame, area: Rect, app: &mut App) {
     let Some(notice) = app.notice() else {
         return;
     };
+    render_scrolling_modal(
+        frame,
+        rect,
+        ScrollingModal {
+            title: notice.title(),
+            border: notice.border(),
+            background: notice.background(),
+            lines: notice.lines(),
+            top: notice.top(),
+            total,
+            visible,
+        },
+    );
+}
+
+/// Draw the busy modal centered over `area`, naming the blocking host operation
+/// that holds the loop while it runs.
+fn render_working(frame: &mut Frame, area: Rect, app: &App) {
+    let Some((title, body)) = app.working() else {
+        return;
+    };
+    let mut notice = Notice::working(title.to_string(), body.to_string(), app.working_colors());
+    let content_width = notice.width();
+    let inner = modal_inner_width(area, content_width);
+    let total = notice.wrap_to(inner);
+    let (rect, _, visible) = centered_modal(area, total, content_width);
+    notice.set_height(visible);
     render_scrolling_modal(
         frame,
         rect,
@@ -476,15 +525,27 @@ fn draw_editor_box(
 }
 
 /// Draw and handle events until a quit action ends the loop.
-fn event_loop<B: Backend>(
+fn event_loop<B, R, S, Y, C, P>(
     terminal: &mut Terminal<B>,
     mut app: App,
     keymap: Keymap,
-    mut refresh: impl FnMut(&mut App),
-    mut save: impl FnMut(&mut App),
-    mut sync: impl FnMut(&mut App) -> bool,
-    mut compare: impl FnMut(&mut App, CompareRequest),
-) -> io::Result<(Exit, Vec<RecordBody>)> {
+    callbacks: Callbacks<R, S, Y, C, P>,
+) -> io::Result<(Exit, Vec<RecordBody>)>
+where
+    B: Backend,
+    R: FnMut(&mut App),
+    S: FnMut(&mut App),
+    Y: FnMut(&mut App) -> bool,
+    C: FnMut(&mut App, CompareRequest),
+    P: FnMut(&mut App, PublishStep),
+{
+    let Callbacks {
+        mut refresh,
+        mut save,
+        mut sync,
+        mut compare,
+        mut publish,
+    } = callbacks;
     let mut input = Input::new(keymap);
     // Repaint only when the view might have changed, so an idle poll that finds
     // no session update does not redraw. Set the first time through to paint the
@@ -586,8 +647,18 @@ fn event_loop<B: Backend>(
             // the loop handles itself, stopping the process and repainting on
             // resume.
             match app.update(action) {
-                Update::Passed(Action::Refresh) => refresh(&mut app),
+                Update::Passed(Action::Refresh) => {
+                    // A forge fetch blocks the loop on the network, so paint its
+                    // busy modal before the round-trip; a local refresh has none
+                    // and paints nothing.
+                    if app.begin_refresh_working() {
+                        draw(terminal, &mut app)?;
+                    }
+                    refresh(&mut app);
+                    app.end_working();
+                }
                 Update::Passed(Action::Save) => save(&mut app),
+                Update::Passed(Action::Publish) => publish(&mut app, PublishStep::Requested),
                 Update::Passed(Action::Suspend) => {
                     suspend()?;
                     // The alternate screen comes back blank on resume, so
@@ -603,9 +674,24 @@ fn event_loop<B: Backend>(
             compare(&mut app, request);
         }
         // A refresh chosen from the launch prompt recaptures the source, just as
-        // the refresh action does.
+        // the refresh action does, painting the forge busy modal first when the
+        // review has one.
         if app.take_pending_refresh() {
+            if app.begin_refresh_working() {
+                draw(terminal, &mut app)?;
+            }
             refresh(&mut app);
+            app.end_working();
+        }
+        // A publish phase confirmed from a publish prompt is performed by the
+        // host, which reconciles the forge and then sends the review back. The
+        // forge round-trip blocks the loop, so paint a modal naming it first,
+        // giving the reviewer a sign of progress rather than a frozen screen.
+        if let Some(step) = app.take_pending_publish() {
+            app.begin_publishing(step);
+            draw(terminal, &mut app)?;
+            publish(&mut app, step);
+            app.end_working();
         }
         // A quit action or a confirmed picker choice settles how to leave.
         if let Some(exit) = app.pending_exit() {
@@ -702,7 +788,7 @@ mod tests {
 
     use super::draw;
     use crate::action::Action;
-    use crate::app::App;
+    use crate::app::{App, PublishStep};
     use crate::exit::ExitDefault;
     use crate::key::{Key, KeyPress};
     use crate::render::DiffView;
@@ -845,6 +931,55 @@ mod tests {
             "     │                                                            │     \n",
             "     │any key to close                                            │     \n",
             "     └────────────────────────────────────────────────────────────┘     \n",
+            "                                                                        \n",
+            "                                                                        \n",
+            "src/lib.rs                                                  0 open  100%\n",
+        );
+    }
+
+    #[test]
+    fn the_publishing_modal_names_the_pull_request_centered_over_the_view() {
+        // While a publish blocks the loop, a modal floats centered over the
+        // diff, titled "Publishing", naming the bound pull request and hinting
+        // to wait rather than to dismiss.
+        let mut app = App::reviewing(draft_review(), 0, &theme());
+        app.offer_publish("https://github.com/octo/demo/pull/7");
+        app.picker_cancel();
+        app.begin_publishing(PublishStep::Publish);
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            screen(72, 10, app),
+            "Review [press c here to draft the review comment] [press e to write the \n",
+            "modified  src/lib.rs                                                    \n",
+            "@@ -1,┌Publishing────────────────────────────────────────────────┐      \n",
+            "      │Sending your review to https://github.com/octo/demo/pull/7│      \n",
+            "      │                                                          │      \n",
+            "      │please wait                                               │      \n",
+            "      └──────────────────────────────────────────────────────────┘      \n",
+            "                                                                        \n",
+            "                                                                        \n",
+            "src/lib.rs                                                  0 open  100%\n",
+        );
+    }
+
+    #[test]
+    fn the_forge_fetch_modal_floats_centered_over_the_view_while_it_blocks() {
+        // While a forge fetch blocks the loop, its busy modal floats centered
+        // over the diff, titled "Fetching", naming the source and hinting to
+        // wait rather than to dismiss.
+        let mut app = App::reviewing(draft_review(), 0, &theme())
+            .with_refresh_modal("Fetching", "Fetching the latest from octo/demo#7");
+        app.begin_refresh_working();
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            screen(72, 10, app),
+            "Review [press c here to draft the review comment] [press e to write the \n",
+            "modified  src/lib.rs                                                    \n",
+            "@@ -1,1 +1,1 @@  ┌Fetching────────────────────────────┐                 \n",
+            "        1 + let y│Fetching the latest from octo/demo#7│                 \n",
+            "                 │                                    │                 \n",
+            "                 │please wait                         │                 \n",
+            "                 └────────────────────────────────────┘                 \n",
             "                                                                        \n",
             "                                                                        \n",
             "src/lib.rs                                                  0 open  100%\n",

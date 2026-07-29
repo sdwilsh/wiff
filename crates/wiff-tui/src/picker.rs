@@ -240,8 +240,10 @@ impl<Ctx> Picker<Ctx> {
     }
 
     /// The width of the modal's content inside its border: two columns for the
-    /// highlight marker, then the widest label or the hint. A note does not
-    /// widen the modal; it wraps to whatever width the rows and hint give.
+    /// highlight marker, then the widest of the row labels, the hint, and the
+    /// note, so a one-line note (such as a bound pull-request URL) shows without
+    /// wrapping wherever the terminal is wide enough. The host clamps this to the
+    /// terminal width, past which the note wraps.
     pub fn width(&self) -> usize {
         let widest = self
             .rows
@@ -249,7 +251,13 @@ impl<Ctx> Picker<Ctx> {
             .map(|row| row.label().chars().count())
             .max()
             .unwrap_or(0);
-        2 + widest.max(self.hint.chars().count())
+        let note = self.note.as_deref().map_or(0, |note| {
+            note.lines()
+                .map(|line| line.chars().count())
+                .max()
+                .unwrap_or(0)
+        });
+        2 + widest.max(self.hint.chars().count()).max(note)
     }
 
     /// The modal's content lines for a content width of `width`: the visible
@@ -505,24 +513,44 @@ mod tests {
     }
 
     #[test]
-    fn a_note_wraps_to_the_content_width_leading_the_rows_in_the_border_color() {
-        // A note wider than the content wraps across as many lines as it needs,
-        // breaking at spaces, painted in the border and title color, then a
-        // blank line before the rows. The note does not widen the box past the
-        // hint.
+    fn a_long_note_widens_the_box_to_show_on_one_line_in_the_border_color() {
+        // A note wider than the rows and hint widens the modal so it shows on
+        // one line, painted in the border and title color, then a blank line
+        // before the rows.
         let mut picker = picker(2, 5);
         picker.set_note("the review base moved out from under you to a different commit");
-        wince::assert_eq!(picker.note_height(picker.width()), 3);
+        wince::assert_eq!(picker.note_height(picker.width()), 2);
         #[rustfmt::skip]
         wince::snapshot_str!(
             dump(&picker.lines(picker.width())),
-            "<#111111|#555555|->  the review base moved out from under you\n",
-            "<#111111|#555555|->  to a different commit                   \n",
-            "<-|#555555|->                                          \n",
-            "<#333333|#222222|->> item 0                                  \n",
-            "<#333333|#555555|->  item 1                                  \n",
-            "<-|#555555|->                                          \n",
-            "<#444444|#555555|->  up/down move   enter select   esc cancel\n",
+            "<#111111|#555555|->  the review base moved out from under you to a different commit\n",
+            "<-|#555555|->                                                                \n",
+            "<#333333|#222222|->> item 0                                                        \n",
+            "<#333333|#555555|->  item 1                                                        \n",
+            "<-|#555555|->                                                                \n",
+            "<#444444|#555555|->  up/down move   enter select   esc cancel                      \n",
+        );
+    }
+
+    #[test]
+    fn a_note_wraps_when_clamped_narrower_than_it_leading_the_rows_in_the_border_color() {
+        // Rendered to a width narrower than the note, as the host clamps to the
+        // terminal, the note wraps across as many lines as it needs, breaking at
+        // spaces, painted in the border and title color, then a blank line
+        // before the rows.
+        let mut picker = picker(2, 5);
+        picker.set_note("the review base moved out from under you to a different commit");
+        wince::assert_eq!(picker.note_height(40), 3);
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            dump(&picker.lines(40)),
+            "<#111111|#555555|->  the review base moved out from under  \n",
+            "<#111111|#555555|->  you to a different commit             \n",
+            "<-|#555555|->                                        \n",
+            "<#333333|#222222|->> item 0                                \n",
+            "<#333333|#555555|->  item 1                                \n",
+            "<-|#555555|->                                        \n",
+            "<#444444|#555555|->  up/down move   enter select   esc canc\n",
         );
     }
 

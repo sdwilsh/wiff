@@ -28,7 +28,7 @@ pub mod theme;
 pub mod wrap;
 
 pub use action::Action;
-pub use app::{App, CompareRequest, Update};
+pub use app::{App, CompareRequest, PublishStep, Update};
 pub use event::to_key_press;
 pub use exit::{Exit, ExitDefault};
 pub use highlight::BackgroundHighlighter;
@@ -37,5 +37,5 @@ pub use key::{Chord, Key, KeyPress};
 pub use keymap::{Keymap, KeymapError, KeymapOverrides, Resolution};
 pub use render::{BoxId, DiffView, Document, Fold, KeyHints, ParsedFile, Row, RowKind};
 pub use review::{CommentSync, Review};
-pub use run::run;
+pub use run::{Callbacks, run};
 pub use theme::Theme;

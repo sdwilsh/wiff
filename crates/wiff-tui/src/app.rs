@@ -216,6 +216,19 @@ pub enum CompareRequest {
     Latest,
 }
 
+/// A phase of publishing a forge review. Publishing is confirmed across two
+/// prompts before any forge write runs, giving the reviewer a chance to cancel
+/// and, when reconciling pulls in changes, to read them before sending.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublishStep {
+    /// The reviewer pressed the publish key; the host opens the first prompt.
+    Requested,
+    /// Commit pending drafts and reconcile the forge's state into the session.
+    Reconcile,
+    /// Send the reconciled review to the forge.
+    Publish,
+}
+
 /// A captured version in the modal list.
 struct VersionRow {
     /// The text shown for the version in the list.
@@ -260,6 +273,27 @@ impl PickerRow<App> for RefreshRow {
     fn activate(self: Box<Self>, app: &mut App) {
         if self.refresh {
             app.pending_refresh = true;
+        }
+    }
+}
+
+/// A choice in a publish confirmation prompt.
+struct PublishRow {
+    /// The text shown for the choice in the list.
+    label: String,
+    /// The phase choosing this row records for the host to perform, or `None`
+    /// for a choice that only dismisses the prompt.
+    step: Option<PublishStep>,
+}
+
+impl PickerRow<App> for PublishRow {
+    fn label(&self) -> String {
+        self.label.clone()
+    }
+
+    fn activate(self: Box<Self>, app: &mut App) {
+        if let Some(step) = self.step {
+            app.pending_publish = Some(step);
         }
     }
 }
@@ -469,6 +503,16 @@ pub struct App {
     help: Option<Help>,
     /// The open error notice, present while the reviewer is reading it.
     notice: Option<Notice>,
+    /// The pull request the reviewer last chose to publish to, remembered from
+    /// the publish prompt so the publishing modal can name it.
+    publish_target: Option<String>,
+    /// The title and body of the busy modal painted while a blocking host
+    /// operation runs, or `None` when none is running.
+    working: Option<(String, String)>,
+    /// The title and body of the busy modal a forge fetch paints while it
+    /// blocks. Present only for a forge-bound review, whose refresh reaches the
+    /// network; a local refresh leaves it unset and shows no modal.
+    refresh_busy: Option<(String, String)>,
     /// The version comparison the reviewer chose from the picker, present until
     /// the host takes it to reconstruct the diff.
     pending_compare: Option<CompareRequest>,
@@ -479,6 +523,9 @@ pub struct App {
     /// Whether the reviewer chose to refresh from the launch prompt, present
     /// until the host reads it to trigger a recapture.
     pending_refresh: bool,
+    /// The publish phase confirmed from a publish prompt, cleared when the host
+    /// takes it to perform.
+    pending_publish: Option<PublishStep>,
     /// The default a quit resolves to, from the host's configured on-exit policy.
     exit_default: ExitDefault,
     /// Whether each of the document's folds is currently collapsed.
@@ -579,9 +626,13 @@ impl App {
             picker: None,
             help: None,
             notice: None,
+            publish_target: None,
+            working: None,
+            refresh_busy: None,
             pending_compare: None,
             compare_on_cancel: None,
             pending_refresh: false,
+            pending_publish: None,
             exit_default: ExitDefault::Prompt,
             collapsed,
             comment_collapsed,
@@ -694,6 +745,14 @@ impl App {
     /// it, from the reviewer's configured default.
     pub fn with_nudge_to_detach(mut self, nudge: bool) -> Self {
         self.nudge_to_detach = nudge;
+        self
+    }
+
+    /// Set the busy modal headed `title` showing `body` that a forge fetch
+    /// paints while it blocks. The host sets this for a forge-bound review;
+    /// leaving it unset means a refresh shows no modal.
+    pub fn with_refresh_modal(mut self, title: impl Into<String>, body: impl Into<String>) -> Self {
+        self.refresh_busy = Some((title.into(), body.into()));
         self
     }
 
@@ -2047,6 +2106,67 @@ impl App {
         std::mem::take(&mut self.pending_refresh)
     }
 
+    /// Open a modal asking whether to publish this review to `target`, the pull
+    /// request it is bound to. Confirming records [`PublishStep::Reconcile`] for
+    /// the host, which commits pending drafts and reconciles the forge before
+    /// sending anything. Does nothing on a read-only view with no review.
+    pub fn offer_publish(&mut self, target: &str) {
+        if self.review.is_none() {
+            return;
+        }
+        let rows: Vec<Box<dyn PickerRow<App>>> = vec![
+            Box::new(PublishRow {
+                label: "Save drafts and publish".to_string(),
+                step: Some(PublishStep::Reconcile),
+            }) as Box<dyn PickerRow<App>>,
+            Box::new(PublishRow {
+                label: "Cancel".to_string(),
+                step: None,
+            }) as Box<dyn PickerRow<App>>,
+        ];
+        let hint = self.picker_hint();
+        let mut picker = Picker::new("Publish this review", rows, &hint, self.picker_colors);
+        picker.set_note(format!("Publish to {target}"));
+        self.publish_target = Some(target.to_string());
+        self.picker = Some(picker);
+    }
+
+    /// Open a modal reporting what reconciling pulled in from the forge, led by
+    /// `note`, and asking whether to publish now or return to the review to read
+    /// those changes first. Confirming records [`PublishStep::Publish`]; the
+    /// review-first choice only dismisses the prompt, leaving the reconciled
+    /// state on screen. Does nothing on a read-only view with no review.
+    pub fn offer_publish_review(&mut self, note: impl Into<String>) {
+        if self.review.is_none() {
+            return;
+        }
+        let rows: Vec<Box<dyn PickerRow<App>>> = vec![
+            Box::new(PublishRow {
+                label: "Publish now".to_string(),
+                step: Some(PublishStep::Publish),
+            }) as Box<dyn PickerRow<App>>,
+            Box::new(PublishRow {
+                label: "Review the pulled changes first".to_string(),
+                step: None,
+            }) as Box<dyn PickerRow<App>>,
+        ];
+        let hint = self.picker_hint();
+        let mut picker = Picker::new(
+            "Changes were pulled from the forge",
+            rows,
+            &hint,
+            self.picker_colors,
+        );
+        picker.set_note(note);
+        self.picker = Some(picker);
+    }
+
+    /// Take the publish phase the reviewer confirmed from a publish prompt, if
+    /// any, clearing it.
+    pub fn take_pending_publish(&mut self) -> Option<PublishStep> {
+        self.pending_publish.take()
+    }
+
     /// Open the compare-versions list after a refresh, keeping the reviewer's
     /// perspective from before the recapture: `showing` is the version they were
     /// viewing (`None` for the latest diff), which opens marked and preselected,
@@ -2195,6 +2315,67 @@ impl App {
     /// Raise a modal notice headed `title` showing `body`.
     pub fn show_notice(&mut self, title: impl Into<String>, body: impl Into<String>) {
         self.notice = Some(Notice::new(title, body, self.notice_colors));
+    }
+
+    /// Show the busy modal headed `title` showing `body`, painted over
+    /// everything while a blocking host operation holds the loop.
+    pub fn begin_working(&mut self, title: impl Into<String>, body: impl Into<String>) {
+        self.working = Some((title.into(), body.into()));
+    }
+
+    /// Clear the busy modal once the operation returns.
+    pub fn end_working(&mut self) {
+        self.working = None;
+    }
+
+    /// The title and body of the open busy modal, or `None` when none is
+    /// running.
+    pub fn working(&self) -> Option<(&str, &str)> {
+        self.working
+            .as_ref()
+            .map(|(title, body)| (title.as_str(), body.as_str()))
+    }
+
+    /// Show the busy modal ahead of the blocking forge round-trip a confirmed
+    /// publish `step` runs, wording it to that phase: the reconcile phase pulls
+    /// the forge's state in and may stop for the reviewer to read what changed
+    /// without sending, so it reads "Reconciling"; the push phase sends the
+    /// review back. Both name the pull request last chosen from the publish
+    /// prompt, or a generic phrase when the binding was never named to a prompt.
+    pub fn begin_publishing(&mut self, step: PublishStep) {
+        let target = self
+            .publish_target
+            .clone()
+            .unwrap_or_else(|| "the forge".to_string());
+        let (title, body) = match step {
+            PublishStep::Reconcile => ("Reconciling", format!("Reconciling with {target}")),
+            PublishStep::Requested | PublishStep::Publish => {
+                ("Publishing", format!("Sending your review to {target}"))
+            }
+        };
+        self.begin_working(title, body);
+    }
+
+    /// Show the forge-fetch busy modal if this review has one configured,
+    /// returning whether it was shown so the host can repaint before the
+    /// blocking fetch. A local review has none and shows nothing.
+    pub fn begin_refresh_working(&mut self) -> bool {
+        let Some((title, body)) = self.refresh_busy.clone() else {
+            return false;
+        };
+        self.begin_working(title, body);
+        true
+    }
+
+    /// The colors the busy modal paints with, sharing the picker's neutral
+    /// border rather than the error notice's warning tint.
+    pub fn working_colors(&self) -> NoticeColors {
+        NoticeColors {
+            border: self.picker_colors.border,
+            background: self.picker_colors.background,
+            text: self.picker_colors.text,
+            hint: self.picker_colors.hint,
+        }
     }
 
     /// Whether an error notice is open.
@@ -3824,7 +4005,7 @@ mod tests {
     use wiff_core::review::{CommentState, DescriptionState};
     use wiff_diff::{Diff, FileStatus, LineKind, Side};
 
-    use super::{App, CompareRequest, ComposeView, FloatView, Update};
+    use super::{App, CompareRequest, ComposeView, FloatView, PublishStep, Update};
     use crate::action::Action;
     use crate::exit::{Exit, ExitDefault};
     use crate::key::{Chord, Key, KeyPress};
@@ -4938,6 +5119,154 @@ mod tests {
     }
 
     #[test]
+    fn the_publish_action_passes_through_to_the_host() {
+        // The app does not act on publish itself; it passes the action to the
+        // host, which opens the confirmation prompt.
+        let mut app = App::reviewing(versioned_review(1), 8, &theme());
+        wince::assert_eq!(app.update(Action::Publish), Update::Passed(Action::Publish));
+    }
+
+    #[test]
+    fn the_publish_prompt_names_the_pull_request_and_offers_to_save_and_send() {
+        // The prompt leads with a note naming the pull request the review is
+        // bound to, widening the modal so the URL shows on one line rather than
+        // being cut off in the title, and offers to save drafts and publish, or
+        // cancel, opening on the first.
+        let mut app = App::reviewing(versioned_review(1), 8, &theme());
+        app.offer_publish("https://github.com/octo/demo/pull/7");
+        wince::assert_eq!(app.picking(), true);
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump_picker(&mut app),
+            "<#ebcb8b|#2b303b|->  Publish to https://github.com/octo/demo/pull/7\n",
+            "<-|#2b303b|->                                                \n",
+            "<#c0c5ce|#65737e|->> Save drafts and publish                       \n",
+            "<#c0c5ce|#2b303b|->  Cancel                                        \n",
+            "<-|#2b303b|->                                                \n",
+            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel        \n",
+        );
+    }
+
+    #[test]
+    fn the_publishing_modal_words_itself_to_the_phase_and_clears_when_done() {
+        // The busy modal is closed until begun. The reconcile phase heads
+        // "Reconciling" and names the forge it is pulling from; the push phase
+        // heads "Publishing" and names the pull request it is sending to. Both
+        // name the target the reviewer chose from the prompt, and clear when the
+        // host reports the round-trip is done.
+        let mut app = App::reviewing(versioned_review(1), 8, &theme());
+        wince::assert_eq!(app.working(), None);
+        app.offer_publish("https://github.com/octo/demo/pull/7");
+        app.picker_cancel();
+        app.begin_publishing(PublishStep::Reconcile);
+        wince::assert_eq!(
+            app.working(),
+            Some((
+                "Reconciling",
+                "Reconciling with https://github.com/octo/demo/pull/7"
+            ))
+        );
+        app.end_working();
+        wince::assert_eq!(app.working(), None);
+        app.begin_publishing(PublishStep::Publish);
+        wince::assert_eq!(
+            app.working(),
+            Some((
+                "Publishing",
+                "Sending your review to https://github.com/octo/demo/pull/7"
+            ))
+        );
+        app.end_working();
+        wince::assert_eq!(app.working(), None);
+    }
+
+    #[test]
+    fn the_forge_fetch_modal_shows_only_for_a_review_that_configures_one() {
+        // A local review has no forge-fetch modal, so beginning one shows
+        // nothing; a review given one heads "Fetching" and names the source it
+        // is fetching from, then clears when the host reports it done.
+        let mut local = App::reviewing(versioned_review(1), 8, &theme());
+        wince::assert_eq!(local.begin_refresh_working(), false);
+        wince::assert_eq!(local.working(), None);
+
+        let mut forge = App::reviewing(versioned_review(1), 8, &theme())
+            .with_refresh_modal("Fetching", "Fetching the latest from octo/demo#7");
+        wince::assert_eq!(forge.begin_refresh_working(), true);
+        wince::assert_eq!(
+            forge.working(),
+            Some(("Fetching", "Fetching the latest from octo/demo#7"))
+        );
+        forge.end_working();
+        wince::assert_eq!(forge.working(), None);
+    }
+
+    #[test]
+    fn confirming_the_publish_prompt_records_the_reconcile_phase() {
+        // Activating the first choice closes the prompt and records the
+        // reconcile phase for the host, taken exactly once.
+        let mut app = App::reviewing(versioned_review(1), 8, &theme());
+        app.offer_publish("https://github.com/octo/demo/pull/7");
+        app.picker_activate();
+        wince::assert_eq!(app.picking(), false);
+        wince::assert_eq!(app.take_pending_publish(), Some(PublishStep::Reconcile));
+        wince::assert_eq!(app.take_pending_publish(), None);
+    }
+
+    #[test]
+    fn cancelling_the_publish_prompt_records_no_phase() {
+        // Stepping to the second choice and activating closes the prompt without
+        // asking the host to do anything.
+        let mut app = App::reviewing(versioned_review(1), 8, &theme());
+        app.offer_publish("https://github.com/octo/demo/pull/7");
+        app.picker_nav(Action::LineDown);
+        app.picker_activate();
+        wince::assert_eq!(app.picking(), false);
+        wince::assert_eq!(app.take_pending_publish(), None);
+    }
+
+    #[test]
+    fn the_reconcile_prompt_reports_what_was_pulled_and_offers_to_review_first() {
+        // After reconciling pulls changes in, the prompt leads with a note of
+        // what arrived and offers to publish now or read them first, opening on
+        // publish.
+        let mut app = App::reviewing(versioned_review(1), 8, &theme());
+        app.offer_publish_review("Reconciling pulled in 2 updated comments.");
+        wince::assert_eq!(app.picking(), true);
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump_picker(&mut app),
+            "<#ebcb8b|#2b303b|->  Reconciling pulled in 2 updated comments.\n",
+            "<-|#2b303b|->                                           \n",
+            "<#c0c5ce|#65737e|->> Publish now                              \n",
+            "<#c0c5ce|#2b303b|->  Review the pulled changes first          \n",
+            "<-|#2b303b|->                                           \n",
+            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel   \n",
+        );
+    }
+
+    #[test]
+    fn confirming_the_reconcile_prompt_records_the_publish_phase() {
+        // Publishing now closes the prompt and records the publish phase.
+        let mut app = App::reviewing(versioned_review(1), 8, &theme());
+        app.offer_publish_review("Reconciling pulled in a new diff version.");
+        app.picker_activate();
+        wince::assert_eq!(app.picking(), false);
+        wince::assert_eq!(app.take_pending_publish(), Some(PublishStep::Publish));
+    }
+
+    #[test]
+    fn choosing_to_review_first_records_no_publish_phase() {
+        // Returning to read the pulled changes closes the prompt without asking
+        // the host to send anything, leaving the reconciled state on screen.
+        let mut app = App::reviewing(versioned_review(1), 8, &theme());
+        app.offer_publish_review("Reconciling pulled in a new diff version.");
+        app.picker_nav(Action::LineDown);
+        app.picker_activate();
+        wince::assert_eq!(app.picking(), false);
+        wince::assert_eq!(app.take_pending_publish(), None);
+    }
+
+    #[test]
     fn the_post_refresh_prompt_marks_the_latest_when_the_reviewer_was_on_the_latest() {
         // Refreshing while on the latest diff opens the list marking and opening
         // on the latest, where the reviewer was.
@@ -4969,13 +5298,12 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_display!(
             dump_picker(&mut app),
-            "<#ebcb8b|#2b303b|->  Base moved abc123 -> def456; the      \n",
-            "<#ebcb8b|#2b303b|->  review now starts elsewhere.          \n",
-            "<-|#2b303b|->                                        \n",
-            "<#c0c5ce|#65737e|->> the latest diff (v1) (showing now)    \n",
-            "<#c0c5ce|#2b303b|->  changes since v0                      \n",
-            "<-|#2b303b|->                                        \n",
-            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel\n",
+            "<#ebcb8b|#2b303b|->  Base moved abc123 -> def456; the review now starts elsewhere.\n",
+            "<-|#2b303b|->                                                               \n",
+            "<#c0c5ce|#65737e|->> the latest diff (v1) (showing now)                           \n",
+            "<#c0c5ce|#2b303b|->  changes since v0                                             \n",
+            "<-|#2b303b|->                                                               \n",
+            "<#767b84|#2b303b|->  up/down move  enter select  esc cancel                       \n",
         );
     }
 

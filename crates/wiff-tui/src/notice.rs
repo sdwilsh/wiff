@@ -26,8 +26,12 @@ pub struct NoticeColors {
     pub hint: Rgb,
 }
 
-/// The hint shown along the bottom of the notice.
+/// The hint shown along the bottom of a notice the reviewer dismisses.
 const HINT: &str = "any key to close";
+
+/// The hint shown along the bottom of a notice reporting work in progress, which
+/// clears itself when the work finishes rather than waiting on a key.
+const WORKING_HINT: &str = "please wait";
 
 /// The widest a notice lays its text out to before wrapping, unless the space
 /// it is given is narrower.
@@ -49,12 +53,37 @@ pub struct Notice {
     top: usize,
     /// The number of body lines the window shows, set by the host each frame.
     height: usize,
+    /// The hint along the bottom border: the dismissal prompt for a notice the
+    /// reviewer closes, or a wait prompt for one reporting work in progress.
+    hint: &'static str,
     colors: NoticeColors,
 }
 
 impl Notice {
-    /// Build a notice headed `title` showing `body`, drawn with `colors`.
+    /// Build a notice headed `title` showing `body`, drawn with `colors`, that
+    /// the reviewer dismisses with any key.
     pub fn new(title: impl Into<String>, body: impl Into<String>, colors: NoticeColors) -> Self {
+        Self::with_hint(title, body, HINT, colors)
+    }
+
+    /// Build a notice reporting work in progress: headed `title` showing `body`,
+    /// drawn with `colors`, hinting to wait rather than to dismiss.
+    pub fn working(
+        title: impl Into<String>,
+        body: impl Into<String>,
+        colors: NoticeColors,
+    ) -> Self {
+        Self::with_hint(title, body, WORKING_HINT, colors)
+    }
+
+    /// Build a notice headed `title` showing `body`, drawn with `colors` and
+    /// showing `hint` along its bottom border.
+    fn with_hint(
+        title: impl Into<String>,
+        body: impl Into<String>,
+        hint: &'static str,
+        colors: NoticeColors,
+    ) -> Self {
         Self {
             title: title.into(),
             body: body.into(),
@@ -62,6 +91,7 @@ impl Notice {
             wrapped_width: None,
             top: 0,
             height: 0,
+            hint,
             colors,
         }
     }
@@ -78,7 +108,7 @@ impl Notice {
         longest
             .min(MAX_WIDTH)
             .max(self.title.chars().count())
-            .max(HINT.chars().count())
+            .max(self.hint.chars().count())
     }
 
     /// Wrap the body to `width`, rebuilding only when the width changed, and
@@ -172,7 +202,7 @@ impl Notice {
             Style::default().bg(background),
         )));
         lines.push(Line::from(Span::styled(
-            format!("{:<width$}", clip(HINT, width)),
+            format!("{:<width$}", clip(self.hint, width)),
             Style::default()
                 .fg(color(self.colors.hint))
                 .bg(background)

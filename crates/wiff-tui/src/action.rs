@@ -235,6 +235,9 @@ declare_actions! {
         // Recaptures the diff and rebases comments onto the new version.
         /// Capture a new diff version
         Refresh,
+        // Reconciles the pull request's forge state, then sends the review back.
+        /// Publish the review to the forge
+        Publish,
         /// Compare against an earlier version
         CompareVersions,
         /// Open the file in your editor
@@ -346,6 +349,7 @@ mod tests {
             "Session\n",
             "  save = Commit pending comments\n",
             "  refresh = Capture a new diff version\n",
+            "  publish = Publish the review to the forge\n",
             "  compare_versions = Compare against an earlier version\n",
             "  open_in_editor = Open the file in your editor\n",
             "  suspend = Suspend to the shell\n",

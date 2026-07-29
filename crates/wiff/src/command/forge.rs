@@ -107,7 +107,7 @@ impl PullArgs {
         let session =
             mirror_pull_request(forge.as_ref(), &url, &cwd, &base, author, self.new_session)
                 .await?;
-        tui::open(&session, &config, false)
+        tui::open(&session, &config, cli, false)
     }
 }
 
@@ -241,11 +241,27 @@ async fn push_bound_review(
     url: &ForgeUrl,
     author: Author,
 ) -> anyhow::Result<(ResyncOutcome, PushOutcome)> {
-    let fetched = forge.fetch(url).await?;
-    let source = prepare_source(repo, root, &fetched, log.ulid()).await?;
-    let resync = resync_pull_request(log, &source, &fetched, author.clone()).await?;
+    let resync = reconcile_before_push(forge, repo, log, root, url, author.clone()).await?;
     let pushed = push(forge, log, url, &author).await?;
     Ok((resync, pushed))
+}
+
+/// Fetch the bound pull request and reconcile its state as of that fetch into
+/// the session behind `log`, rebasing the local review onto it and attributing
+/// the re-anchors to `author`. This is the pull half of a publish, split out so
+/// the TUI can let the reviewer read what the reconcile pulled in before the
+/// push half sends the review back.
+pub(crate) async fn reconcile_before_push(
+    forge: &dyn Forge,
+    repo: &dyn ScmRepo,
+    log: &mut SessionLog,
+    root: &Path,
+    url: &ForgeUrl,
+    author: Author,
+) -> anyhow::Result<ResyncOutcome> {
+    let fetched = forge.fetch(url).await?;
+    let source = prepare_source(repo, root, &fetched, log.ulid()).await?;
+    resync_pull_request(log, &source, &fetched, author).await
 }
 
 /// Print what pushing to `url` did: first what its pull-first step reconciled

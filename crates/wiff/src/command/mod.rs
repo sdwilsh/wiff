@@ -28,6 +28,7 @@ use wiff_core::{BaseRuleset, CapturedDiff, DiffSource, GitSource, ProjectIdentit
 use self::comment::CommentArgs;
 use self::description::DescriptionArgs;
 use self::forge::ForgeArgs;
+pub(crate) use self::forge::{connect_forge, reconcile_before_push};
 use self::new::NewArgs;
 use self::refresh::RefreshArgs;
 use self::render::RenderArgs;

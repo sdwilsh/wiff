@@ -4,23 +4,27 @@
 //! loads the latest captured diff, renders it, and runs the terminal loop, then
 //! keeps or removes the session according to how the reviewer chose to leave.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use wiff_config::{Config, OnExit};
 use wiff_core::record::{
-    Author, AuthorKind, CommentEventKind, RecordBody, SessionHeader, VersionNumber,
+    Author, AuthorKind, CommentEventKind, ForgeUrl, RecordBody, SessionHeader, SourceKind,
+    VersionNumber,
 };
-use wiff_core::session::{SessionWatcher, read_records, remove_session};
+use wiff_core::session::{SessionWatcher, read_records, remove_session, session_binding};
+use wiff_core::source::ScmRepo;
 use wiff_core::{
     AnchorFailures, CapturedDiff, LockWait, RefreshOutcome, ReviewState, SessionLog, SidebandHash,
     capture_draft_anchors, compare_versions, refresh_session,
 };
+use wiff_forge::{Forge, PushOutcome, ResyncOutcome, TokenOverride, push};
 use wiff_tui::{
-    App, CommentSync, CompareRequest, DiffView, Exit, ExitDefault, KeyHints, Review, Theme, run,
+    App, Callbacks, CommentSync, CompareRequest, DiffView, Exit, ExitDefault, KeyHints,
+    PublishStep, Review, Theme, run,
 };
 
-use crate::command::recapture_diff;
+use crate::command::{connect_forge, recapture_diff, reconcile_before_push, scm_repo};
 
 /// Parse unified diff `text` and expand its tabs to spaces at `tab_width` column
 /// stops. Raw tabs are never rendered, since they would break the review's
@@ -36,7 +40,12 @@ fn parse_diff(text: &str, tab_width: usize) -> Result<wiff_diff::Diff, wiff_diff
 /// `offer_refresh` is set and recapturing the source would produce a diff
 /// different from the latest captured version, a modal offers to refresh once
 /// the existing state is on screen.
-pub fn open(session_path: &Path, config: &Config, offer_refresh: bool) -> anyhow::Result<()> {
+pub fn open(
+    session_path: &Path,
+    config: &Config,
+    cli: &TokenOverride,
+    offer_refresh: bool,
+) -> anyhow::Result<()> {
     // The review takes the terminal from here on, so keep log output off its
     // alternate screen.
     crate::logging::silence_for_tui();
@@ -88,6 +97,16 @@ pub fn open(session_path: &Path, config: &Config, offer_refresh: bool) -> anyhow
         .with_diff_mode(config.diff_mode, config.side_by_side_min_width)
         .with_tab_width(config.tab_width)
         .with_nudge_to_detach(config.nudge_to_detach);
+    // A forge-bound review refreshes by fetching the pull request over the
+    // network, which blocks the loop, so give the app a modal to paint while it
+    // runs. A local review recaptures a subprocess and shows no modal.
+    if let Some(url) = &state.session.forge {
+        app = app.with_refresh_modal(
+            "Fetching",
+            format!("Fetching the latest from {}", url.as_str()),
+        );
+    }
+    let forge_bound = state.session.forge.is_some();
     // A resumed session whose source has moved on opens over the existing state
     // with a prompt to recapture it, rather than silently showing a stale diff.
     if offer_refresh && source_changed(&state) {
@@ -101,7 +120,15 @@ pub fn open(session_path: &Path, config: &Config, offer_refresh: bool) -> anyhow
     // line, so it is raised as a modal notice that wraps; save and compare report
     // in the status line.
     let refresh = |app: &mut App| {
-        if let Err(err) = refresh_in_place(session_path, &author, config.tab_width, app) {
+        // A forge-bound review refreshes by fetching its pull request and
+        // reconciling the forge state in; a local review recaptures its source.
+        let result = if forge_bound {
+            let connect = |url: &ForgeUrl| connect_forge(config, &url.host(), cli);
+            refresh_forge_in_place(session_path, connect, &author, config.tab_width, app)
+        } else {
+            refresh_in_place(session_path, &author, config.tab_width, app)
+        };
+        if let Err(err) = result {
             app.show_notice("Refresh failed", err.to_string());
         }
     };
@@ -113,6 +140,41 @@ pub fn open(session_path: &Path, config: &Config, offer_refresh: bool) -> anyhow
     let compare = |app: &mut App, request: CompareRequest| {
         if let Err(err) = compare_in_place(session_path, config.tab_width, app, request) {
             app.set_message(format!("compare failed: {err}"));
+        }
+    };
+    // Publishing runs in confirmed phases the reviewer steps through: the key
+    // press opens a prompt, accepting it reconciles the forge and (unless that
+    // pulled in changes to read first) sends the review back. A failure at any
+    // phase is raised as a modal notice, leaving the review standing.
+    let publish = |app: &mut App, step: PublishStep| match step {
+        PublishStep::Requested => match publish_target(session_path) {
+            Ok(Some(url)) => app.offer_publish(url.as_str()),
+            Ok(None) => app.show_notice(
+                "Not a forge review",
+                "This review is not bound to a pull request, so there is nothing to publish. \
+                 Pull one with `wiff forge pull`.",
+            ),
+            Err(err) => app.show_notice("Publish failed", err.to_string()),
+        },
+        PublishStep::Reconcile => {
+            let connect = |url: &ForgeUrl| connect_forge(config, &url.host(), cli);
+            match publish_reconcile_in_place(session_path, connect, &author, config.tab_width, app)
+            {
+                Ok(Some(note)) => app.offer_publish_review(note),
+                Ok(None) => {
+                    let connect = |url: &ForgeUrl| connect_forge(config, &url.host(), cli);
+                    if let Err(err) = publish_push_in_place(session_path, connect, &author, app) {
+                        app.show_notice("Publish failed", err.to_string());
+                    }
+                }
+                Err(err) => app.show_notice("Publish failed", err.to_string()),
+            }
+        }
+        PublishStep::Publish => {
+            let connect = |url: &ForgeUrl| connect_forge(config, &url.host(), cli);
+            if let Err(err) = publish_push_in_place(session_path, connect, &author, app) {
+                app.show_notice("Publish failed", err.to_string());
+            }
         }
     };
     // Between key presses, pick up comments another actor (an agent, or a second
@@ -137,7 +199,17 @@ pub fn open(session_path: &Path, config: &Config, offer_refresh: bool) -> anyhow
         true
     };
 
-    let (exit, drafts) = run(app, keymap, refresh, save, sync, compare)?;
+    let (exit, drafts) = run(
+        app,
+        keymap,
+        Callbacks {
+            refresh,
+            save,
+            sync,
+            compare,
+            publish,
+        },
+    )?;
     resolve_exit(exit, session_path, drafts)
 }
 
@@ -291,6 +363,300 @@ fn save_in_place(session_path: &Path, app: &mut App) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The operation resolving a bound forge review, distinguishing the guidance a
+/// review pulled outside its repository (which cannot yet reconcile from the
+/// TUI) is given: which `wiff forge` subcommand to run from the repository
+/// instead.
+enum ForgeReviewAction {
+    Refresh,
+    Publish,
+}
+
+impl ForgeReviewAction {
+    /// The error explaining that a review pulled outside its repository cannot
+    /// reconcile from the TUI, naming the `wiff forge` subcommand to run from
+    /// the repository instead.
+    fn outside_repository_error(&self) -> &'static str {
+        match self {
+            Self::Refresh => {
+                "refreshing a forge review pulled outside its repository is not supported from the \
+                 review yet; use `wiff forge pull`"
+            }
+            Self::Publish => {
+                "publishing a forge review pulled outside its repository is not supported from the \
+                 review yet; use `wiff forge push`"
+            }
+        }
+    }
+}
+
+/// A bound forge review resolved from its session on disk: the pull request it
+/// is bound to, its repository, and a forge adapter for the round-trip.
+struct ForgeReview {
+    url: ForgeUrl,
+    root: PathBuf,
+    repo: Box<dyn ScmRepo>,
+    forge: Box<dyn Forge>,
+}
+
+/// Resolve the bound forge review at `session_path`: its pull request, its
+/// repository, and a forge adapter built by `connect`, which resolves the token
+/// only now that a round-trip is underway. Fails when the review is unbound or
+/// was pulled outside its repository, wording the latter for `action`.
+fn resolve_forge_review(
+    session_path: &Path,
+    connect: impl Fn(&ForgeUrl) -> anyhow::Result<Box<dyn Forge>>,
+    action: ForgeReviewAction,
+) -> anyhow::Result<ForgeReview> {
+    let state = ReviewState::load(session_path)?;
+    let url = state
+        .session
+        .forge
+        .clone()
+        .context("this review is not bound to a pull request")?;
+    let root = state
+        .session
+        .repo_root
+        .clone()
+        .context(action.outside_repository_error())?;
+    let scm = match &state.session.source {
+        SourceKind::Scm(scm_source) => Some(scm_source.scm),
+        _ => None,
+    };
+    let root = PathBuf::from(root);
+    let repo = scm_repo(scm, root.clone())?;
+    let forge = connect(&url)?;
+    Ok(ForgeReview {
+        url,
+        root,
+        repo,
+        forge,
+    })
+}
+
+/// Fetch the bound pull request and reconcile its forge state into the session,
+/// reloading `app` over the result and reporting what was pulled in the status
+/// line. The forge adapter is built by `connect` from the session's binding,
+/// resolving its token only now that a fetch is underway. This is the pull half
+/// of a publish on its own, letting the reviewer pull upstream changes without
+/// sending anything back.
+fn refresh_forge_in_place(
+    session_path: &Path,
+    connect: impl Fn(&ForgeUrl) -> anyhow::Result<Box<dyn Forge>>,
+    author: &Author,
+    tab_width: usize,
+    app: &mut App,
+) -> anyhow::Result<()> {
+    let ForgeReview {
+        url,
+        root,
+        repo,
+        forge,
+    } = resolve_forge_review(session_path, connect, ForgeReviewAction::Refresh)?;
+    let mut log = SessionLog::open(session_path)?;
+    let outcome = block_on(reconcile_before_push(
+        forge.as_ref(),
+        repo.as_ref(),
+        &mut log,
+        &root,
+        &url,
+        author.clone(),
+    ))?;
+    reload_after_reconcile(session_path, tab_width, &log, &outcome, app)?;
+    match reconcile_note(&outcome) {
+        Some(note) => app.set_message(note),
+        None => app.set_message("already up to date with the forge".to_string()),
+    }
+    Ok(())
+}
+
+/// The pull request the session at `session_path` is bound to, or `None` when it
+/// is not a forge review.
+fn publish_target(session_path: &Path) -> anyhow::Result<Option<ForgeUrl>> {
+    Ok(session_binding(session_path)?)
+}
+
+/// Commit the reviewer's pending drafts, then fetch the bound pull request and
+/// reconcile its forge state into the session, reloading `app` over the result.
+/// The forge adapter is built by `connect` from the session's binding, resolving
+/// its token only now that a publish is underway. Returns a note describing what
+/// the reconcile pulled in when it changed anything, for a prompt to read before
+/// publishing, or `None` when the forge held nothing new.
+fn publish_reconcile_in_place(
+    session_path: &Path,
+    connect: impl Fn(&ForgeUrl) -> anyhow::Result<Box<dyn Forge>>,
+    author: &Author,
+    tab_width: usize,
+    app: &mut App,
+) -> anyhow::Result<Option<String>> {
+    // Resolve everything the publish needs -- the binding, the repository, the
+    // forge and its token -- before committing any drafts, so an unpublishable
+    // review (unbound, pulled outside its repository, or missing a token) fails
+    // cleanly with the drafts still buffered rather than saving them and then
+    // reporting a failure that contradicts the prompt the reviewer confirmed.
+    let ForgeReview {
+        url,
+        root,
+        repo,
+        forge,
+    } = resolve_forge_review(session_path, connect, ForgeReviewAction::Publish)?;
+
+    // The confirmation prompt covered saving along with publishing, so commit
+    // the drafts now that the publish is sure to proceed; the push half sends
+    // them. Reload them as committed immediately, so if the reconcile below
+    // then fails the reviewer is left looking at their saved work rather than
+    // an apparently empty buffer.
+    let drafts = app.draft_records();
+    if !drafts.is_empty() {
+        commit_drafts(session_path, drafts)?;
+        app.clear_drafts();
+        reload_committed(session_path, app)?;
+    }
+
+    let mut log = SessionLog::open(session_path)?;
+    let outcome = block_on(reconcile_before_push(
+        forge.as_ref(),
+        repo.as_ref(),
+        &mut log,
+        &root,
+        &url,
+        author.clone(),
+    ))?;
+    reload_after_reconcile(session_path, tab_width, &log, &outcome, app)?;
+    Ok(reconcile_note(&outcome))
+}
+
+/// Reload `app` over the session's reconciled state: the full recaptured diff
+/// when the reconcile captured a new version, or just its committed comments
+/// when only forge metadata changed.
+fn reload_after_reconcile(
+    session_path: &Path,
+    tab_width: usize,
+    log: &SessionLog,
+    outcome: &ResyncOutcome,
+    app: &mut App,
+) -> anyhow::Result<()> {
+    if outcome.refresh.is_none() {
+        reload_committed(session_path, app)?;
+        return Ok(());
+    }
+    let state = ReviewState::load(session_path)?;
+    let latest = state
+        .latest_version()
+        .context("the reconciled session has no captured diff")?
+        .number;
+    let latest_diff = parse_diff(&log.read_diff(latest)?, tab_width)?;
+    let comments: Vec<_> = state
+        .comments
+        .iter()
+        .filter(|comment| !comment.deleted)
+        .cloned()
+        .collect();
+    app.refresh(latest_diff, comments, latest.get(), |authored_version| {
+        parse_diff(&log.read_diff(VersionNumber(authored_version))?, tab_width).map_err(Into::into)
+    })?;
+    Ok(())
+}
+
+/// A note listing what a reconcile pulled in from the forge, or `None` when it
+/// changed nothing.
+fn reconcile_note(outcome: &ResyncOutcome) -> Option<String> {
+    let mut parts = Vec::new();
+    if outcome.refresh.is_some() {
+        parts.push("a new diff version".to_string());
+    }
+    if outcome.comments > 0 {
+        parts.push(format!(
+            "{} updated {}",
+            outcome.comments,
+            plural(outcome.comments, "comment"),
+        ));
+    }
+    if outcome.reviews > 0 {
+        parts.push(format!(
+            "{} updated {}",
+            outcome.reviews,
+            plural(outcome.reviews, "review"),
+        ));
+    }
+    if outcome.description_updated {
+        parts.push("a description update".to_string());
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(format!("Reconciling pulled in {}.", parts.join(", ")))
+}
+
+/// Send the reconciled review to its bound pull request, reporting what was
+/// published in the status line and reloading `app` to keep step with the log.
+fn publish_push_in_place(
+    session_path: &Path,
+    connect: impl Fn(&ForgeUrl) -> anyhow::Result<Box<dyn Forge>>,
+    author: &Author,
+    app: &mut App,
+) -> anyhow::Result<()> {
+    let url =
+        session_binding(session_path)?.context("this review is not bound to a pull request")?;
+    let forge = connect(&url)?;
+    let mut log = SessionLog::open(session_path)?;
+    let outcome = block_on(push(forge.as_ref(), &mut log, &url, author))?;
+    // A push records sync markers rather than visible comments, but reload so any
+    // synced state the review shows keeps step with the log.
+    let _ = reload_committed(session_path, app);
+    app.set_message(push_report(&outcome));
+    Ok(())
+}
+
+/// A status-line tally of what a push published, or a note that the review was
+/// already up to date, with a count of any changes the forge declined.
+fn push_report(outcome: &PushOutcome) -> String {
+    let mut parts = Vec::new();
+    if !outcome.created.is_empty() {
+        parts.push(format!("{} created", outcome.created.len()));
+    }
+    if !outcome.edited.is_empty() {
+        parts.push(format!("{} edited", outcome.edited.len()));
+    }
+    if !outcome.resolved.is_empty() {
+        parts.push(format!("{} resolved", outcome.resolved.len()));
+    }
+    if outcome.verdict_submitted {
+        parts.push("verdict submitted".to_string());
+    }
+    if outcome.description_published {
+        parts.push("description updated".to_string());
+    }
+    let mut report = if parts.is_empty() {
+        "published: already up to date".to_string()
+    } else {
+        format!("published: {}", parts.join(", "))
+    };
+    let declined = outcome.declined.len();
+    if declined > 0 {
+        report.push_str(&format!(
+            "; {declined} {} the forge does not support",
+            plural(declined, "change"),
+        ));
+    }
+    report
+}
+
+/// Returns `word` pluralized by appending `s` unless `n` is one.
+fn plural(n: usize, word: &str) -> String {
+    if n == 1 {
+        word.to_string()
+    } else {
+        format!("{word}s")
+    }
+}
+
+/// Block on `fut` from the review loop's tokio worker without standing up a
+/// nested runtime.
+fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
+}
+
 /// Reload the review's committed comments from the session log, dropping the
 /// withdrawn ones, and report how they differ from what the app was showing.
 fn reload_committed(session_path: &Path, app: &mut App) -> anyhow::Result<CommentSync> {
@@ -331,9 +697,7 @@ fn source_changed(state: &ReviewState) -> bool {
     let Some(latest) = state.latest_version() else {
         return false;
     };
-    let recaptured = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(recapture_diff(&state.session))
-    });
+    let recaptured = block_on(recapture_diff(&state.session));
     matches!(recaptured, Ok(Some(captured)) if SidebandHash::of(captured.text.as_bytes()) != latest.diff_hash)
 }
 
@@ -343,9 +707,7 @@ fn source_changed(state: &ReviewState) -> bool {
 fn recapture(header: &SessionHeader) -> anyhow::Result<CapturedDiff> {
     // The event loop runs on a tokio worker, so block on the async recapture
     // without standing up a nested runtime.
-    let captured = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(recapture_diff(header))
-    })?;
+    let captured = block_on(recapture_diff(header))?;
     captured.context(
         "this session's diff came from stdin; refresh it with `wiff refresh` and a new piped diff",
     )
@@ -459,13 +821,15 @@ mod tests {
         ScmType, create_session,
     };
     use wiff_diff::{LineNo, Side};
+    use wiff_forge::{DeclinedWrite, PushOutcome, ResyncOutcome};
     use wiff_tui::{
         Action, App, CommentSync, CompareRequest, DiffView, Key, KeyPress, Review, Theme,
     };
 
     use super::{
-        commit_drafts, compare_in_place, recapture, refresh_in_place, refresh_report,
-        reload_committed, save_in_place, source_changed, sync_report,
+        commit_drafts, compare_in_place, push_report, recapture, reconcile_note, refresh_in_place,
+        refresh_report, reload_after_reconcile, reload_committed, save_in_place, source_changed,
+        sync_report,
     };
     use crate::command::{DiffSelection, capture_scm_diff};
     use crate::testutil::git;
@@ -704,6 +1068,194 @@ mod tests {
             "base moved oldbase -> newbase; captured v3; rebased 1 comment: 1 exact, 0 shifted, \
              0 moved, 0 outdated"
                 .to_string()
+        );
+    }
+
+    /// A refresh outcome that captured version `v`, standing in for a reconcile
+    /// that pulled a new diff version; the rebase tallies are immaterial here.
+    fn captured(v: u32) -> RefreshOutcome {
+        RefreshOutcome {
+            version: VersionNumber(v),
+            exact: 0,
+            approximate: 0,
+            relocated: 0,
+            outdated: 0,
+            base_shift: None,
+        }
+    }
+
+    #[test]
+    fn a_reconcile_that_pulled_nothing_yields_no_note() {
+        // Nothing arrived from the forge, so there is nothing to read before
+        // publishing and the reconcile prompts nothing.
+        let note = reconcile_note(&ResyncOutcome {
+            refresh: None,
+            comments: 0,
+            reviews: 0,
+            description_updated: false,
+        });
+        wince::assert_eq!(note, None);
+    }
+
+    #[test]
+    fn a_reconcile_note_lists_every_kind_of_change_it_pulled() {
+        // A reconcile that captured a new version and imported comments,
+        // reviews, and a description update names each, pluralizing on count.
+        let note = reconcile_note(&ResyncOutcome {
+            refresh: Some(captured(2)),
+            comments: 2,
+            reviews: 1,
+            description_updated: true,
+        });
+        wince::assert_eq!(
+            note,
+            Some(
+                "Reconciling pulled in a new diff version, 2 updated comments, 1 updated review, \
+                 a description update."
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn a_push_that_sent_nothing_reports_it_was_up_to_date() {
+        // With no local changes to send, the push reports the review was already
+        // in step with the forge.
+        let report = push_report(&PushOutcome::default());
+        wince::assert_eq!(report, "published: already up to date".to_string());
+    }
+
+    #[test]
+    fn a_push_report_tallies_what_was_sent_and_what_the_forge_declined() {
+        // A push that created, edited, and resolved comments, submitted a
+        // verdict, and updated the description tallies each, and names the count
+        // of changes the forge could not apply.
+        let report = push_report(&PushOutcome {
+            created: vec![Ulid(1), Ulid(2)],
+            edited: vec![Ulid(3)],
+            resolved: vec![Ulid(4)],
+            verdict_submitted: true,
+            description_published: true,
+            declined: vec![DeclinedWrite::Description],
+        });
+        wince::assert_eq!(
+            report,
+            "published: 2 created, 1 edited, 1 resolved, verdict submitted, description updated; \
+             1 change the forge does not support"
+                .to_string()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reloading_after_a_reconcile_shows_the_recaptured_version_with_the_comment_rebased() {
+        // A reconcile that pulled a new diff version reloads the review over the
+        // freshly captured diff read from the log, rebasing the comment onto its
+        // new line, exactly as a forge publish would after fetching upstream
+        // commits. The session is advanced to v1 out of band to stand in for the
+        // reconcile's recapture, then reload_after_reconcile is driven directly.
+        let repo = tempfile::tempdir().expect("repo tempdir");
+        let data = tempfile::tempdir().expect("data tempdir");
+        let file = repo.path().join("f.txt");
+
+        git(repo.path(), &["init", "-q"]);
+        std::fs::write(&file, "alpha\nbeta\ngamma\n").expect("write base");
+        git(repo.path(), &["add", "f.txt"]);
+        git(repo.path(), &["commit", "-q", "-m", "base"]);
+        std::fs::write(&file, "alpha\nbeta\ngamma\ndelta\n").expect("write v0");
+
+        let identity = ProjectIdentity {
+            canonical: "demo".to_string(),
+            repo_root: Some(repo.path().to_path_buf()),
+            scm: Some(ScmType::Git),
+        };
+        let captured = capture_scm_diff(
+            Some(ScmType::Git),
+            repo.path().to_path_buf(),
+            DiffSelection::WorkingCopy,
+            None,
+        )
+        .await
+        .expect("capture v0");
+        let mut log = create_session(data.path(), &identity, repo.path(), &captured, None)
+            .expect("create session");
+        let session_path = log.path().to_path_buf();
+        DraftComment {
+            author: wez(),
+            target: CommentTarget::Lines {
+                file: "f.txt".to_string(),
+                side: Side::After,
+                start_line: LineNo::new(4).unwrap(),
+                end_line: LineNo::new(4).unwrap(),
+            },
+            body: "why delta?".to_string(),
+            disposition: None,
+        }
+        .append(&mut log, LockWait::Block)
+        .expect("attach comment");
+
+        // The review opens over v0, the version the reviewer was reading before
+        // the reconcile.
+        let theme = Theme::dark();
+        let v0 = ReviewState::load(&session_path).expect("load state");
+        let v0_number = v0.latest_version().expect("a captured version").number;
+        let v0_diff = wiff_diff::parse(&log.read_diff(v0_number).unwrap()).expect("parse v0");
+        let review = Review::new(
+            DiffView::new(theme.clone()).expect("renderer"),
+            v0_diff,
+            wez(),
+            v0_number.get(),
+            v0.comments.clone(),
+            None,
+        );
+        let mut app = App::reviewing(review, 40, &theme);
+
+        // A line is added at the top of the working tree and recaptured as v1,
+        // sliding delta down; this stands in for the commits a reconcile fetches.
+        std::fs::write(&file, "zero\nalpha\nbeta\ngamma\ndelta\n").expect("write v1");
+        let recaptured = capture_scm_diff(
+            Some(ScmType::Git),
+            repo.path().to_path_buf(),
+            DiffSelection::WorkingCopy,
+            None,
+        )
+        .await
+        .expect("capture v1");
+        let refresh = wiff_core::refresh_session(&mut log, &recaptured, wez(), LockWait::Block)
+            .expect("advance to v1")
+            .expect("the recapture changed the diff");
+
+        reload_after_reconcile(
+            &session_path,
+            wiff_diff::DEFAULT_TAB_WIDTH,
+            &log,
+            &ResyncOutcome {
+                refresh: Some(refresh),
+                comments: 0,
+                reviews: 0,
+                description_updated: false,
+            },
+            &mut app,
+        )
+        .expect("reload after reconcile");
+
+        // The reloaded review shows the full recaptured v1 diff, with the comment
+        // rebased above the added delta on its new line.
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            screen(&app, 80),
+            "Review [press c here to draft the review comment] [press e to write the description]\n",
+            "modified  f.txt\n",
+            "@@ -1,3 +1,5 @@\n",
+            "        1 + zero\n",
+            "   1    2   alpha\n",
+            "   2    3   beta\n",
+            "   3    4   gamma\n",
+            "┌ #1 wez (human)  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse ┐\n",
+            "│why delta?                                                                    │\n",
+            "└──────────┬───────────────────────────────────────────────────────────────────┘\n",
+            "        5 +└delta\n",
+            "---\n",
+            "                                                                      1 open  0%\n",
         );
     }
 
