@@ -164,6 +164,8 @@ declare_actions! {
         ToggleComment,
         /// Toggle line wrapping
         ToggleWrap,
+        /// Show or hide line numbers
+        ToggleLineNumbers,
         // Leaves only the code, so rounds of annotation do not crowd out the diff.
         /// Show or hide comments
         HideComments,
@@ -313,6 +315,7 @@ mod tests {
             "  toggle_fold = Expand or collapse the fold\n",
             "  toggle_comment = Expand or collapse the comment\n",
             "  toggle_wrap = Toggle line wrapping\n",
+            "  toggle_line_numbers = Show or hide line numbers\n",
             "  hide_comments = Show or hide comments\n",
             "  diff_mode_auto = Diff layout: auto\n",
             "  diff_mode_unified = Diff layout: unified\n",

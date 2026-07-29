@@ -431,6 +431,9 @@ which cannot be recaptured once the TUI owns the terminal.
   column-wrapper that wraps comment bodies: a wrapped line keeps its gutter on
   the first row and indents each continuation under the code, reflowing when the
   terminal is resized.
+- The gutter shows line numbers by default. The `toggle_line_numbers` action,
+  and the `show_line_numbers` config default it starts from, hide them, narrowing
+  the gutter to the change marker and widening the content column.
 
 ### Search
 
@@ -622,6 +625,9 @@ after the rest of v0.
 - `wrap_lines` (default on) soft-wraps diff content to the viewport width rather
   than clipping it at the edge; the `toggle_wrap` action flips it within a
   session.
+- `show_line_numbers` (default on) shows line numbers in the gutter; the
+  `toggle_line_numbers` action hides them within a session to widen the content
+  column.
 - `diff_mode` (`unified`, `side_by_side`, `only_after`, `rendered`, or `auto`;
   default `auto`) selects the starting diff layout; `side_by_side_min_width`
   (default 130) is the terminal width at or above which `auto` chooses

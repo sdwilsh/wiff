@@ -67,7 +67,7 @@ Bindings follow `less`, with review actions layered on top:
 - `t` file picker, `C` comment picker, `T` theme picker.
 - `/` and `?` search forward/backward, `n` / `N` to repeat.
 - `enter` toggles a fold, `tab` toggles a comment, `H` hides all comments,
-  `w` toggles line wrapping.
+  `w` toggles line wrapping, `L` toggles the line-number gutter.
 
 ### Views
 

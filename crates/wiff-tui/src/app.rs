@@ -37,9 +37,9 @@ use crate::keymap::{Keymap, Resolution};
 use crate::notice::{Notice, NoticeColors};
 use crate::picker::{Picker, PickerColors, PickerRow, RowSpan};
 use crate::render::{
-    BoxId, COLUMN_DIVIDER, COLUMN_GUTTER_WIDTH, DEFAULT_SIDE_BY_SIDE_MIN_WIDTH, DiffMode, Document,
-    LayoutMode, RAIL_COLUMN, RAIL_TEE, RailCell, RowKind, ViewLayout, color, column_bounds,
-    divider_column, rail_column,
+    BoxId, COLUMN_DIVIDER, DEFAULT_SIDE_BY_SIDE_MIN_WIDTH, DiffMode, Document, LayoutMode,
+    RAIL_TEE, RailCell, RowKind, ViewLayout, color, column_bounds, column_gutter_width,
+    divider_column, rail_column, rail_column_unified,
 };
 use crate::review::{CommentSync, Review};
 use crate::search::{Direction, Matcher, Search, SearchInput};
@@ -503,6 +503,9 @@ pub struct App {
     /// Whether diff content lines wrap to the viewport width rather than being
     /// clipped at the edge, toggled by [`Action::ToggleWrap`].
     wrap: bool,
+    /// Whether the gutter shows line numbers, toggled by
+    /// [`Action::ToggleLineNumbers`].
+    show_line_numbers: bool,
     /// The reviewer's chosen diff layout, resolved against the width each render.
     diff_mode: DiffMode,
     /// The minimum viewport width at which `DiffMode::Auto` selects side-by-side.
@@ -590,6 +593,7 @@ impl App {
             height,
             width: 0,
             wrap: false,
+            show_line_numbers: true,
             diff_mode: DiffMode::default(),
             side_by_side_min_width: DEFAULT_SIDE_BY_SIDE_MIN_WIDTH,
             tab_width: wiff_diff::DEFAULT_TAB_WIDTH,
@@ -654,6 +658,14 @@ impl App {
     /// only records the choice; the first draw reflows to it.
     pub fn with_wrap_content(mut self, wrap: bool) -> Self {
         self.wrap = wrap;
+        self
+    }
+
+    /// Start with the line-number gutter shown or hidden, from the reviewer's
+    /// configured default. A width is not known yet, so this only records the
+    /// choice; the first draw reflows to it.
+    pub fn with_show_line_numbers(mut self, show: bool) -> Self {
+        self.show_line_numbers = show;
         self
     }
 
@@ -792,6 +804,7 @@ impl App {
             mode: self
                 .diff_mode
                 .resolve(self.width, self.side_by_side_min_width),
+            show_line_numbers: self.show_line_numbers,
         }
     }
 
@@ -835,6 +848,17 @@ impl App {
             return Update::Passed(Action::ToggleWrap);
         }
         self.wrap = !self.wrap;
+        self.reflow();
+        Update::Handled
+    }
+
+    /// Toggle whether the gutter shows line numbers, reflowing the document to
+    /// the new choice. Passes through when no review is being edited.
+    fn toggle_line_numbers(&mut self) -> Update {
+        if self.review.is_none() {
+            return Update::Passed(Action::ToggleLineNumbers);
+        }
+        self.show_line_numbers = !self.show_line_numbers;
         self.reflow();
         Update::Handled
     }
@@ -901,6 +925,7 @@ impl App {
             Action::ToggleFold => self.toggle_fold(),
             Action::ToggleComment => self.toggle_comment(),
             Action::ToggleWrap => return self.toggle_wrap(),
+            Action::ToggleLineNumbers => return self.toggle_line_numbers(),
             Action::DiffModeAuto => return self.set_diff_mode(DiffMode::Auto),
             Action::DiffModeSideBySide => return self.set_diff_mode(DiffMode::SideBySide),
             Action::DiffModeUnified => return self.set_diff_mode(DiffMode::Unified),
@@ -2915,10 +2940,15 @@ impl App {
                         match self.document.box_columns[row] {
                             Some(side) => {
                                 let (_, w) = column_bounds(width, side);
-                                let tee = anchors.then_some(COLUMN_GUTTER_WIDTH - 1);
+                                let show = self.document.show_line_numbers;
+                                let tee = anchors.then_some(column_gutter_width(show) - 1);
                                 self.place_in_column(box_bottom(fill, w, tee), width, side)
                             }
-                            None => box_bottom(fill, width, anchors.then_some(RAIL_COLUMN)),
+                            None => {
+                                let show = self.document.show_line_numbers;
+                                let rail = anchors.then(|| rail_column_unified(show));
+                                box_bottom(fill, width, rail)
+                            }
                         }
                     }
                     RowKind::Content { .. } => {
@@ -3069,7 +3099,12 @@ impl App {
         Some(RailCell {
             // The render width places the column the baked document rails sit
             // in, so the preview aligns with them.
-            column: rail_column(self.document.mode, side, self.width),
+            column: rail_column(
+                self.document.mode,
+                side,
+                self.width,
+                self.document.show_line_numbers,
+            ),
             glyph,
             color: self.compose_border,
         })
@@ -3493,6 +3528,7 @@ fn is_navigation(action: Action) -> bool {
             | Action::PrevComment
             | Action::ToggleFold
             | Action::ToggleWrap
+            | Action::ToggleLineNumbers
             | Action::DiffModeAuto
             | Action::DiffModeSideBySide
             | Action::DiffModeUnified
@@ -4395,6 +4431,61 @@ mod tests {
             "<#c0c5ce|-|b>modified  src/lib.rs\n",
             "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
             "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> total <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> alpha plus beta plus gamma<#c0c5ce|#414a4a|->;\n",
+        );
+    }
+
+    #[test]
+    fn toggle_line_numbers_hides_the_gutter_numbers_and_widens_content() {
+        // With line numbers the gutter holds both sides' numbers before the
+        // change marker; toggling them off narrows the gutter to the marker
+        // alone, and toggling again restores the numbers.
+        let diff = Diff {
+            files: vec![file(
+                "src/lib.rs",
+                FileStatus::Modified,
+                &[(LineKind::Added, "let y = 2;", 1)],
+            )],
+        };
+        let review = Review::new(
+            DiffView::new(theme()).unwrap(),
+            diff,
+            Author {
+                name: "wez".to_string(),
+                kind: AuthorKind::Human,
+            },
+            0,
+            Vec::new(),
+            None,
+        );
+        let mut app = App::reviewing(review, 12, &theme());
+        app.set_width(TEST_WIDTH);
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#fcf7ee|#65737e|b>Review<#f7f7f8|#65737e|-> [press c here to draft the review comment]<#f7f7f8|#65737e|-> [press e to write the description]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
+            "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
+        );
+
+        app.update(Action::ToggleLineNumbers);
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#fcf7ee|#65737e|b>Review<#f7f7f8|#65737e|-> [press c here to draft the review comment]<#f7f7f8|#65737e|-> [press e to write the description]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
+            "<#9ea1a9|#414a4a|->+ <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                            \n",
+        );
+
+        app.update(Action::ToggleLineNumbers);
+        #[rustfmt::skip]
+        wince::snapshot_display!(
+            dump(&app.visible(TEST_WIDTH)),
+            "<#fcf7ee|#65737e|b>Review<#f7f7f8|#65737e|-> [press c here to draft the review comment]<#f7f7f8|#65737e|-> [press e to write the description]\n",
+            "<#c0c5ce|-|b>modified  src/lib.rs\n",
+            "<#96b5b4|-|->@@ -1,1 +1,1 @@\n",
+            "<#9ea1a9|#414a4a|->        1 + <#cbb0c6|#414a4a|->let<#c0c5ce|#414a4a|-> y <#c0c5ce|#414a4a|->=<#c0c5ce|#414a4a|-> <#deab9b|#414a4a|->2<#c0c5ce|#414a4a|->;<-|#414a4a|->                  \n",
         );
     }
 

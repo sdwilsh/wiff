@@ -38,15 +38,31 @@ use crate::wrap::wrap_line;
 /// The gutter width for one side's line number.
 const LINENO_WIDTH: usize = 4;
 
-/// The width of the gutter before a content line: two line numbers, the change
-/// marker, and the spaces separating them. A fold marker is indented this far so
-/// it aligns under the code column.
-const GUTTER_WIDTH: usize = LINENO_WIDTH * 2 + 4;
+/// The gutter width when line numbers are hidden: the change marker and the
+/// trailing cell that hosts the anchor rail just left of the content.
+const MARKER_GUTTER_WIDTH: usize = 2;
 
-/// The width of one side-by-side column's gutter: a single line number, the
-/// change marker, a leading space, and a trailing space that hosts the anchor
-/// rail just left of the content.
-pub(crate) const COLUMN_GUTTER_WIDTH: usize = LINENO_WIDTH + 3;
+/// The width of the gutter before a unified content line. With line numbers it
+/// holds both sides' numbers, the change marker, and the spaces separating them;
+/// without, only the marker and the rail cell.
+pub(crate) fn gutter_width(show_line_numbers: bool) -> usize {
+    if show_line_numbers {
+        LINENO_WIDTH * 2 + 4
+    } else {
+        MARKER_GUTTER_WIDTH
+    }
+}
+
+/// The width of one side-by-side column's gutter. With line numbers it holds a
+/// single line number, the change marker, a leading space, and a trailing space
+/// hosting the anchor rail; without, only the marker and the rail cell.
+pub(crate) fn column_gutter_width(show_line_numbers: bool) -> usize {
+    if show_line_numbers {
+        LINENO_WIDTH + 3
+    } else {
+        MARKER_GUTTER_WIDTH
+    }
+}
 
 /// The single-cell rule drawn between the two side-by-side columns.
 pub(crate) const COLUMN_DIVIDER: char = '\u{2502}';
@@ -73,9 +89,11 @@ const FOLD_BODY: char = '\u{2502}';
 const RAIL_BODY: char = '\u{2502}';
 const RAIL_END: char = '\u{2514}';
 
-/// The gutter column the anchor rail occupies: the last gutter cell, just left
-/// of the content, where a comment box's bottom edge drops its tee.
-pub(crate) const RAIL_COLUMN: usize = GUTTER_WIDTH - 1;
+/// The unified-gutter column the anchor rail occupies: the last gutter cell,
+/// just left of the content, where a comment box's bottom edge drops its tee.
+pub(crate) fn rail_column_unified(show_line_numbers: bool) -> usize {
+    gutter_width(show_line_numbers) - 1
+}
 
 /// The tee joining a comment box's bottom edge down into the anchor rail.
 pub(crate) const RAIL_TEE: char = '\u{252c}';
@@ -93,13 +111,23 @@ pub struct RailCell {
 }
 
 /// The character column the anchor rail for a comment on `side` occupies.
-pub(crate) fn rail_column(mode: LayoutMode, side: Side, width: usize) -> usize {
+pub(crate) fn rail_column(
+    mode: LayoutMode,
+    side: Side,
+    width: usize,
+    show_line_numbers: bool,
+) -> usize {
     match mode {
-        LayoutMode::Unified | LayoutMode::OnlyAfter | LayoutMode::Rendered => RAIL_COLUMN,
-        LayoutMode::SideBySide => match side {
-            Side::Before => COLUMN_GUTTER_WIDTH - 1,
-            Side::After => ColumnGeometry::split(width).left + 1 + COLUMN_GUTTER_WIDTH - 1,
-        },
+        LayoutMode::Unified | LayoutMode::OnlyAfter | LayoutMode::Rendered => {
+            rail_column_unified(show_line_numbers)
+        }
+        LayoutMode::SideBySide => {
+            let gutter = column_gutter_width(show_line_numbers);
+            match side {
+                Side::Before => gutter - 1,
+                Side::After => ColumnGeometry::split(width).left + 1 + gutter - 1,
+            }
+        }
     }
 }
 
@@ -166,6 +194,8 @@ pub struct Document {
     /// The layout mode the document was rendered in; used by the draw pipeline to
     /// align per-column chrome.
     pub mode: LayoutMode,
+    /// Whether the document was rendered with line numbers shown in the gutter.
+    pub show_line_numbers: bool,
 }
 
 /// The per-column visible text of a side-by-side content row.
@@ -253,7 +283,7 @@ impl DiffMode {
 /// Comment bodies always wrap to the width; `wrap_content` additionally wraps
 /// the diff lines instead of clipping them at the edge. A width of zero leaves
 /// everything on one row, for use before a real width is known.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub struct ViewLayout {
     /// The view width in columns.
     pub width: usize,
@@ -261,6 +291,19 @@ pub struct ViewLayout {
     pub wrap_content: bool,
     /// Whether the diff renders in one column or two.
     pub mode: LayoutMode,
+    /// Whether the gutter shows line numbers.
+    pub show_line_numbers: bool,
+}
+
+impl Default for ViewLayout {
+    fn default() -> Self {
+        Self {
+            width: 0,
+            wrap_content: false,
+            mode: LayoutMode::default(),
+            show_line_numbers: true,
+        }
+    }
 }
 
 /// The width of each side-by-side column, derived from a total view width.
@@ -285,8 +328,8 @@ impl ColumnGeometry {
 
     /// The content width of a column: the column less its gutter, or zero when
     /// the gutter alone already fills it.
-    fn content_width(column: usize) -> usize {
-        column.saturating_sub(COLUMN_GUTTER_WIDTH)
+    fn content_width(column: usize, show_line_numbers: bool) -> usize {
+        column.saturating_sub(column_gutter_width(show_line_numbers))
     }
 }
 
@@ -828,6 +871,7 @@ impl DiffView {
                 .map(|f| f.display_path().to_string())
                 .collect(),
             mode: layout.mode,
+            show_line_numbers: layout.show_line_numbers,
         };
         let placement = Placement::new(diff, comments, origins);
         if review_row {
@@ -928,10 +972,10 @@ impl DiffView {
         // stay above the fold so they remain visible while it is collapsed.
         let body_start = doc.rows.len();
         if layout.mode == LayoutMode::Rendered
-            && let Some(rows) = self.render_after_content(file, width)
+            && let Some(rows) = self.render_after_content(file, width, layout.show_line_numbers)
         {
             self.emit_rendered(doc, index, placement, pending, &rows, layout);
-            self.push_whole_file_fold(doc, generated, body_start, content_lines, placement);
+            self.push_whole_file_fold(doc, generated, body_start, content_lines, placement, layout);
             return;
         }
         // Paint from the cached highlight when it has arrived; render plain
@@ -1031,7 +1075,7 @@ impl DiffView {
                 doc.folds.push(Fold {
                     start: line_row[run.start],
                     end: line_end[run.end - 1],
-                    marker: self.fold_marker(run.end - run.start, scope),
+                    marker: self.fold_marker(run.end - run.start, scope, layout.show_line_numbers),
                     fill: None,
                     collapsed_default: true,
                     whole_file: false,
@@ -1039,7 +1083,7 @@ impl DiffView {
             }
         }
         self.trace_rails(doc, placement, pending, &first_row, layout);
-        self.push_whole_file_fold(doc, generated, body_start, content_lines, placement);
+        self.push_whole_file_fold(doc, generated, body_start, content_lines, placement, layout);
     }
 
     /// Fold a generated file's body, from `body_start` to the last row emitted,
@@ -1054,6 +1098,7 @@ impl DiffView {
         body_start: usize,
         content_lines: usize,
         placement: &FilePlacement,
+        layout: ViewLayout,
     ) {
         if generated.is_none() {
             return;
@@ -1066,7 +1111,11 @@ impl DiffView {
         doc.folds.push(Fold {
             start: body_start,
             end,
-            marker: self.fold_marker_line(&format!("{content_lines} line{plural}"), None),
+            marker: self.fold_marker_line(
+                &format!("{content_lines} line{plural}"),
+                None,
+                layout.show_line_numbers,
+            ),
             fill: None,
             collapsed_default: placement.lines.is_empty(),
             whole_file: true,
@@ -1088,8 +1137,9 @@ impl DiffView {
         first_row: &mut HashMap<(Side, u32), usize>,
     ) {
         let width = e.layout.width;
-        let content_wrap = if e.layout.wrap_content && width > GUTTER_WIDTH {
-            Some(width - GUTTER_WIDTH)
+        let gutter = gutter_width(e.layout.show_line_numbers);
+        let content_wrap = if e.layout.wrap_content && width > gutter {
+            Some(width - gutter)
         } else {
             None
         };
@@ -1138,6 +1188,7 @@ impl DiffView {
                 ranges,
                 content_wrap,
                 e.fold_marks[line_index],
+                e.layout.show_line_numbers,
             );
             for (rendered, text) in rows {
                 doc.push(
@@ -1160,10 +1211,11 @@ impl DiffView {
         &self,
         file: &FileDiff,
         width: usize,
+        show_line_numbers: bool,
     ) -> Option<Vec<(Line<'static>, LineNo)>> {
         let renderer = FileRenderer::for_path(file.display_path())?;
         let text = after_side_text(file)?;
-        let content_width = width.saturating_sub(GUTTER_WIDTH).max(1);
+        let content_width = width.saturating_sub(gutter_width(show_line_numbers)).max(1);
         let mapped = match renderer {
             FileRenderer::Markdown => {
                 let colors = MarkdownColors::from_theme(&self.theme);
@@ -1246,7 +1298,11 @@ impl DiffView {
             }
             let shown = if first_of_line { Some(*source) } else { None };
             let gutter = Span::styled(
-                format!("{} {} {} ", lineno(None), lineno(shown), ' '),
+                if layout.show_line_numbers {
+                    format!("{} {} {} ", lineno(None), lineno(shown), ' ')
+                } else {
+                    " ".repeat(gutter_width(false))
+                },
                 Style::default().fg(color(self.theme.gutter_fg)),
             );
             let mut spans = vec![gutter];
@@ -1400,9 +1456,17 @@ impl DiffView {
             gutter_style,
             content,
         } = self.style_line(line, highlighted, &e.emphasis[i], e.fold_marks[i]);
-        let gutter = Span::styled(format!("{} {} ", lineno(number), marker), gutter_style);
-        let blank_gutter = Span::styled(" ".repeat(COLUMN_GUTTER_WIDTH), gutter_style);
-        let content_width = ColumnGeometry::content_width(col_width);
+        let show = e.layout.show_line_numbers;
+        let gutter = Span::styled(
+            if show {
+                format!("{} {} ", lineno(number), marker)
+            } else {
+                format!("{marker} ")
+            },
+            gutter_style,
+        );
+        let blank_gutter = Span::styled(" ".repeat(column_gutter_width(show)), gutter_style);
+        let content_width = ColumnGeometry::content_width(col_width, show);
         let content = Line::from(content);
         let visual = if wrap {
             wrap_line(&content, content_width)
@@ -1458,7 +1522,7 @@ impl DiffView {
                 continue;
             };
             let color = self.comment_border(pending.contains(&lc.placed.comment.id));
-            let column = rail_column(layout.mode, lc.side, layout.width);
+            let column = rail_column(layout.mode, lc.side, layout.width, layout.show_line_numbers);
             for row in start_row..=end_row {
                 if !matches!(doc.rows[row].kind, RowKind::Content { .. }) {
                     continue;
@@ -1737,19 +1801,33 @@ impl DiffView {
 
     /// The line shown in place of `hidden` collapsed unchanged rows, naming the
     /// enclosing `scope` when one is known.
-    fn fold_marker(&self, hidden: usize, scope: Option<&str>) -> Line<'static> {
+    fn fold_marker(
+        &self,
+        hidden: usize,
+        scope: Option<&str>,
+        show_line_numbers: bool,
+    ) -> Line<'static> {
         let plural = if hidden == 1 { "" } else { "s" };
-        self.fold_marker_line(&format!("{hidden} unchanged line{plural}"), scope)
+        self.fold_marker_line(
+            &format!("{hidden} unchanged line{plural}"),
+            scope,
+            show_line_numbers,
+        )
     }
 
     /// A fold marker line: a chevron in the change-marker column, then `label` in
     /// brackets, then `scope` when one is given. The chevron in the gutter marks
     /// a fold, rather than a tinted background that would band the view.
-    fn fold_marker_line(&self, label: &str, scope: Option<&str>) -> Line<'static> {
+    fn fold_marker_line(
+        &self,
+        label: &str,
+        scope: Option<&str>,
+        show_line_numbers: bool,
+    ) -> Line<'static> {
         let mut text = format!(
             "{:indent$}{FOLD_COLLAPSED} [{label}]",
             "",
-            indent = GUTTER_WIDTH - 2
+            indent = gutter_width(show_line_numbers) - 2
         );
         if let Some(scope) = scope {
             text.push_str("  ");
@@ -1811,6 +1889,7 @@ impl DiffView {
         ranges: &[Range<usize>],
         wrap: Option<usize>,
         fold_mark: Option<char>,
+        show_line_numbers: bool,
     ) -> (Option<Rgb>, Vec<ContentRow>) {
         let StyledLine {
             marker,
@@ -1819,12 +1898,16 @@ impl DiffView {
             content,
         } = self.style_line(line, highlighted, ranges, fold_mark);
         let gutter = Span::styled(
-            format!(
-                "{} {} {} ",
-                lineno(line.old_lineno),
-                lineno(line.new_lineno),
-                marker,
-            ),
+            if show_line_numbers {
+                format!(
+                    "{} {} {} ",
+                    lineno(line.old_lineno),
+                    lineno(line.new_lineno),
+                    marker,
+                )
+            } else {
+                format!("{marker} ")
+            },
             gutter_style,
         );
         let Some(content_width) = wrap else {
@@ -1835,7 +1918,7 @@ impl DiffView {
         // Wrap the content into the columns beside the gutter, leading the first
         // row with the gutter and each continuation with a blank gutter so the
         // wrapped code aligns under the first row.
-        let blank_gutter = Span::styled(" ".repeat(GUTTER_WIDTH), gutter_style);
+        let blank_gutter = Span::styled(" ".repeat(gutter_width(show_line_numbers)), gutter_style);
         let rows = wrap_line(&Line::from(content), content_width)
             .into_iter()
             .enumerate()
@@ -2794,6 +2877,7 @@ mod tests {
             width: 44,
             wrap_content: false,
             mode: super::LayoutMode::SideBySide,
+            show_line_numbers: true,
         };
 
         #[rustfmt::skip]
@@ -2830,6 +2914,7 @@ mod tests {
             width: 40,
             wrap_content: false,
             mode: super::LayoutMode::OnlyAfter,
+            show_line_numbers: true,
         };
 
         #[rustfmt::skip]
@@ -2864,6 +2949,7 @@ mod tests {
             width: 40,
             wrap_content: false,
             mode: super::LayoutMode::Rendered,
+            show_line_numbers: true,
         };
 
         #[rustfmt::skip]
@@ -2903,6 +2989,7 @@ mod tests {
             width: 40,
             wrap_content: false,
             mode: super::LayoutMode::Rendered,
+            show_line_numbers: true,
         };
 
         #[rustfmt::skip]
@@ -2951,6 +3038,7 @@ mod tests {
             width: 40,
             wrap_content: false,
             mode: super::LayoutMode::Rendered,
+            show_line_numbers: true,
         };
 
         #[rustfmt::skip]
@@ -2987,6 +3075,7 @@ mod tests {
             width: 40,
             wrap_content: false,
             mode: super::LayoutMode::Rendered,
+            show_line_numbers: true,
         };
 
         #[rustfmt::skip]

@@ -52,6 +52,9 @@ pub struct Config {
     /// Whether diff content wraps to the viewport width instead of being clipped
     /// at the edge. The `toggle_wrap` action flips it within a session.
     pub wrap_lines: bool,
+    /// Whether the gutter shows line numbers on startup. The
+    /// `toggle_line_numbers` action flips it within a session.
+    pub show_line_numbers: bool,
     /// The starting diff layout: one column, two columns, or auto (two once the
     /// terminal is wide enough). The `diff_mode_*` actions switch it within a
     /// session.
@@ -95,6 +98,7 @@ impl Default for Config {
             tab_width: DEFAULT_TAB_WIDTH,
             editor: None,
             wrap_lines: true,
+            show_line_numbers: true,
             diff_mode: DiffMode::default(),
             side_by_side_min_width: DEFAULT_SIDE_BY_SIDE_MIN_WIDTH,
             nudge_to_detach: true,
