@@ -35,7 +35,8 @@ deferred past v0 so the v0 architecture leaves room for them.
   later). Abstracted behind a trait so new sources do not ripple through the
   code.
 - **Session**: a persisted review. Owns an ordered list of diff versions and a
-  log of annotations. Identified by a ULID, bucketed under a project.
+  log of annotations. Identified by a short, creation-ordered id, bucketed under
+  a project.
 - **Diff version**: one captured snapshot of the source's diff, with enough
   file content to highlight and to rebase comments against.
 - **Annotation**: a comment. Anchored to a line range, a whole file, or the
@@ -54,8 +55,8 @@ reads, and an exclusive `flock` held only for the duration of appends.
 $XDG_DATA_HOME/wiff/                 (e.g. ~/.local/share/wiff)
   sessions/
     <project>/
-      <ULID>.jsonl                   the append-only record log
-      <ULID>.d/                      sideband files for that session
+      <id>.jsonl                     the append-only record log
+      <id>.d/                        sideband files for that session
         v0.diff                      raw captured unified diff for version 0
         v1.diff
         ...

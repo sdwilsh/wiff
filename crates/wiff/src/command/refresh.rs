@@ -14,7 +14,7 @@ use super::{explore_root, read_piped_stdin, recapture_diff, resolve_author, reso
 /// Arguments for `wiff refresh`.
 #[derive(Debug, Args)]
 pub struct RefreshArgs {
-    /// Refresh a specific session by ULID instead of the active one.
+    /// Refresh a specific session by id instead of the active one.
     #[arg(long)]
     session: Option<String>,
     /// Force the project bucket name when it cannot be derived from the cwd.

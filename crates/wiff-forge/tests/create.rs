@@ -4,7 +4,6 @@ use std::sync::Mutex;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use ulid::Ulid;
 use wiff_core::description::set_description;
 use wiff_core::error::Result as CoreResult;
 use wiff_core::record::{
@@ -14,7 +13,7 @@ use wiff_core::record::{
 use wiff_core::review::ReviewState;
 use wiff_core::session::{LockWait, SessionLog};
 use wiff_core::source::{FetchSource, Remote, ScmRepo, TrackingBranch};
-use wiff_core::{BaseRuleset, ScmType};
+use wiff_core::{BaseRuleset, ScmType, SessionId};
 use wiff_forge::{
     ChangedFile, FetchedPullRequest, Forge, NewPullRequest, OpenRefusal, OpenRequest,
     OpenedPullRequest, OutgoingComment, OutgoingReview, SubmittedReview, disambiguated_branch,
@@ -28,9 +27,9 @@ fn human(name: &str) -> Author {
     }
 }
 
-fn header(ulid: Ulid) -> SessionHeader {
+fn header(id: SessionId) -> SessionHeader {
     SessionHeader {
-        ulid,
+        id,
         version: FORMAT_VERSION,
         project: "demo".to_string(),
         repo_root: Some("/repos/demo".to_string()),
@@ -59,10 +58,9 @@ fn head() -> RevisionId {
 /// description revision, folded to a [`ReviewState`].
 fn review(title: Option<&str>) -> (tempfile::TempDir, ReviewState) {
     let base = tempfile::tempdir().expect("tempdir");
-    let (mut log, lock) = SessionLog::create(base.path(), "demo", |ulid| {
-        RecordBody::Session(header(ulid))
-    })
-    .expect("create session");
+    let (mut log, lock) =
+        SessionLog::create(base.path(), "demo", |id| RecordBody::Session(header(id)))
+            .expect("create session");
     drop(lock);
     if let Some(title) = title {
         set_description(
@@ -191,11 +189,19 @@ impl FakeRepo {
 
 #[async_trait]
 impl ScmRepo for FakeRepo {
-    async fn fetch_pinned(&self, _source: &FetchSource, _session: Ulid) -> CoreResult<RevisionId> {
+    async fn fetch_pinned(
+        &self,
+        _source: &FetchSource,
+        _session: SessionId,
+    ) -> CoreResult<RevisionId> {
         unreachable!("opening a pull request does not fetch")
     }
 
-    async fn fetch_base(&self, _source: &FetchSource, _session: Ulid) -> CoreResult<RevisionId> {
+    async fn fetch_base(
+        &self,
+        _source: &FetchSource,
+        _session: SessionId,
+    ) -> CoreResult<RevisionId> {
         unreachable!("opening a pull request does not fetch")
     }
 
@@ -232,7 +238,7 @@ impl ScmRepo for FakeRepo {
         Ok(())
     }
 
-    async fn remove_pins(&self, _session: Ulid) -> CoreResult<()> {
+    async fn remove_pins(&self, _session: SessionId) -> CoreResult<()> {
         unreachable!("opening a pull request does not remove pins")
     }
 }
@@ -285,7 +291,7 @@ async fn a_taken_slug_publishes_a_session_disambiguated_branch() {
         RevisionId("beef".to_string()),
     )];
     let (url, commit) = (repo_url(), head());
-    let expected = disambiguated_branch("refactor-the-widget", state.session.ulid);
+    let expected = disambiguated_branch("refactor-the-widget", state.session.id);
 
     let opened = open_pull_request(&forge, &repo, &state, &request(&url, &commit))
         .await

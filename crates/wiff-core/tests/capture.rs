@@ -2,7 +2,6 @@
 
 use std::path::Path;
 
-use ulid::Ulid;
 use wiff_core::hash::SidebandHash;
 use wiff_core::record::{
     Author, AuthorKind, Description, DescriptionRecord, DiffVersionRecord, FORMAT_VERSION,
@@ -13,7 +12,7 @@ use wiff_core::review::DescriptionState;
 use wiff_core::session::{SessionLog, read_records};
 use wiff_core::{
     BaseRuleset, CapturedDiff, DiffSource, IfNeeded, LockWait, ProjectIdentity, ReviewState,
-    ScmType, create_forge_session, create_session, reuse_or_create, set_description,
+    ScmType, SessionId, create_forge_session, create_session, reuse_or_create, set_description,
 };
 use wiff_diff::FileStatus;
 
@@ -83,7 +82,7 @@ fn create_session_writes_header_version_and_sideband() {
         (
             0,
             RecordBody::Session(SessionHeader {
-                ulid: log.ulid(),
+                id: log.id(),
                 version: FORMAT_VERSION,
                 project: "demo".to_string(),
                 repo_root: None,
@@ -126,10 +125,10 @@ fn create_session_writes_header_version_and_sideband() {
 }
 
 #[test]
-fn create_forge_session_binds_the_pull_request_under_the_chosen_ulid() {
+fn create_forge_session_binds_the_pull_request_under_the_chosen_id() {
     let base = tempfile::tempdir().unwrap();
     let forge = ForgeUrl::parse("https://github.com/octo/demo/pull/7").unwrap();
-    let session = Ulid::new();
+    let session = SessionId::new();
     let captured = CapturedDiff {
         text: DIFF.to_string(),
         source: SourceKind::Forge,
@@ -150,7 +149,7 @@ fn create_forge_session_binds_the_pull_request_under_the_chosen_ulid() {
 
     // The header takes the chosen ULID and records the bound pull request; the
     // v0 version keeps the fetched base and head the diff was captured between.
-    wince::assert_eq!(log.ulid(), session);
+    wince::assert_eq!(log.id(), session);
     let records = read_records(log.path()).unwrap();
     let bodies: Vec<(u64, RecordBody)> = records
         .iter()
@@ -160,7 +159,7 @@ fn create_forge_session_binds_the_pull_request_under_the_chosen_ulid() {
         (
             0,
             RecordBody::Session(SessionHeader {
-                ulid: session,
+                id: session,
                 version: FORMAT_VERSION,
                 project: "demo".to_string(),
                 repo_root: None,
@@ -201,7 +200,7 @@ fn create_forge_session_binds_the_pull_request_under_the_chosen_ulid() {
 fn create_forge_session_rejects_an_id_that_already_names_a_session() {
     let base = tempfile::tempdir().unwrap();
     let forge = ForgeUrl::parse("https://github.com/octo/demo/pull/7").unwrap();
-    let session = Ulid::new();
+    let session = SessionId::new();
     let captured = CapturedDiff {
         text: DIFF.to_string(),
         source: SourceKind::Forge,
@@ -264,7 +263,7 @@ fn create_session_writes_an_initial_description_after_the_diff() {
         (
             0,
             RecordBody::Session(SessionHeader {
-                ulid: log.ulid(),
+                id: log.id(),
                 version: FORMAT_VERSION,
                 project: "demo".to_string(),
                 repo_root: None,
@@ -317,7 +316,7 @@ fn create_session_writes_an_initial_description_after_the_diff() {
         state,
         ReviewState {
             session: SessionHeader {
-                ulid: log.ulid(),
+                id: log.id(),
                 version: FORMAT_VERSION,
                 project: "demo".to_string(),
                 repo_root: None,
@@ -470,9 +469,9 @@ fn other_capture(text: &str) -> CapturedDiff {
 
 fn render(outcome: &IfNeeded) -> String {
     match outcome {
-        IfNeeded::Created(log) => format!("created {}", log.ulid()),
-        IfNeeded::Unchanged(log) => format!("unchanged {}", log.ulid()),
-        IfNeeded::Refreshed(log, o) => format!("refreshed {} v{}", log.ulid(), o.version),
+        IfNeeded::Created(log) => format!("created {}", log.id()),
+        IfNeeded::Unchanged(log) => format!("unchanged {}", log.id()),
+        IfNeeded::Refreshed(log, o) => format!("refreshed {} v{}", log.id(), o.version),
         IfNeeded::NothingToReview => "nothing to review".to_string(),
     }
 }
@@ -489,8 +488,8 @@ fn reuse_or_create_creates_then_reuses_then_refreshes_one_session() {
 
     let first = reuse_or_create(base, &id, cwd, &topic_capture(DIFF_A), actor(), None)
         .expect("first run creates");
-    let (topic_ulid, topic_path) = match &first {
-        IfNeeded::Created(log) => (log.ulid(), log.path().to_path_buf()),
+    let (topic_id, topic_path) = match &first {
+        IfNeeded::Created(log) => (log.id(), log.path().to_path_buf()),
         other => panic!("expected a create, got {}", render(other)),
     };
     let reused = reuse_or_create(base, &id, cwd, &topic_capture(DIFF_A), actor(), None)
@@ -499,8 +498,8 @@ fn reuse_or_create_creates_then_reuses_then_refreshes_one_session() {
         .expect("moved working copy refreshes");
     let other = reuse_or_create(base, &id, cwd, &other_capture(DIFF_A), actor(), None)
         .expect("a different range creates");
-    let other_ulid = match &other {
-        IfNeeded::Created(log) => log.ulid(),
+    let other_id = match &other {
+        IfNeeded::Created(log) => log.id(),
         other => panic!("expected a create, got {}", render(other)),
     };
 
@@ -521,11 +520,11 @@ fn reuse_or_create_creates_then_reuses_then_refreshes_one_session() {
         render(&reused),
         render(&refreshed),
         render(&other),
-        other_ulid != topic_ulid,
+        other_id != topic_id,
         state.versions.len(),
     )
-    .replace(&topic_ulid.to_string(), "TOPIC")
-    .replace(&other_ulid.to_string(), "OTHER");
+    .replace(&topic_id.to_string(), "TOPIC")
+    .replace(&other_id.to_string(), "OTHER");
 
     wince::snapshot_display!(
         report,
@@ -558,8 +557,8 @@ fn reuse_or_create_reports_nothing_to_review_until_a_session_exists() {
         .expect("an empty capture is reported, not an error");
     let created = reuse_or_create(base, &id, cwd, &topic_capture(DIFF_A), actor(), None)
         .expect("a non-empty capture opens the session");
-    let ulid = match &created {
-        IfNeeded::Created(log) => log.ulid(),
+    let session_id = match &created {
+        IfNeeded::Created(log) => log.id(),
         other => panic!("expected a create, got {}", render(other)),
     };
     let empty_again = reuse_or_create(base, &id, cwd, &topic_capture(""), actor(), None)
@@ -573,7 +572,7 @@ fn reuse_or_create_reports_nothing_to_review_until_a_session_exists() {
         render(&created),
         render(&empty_again),
     )
-    .replace(&ulid.to_string(), "TOPIC");
+    .replace(&session_id.to_string(), "TOPIC");
 
     wince::snapshot_display!(
         report,

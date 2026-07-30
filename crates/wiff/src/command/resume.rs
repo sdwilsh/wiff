@@ -12,7 +12,7 @@ use crate::tui;
 /// Arguments for `wiff resume`.
 #[derive(Debug, Args)]
 pub struct ResumeArgs {
-    /// Resume a specific session by ULID instead of the active one.
+    /// Resume a specific session by id instead of the active one.
     #[arg(long)]
     session: Option<String>,
     /// Force the project bucket name when it cannot be derived from the cwd.

@@ -47,7 +47,7 @@ struct DescriptionSetArgs {
     /// Attribute the description to an agent rather than a human.
     #[arg(long)]
     agent: bool,
-    /// Target a specific session by ULID instead of the active one.
+    /// Target a specific session by id instead of the active one.
     #[arg(long)]
     session: Option<String>,
     /// Force the project bucket name when it cannot be derived from the cwd.
@@ -82,7 +82,7 @@ impl DescriptionSetArgs {
 /// Arguments for `wiff description show`.
 #[derive(Debug, Args)]
 struct DescriptionShowArgs {
-    /// Target a specific session by ULID instead of the active one.
+    /// Target a specific session by id instead of the active one.
     #[arg(long)]
     session: Option<String>,
     /// Force the project bucket name when it cannot be derived from the cwd.

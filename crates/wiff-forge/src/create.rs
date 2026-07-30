@@ -10,10 +10,9 @@
 //! not ready to open.
 
 use anyhow::Result;
-use ulid::Ulid;
-use wiff_core::ReviewState;
 use wiff_core::record::{ForgeUrl, RevisionId};
 use wiff_core::source::ScmRepo;
+use wiff_core::{ReviewState, SessionId};
 
 use crate::Forge;
 use crate::types::NewPullRequest;
@@ -117,9 +116,7 @@ pub async fn open_pull_request(
     // request; disambiguate with a session-derived suffix only when the slug is
     // already taken on the remote by a different commit.
     let branch = match repo.remote_branch(req.remote, &slug).await? {
-        Some(commit) if &commit != req.head_commit => {
-            disambiguated_branch(&slug, state.session.ulid)
-        }
+        Some(commit) if &commit != req.head_commit => disambiguated_branch(&slug, state.session.id),
         _ => slug,
     };
 
@@ -167,14 +164,12 @@ pub fn branch_slug(title: &str) -> String {
     slug.trim_matches('-').to_string()
 }
 
-/// Append a suffix drawn from `session` to `slug`, for when the plain slug is
-/// already taken on the remote by a different commit. The suffix is the tail of
-/// the session's ULID, whose random component gives two same-titled reviews
-/// distinct branches. An empty `slug` (from a title with no usable
-/// characters) becomes the suffix alone.
-pub fn disambiguated_branch(slug: &str, session: Ulid) -> String {
-    let ulid = session.to_string();
-    let suffix = ulid[ulid.len() - 8..].to_ascii_lowercase();
+/// Append the session's id to `slug`, for when the plain slug is already taken
+/// on the remote by a different commit. The id is unique per session, so two
+/// same-titled reviews get distinct branches. An empty `slug` (from a title with
+/// no usable characters) becomes the id alone.
+pub fn disambiguated_branch(slug: &str, session: SessionId) -> String {
+    let suffix = session.to_string();
     if slug.is_empty() {
         suffix
     } else {
@@ -210,17 +205,17 @@ mod tests {
     }
 
     #[test]
-    fn a_disambiguated_branch_appends_the_ulid_tail() {
-        let session = Ulid::from_string("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+    fn a_disambiguated_branch_appends_the_id() {
+        let session: SessionId = "0123456ab".parse().unwrap();
         wince::assert_eq!(
             disambiguated_branch("refactor-the-widget", session),
-            "refactor-the-widget-q69g5fav".to_string()
+            "refactor-the-widget-0123456ab".to_string()
         );
     }
 
     #[test]
-    fn a_disambiguated_empty_slug_is_the_suffix_alone() {
-        let session = Ulid::from_string("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
-        wince::assert_eq!(disambiguated_branch("", session), "q69g5fav".to_string());
+    fn a_disambiguated_empty_slug_is_the_id_alone() {
+        let session: SessionId = "0123456ab".parse().unwrap();
+        wince::assert_eq!(disambiguated_branch("", session), "0123456ab".to_string());
     }
 }

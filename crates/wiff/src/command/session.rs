@@ -3,14 +3,13 @@
 use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
 use time::OffsetDateTime;
-use ulid::Ulid;
 use wiff_core::record::{ForgeUrl, RevisionId, ScmSource, SourceKind, TipRule};
 use wiff_core::review::ReviewState;
 use wiff_core::session::{
-    active_session, data_dir, list_projects, list_sessions, remove_session, session_file,
-    ulid_from_path,
+    active_session, data_dir, id_from_path, list_projects, list_sessions, remove_session,
+    session_file,
 };
-use wiff_core::{ProjectIdentity, ScmType};
+use wiff_core::{ProjectIdentity, ScmType, SessionId};
 
 /// Arguments for `wiff session`.
 #[derive(Debug, Args)]
@@ -99,14 +98,16 @@ impl SessionRmArgs {
         let cwd = std::env::current_dir().context("could not determine the current directory")?;
         let identity = ProjectIdentity::for_dir_or_forced(&cwd, self.project.as_deref())?;
         let base = data_dir()?;
-        let ulid = Ulid::from_string(&self.id)
-            .with_context(|| format!("{} is not a valid session id", self.id))?;
-        let path = session_file(&base, &identity.canonical, ulid);
+        let id: SessionId = self
+            .id
+            .parse()
+            .map_err(|_| anyhow::anyhow!("{} is not a valid session id", self.id))?;
+        let path = session_file(&base, &identity.canonical, id);
         if !path.exists() {
-            bail!("no session {ulid} in project {}", identity.canonical);
+            bail!("no session {id} in project {}", identity.canonical);
         }
         remove_session(&path)?;
-        println!("removed session {ulid}");
+        println!("removed session {id}");
         Ok(())
     }
 }
@@ -116,11 +117,11 @@ impl SessionRmArgs {
 enum SessionEntry {
     /// A session whose log folded cleanly into a summary.
     Summary(SessionRow),
-    /// A session whose log could not be read, labelled by its ULID (or file
+    /// A session whose log could not be read, labelled by its id (or file
     /// name when that cannot be decoded) alongside the reason.
     Unreadable {
-        /// The session's ULID as text, or its file name when the name is not a
-        /// ULID.
+        /// The session's id as text, or its file name when the name is not a
+        /// valid id.
         label: String,
         /// The human-readable reason the log could not be loaded.
         reason: String,
@@ -131,7 +132,7 @@ enum SessionEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SessionRow {
     /// The session's identity.
-    ulid: Ulid,
+    id: SessionId,
     /// How its diff was captured.
     source: SourceKind,
     /// The pull request the session mirrors, when it has forge linkage.
@@ -142,7 +143,7 @@ struct SessionRow {
     /// The tip commit of the latest captured version. Absent for a working-copy
     /// or index capture, whose tip is the uncommitted state.
     head_revision: Option<RevisionId>,
-    /// When the session was created, decoded from its ULID.
+    /// When the session was created, decoded from its id.
     created_at: OffsetDateTime,
     /// When the session log was last written, from its file mtime.
     updated_at: OffsetDateTime,
@@ -200,12 +201,12 @@ fn session_rows(
         let head_revision = state.latest_version().and_then(|v| v.head_revision.clone());
         let files = state.latest_version().map(|v| v.files.len()).unwrap_or(0);
         rows.push(SessionEntry::Summary(SessionRow {
-            ulid: state.session.ulid,
+            id: state.session.id,
             source: state.session.source,
             forge: state.session.forge,
             base_revision,
             head_revision,
-            created_at: created_at(state.session.ulid),
+            created_at: state.session.id.created_at(),
             updated_at: OffsetDateTime::from(modified),
             active: active.as_deref() == Some(path.as_path()),
             comments,
@@ -225,25 +226,17 @@ fn vanished(err: &wiff_core::Error) -> bool {
     )
 }
 
-/// The label for an unreadable session: its ULID, or its file name when the name
-/// is not a ULID.
+/// The label for an unreadable session: its id, or its file name when the name
+/// is not a valid id.
 fn session_label(path: &std::path::Path) -> String {
-    ulid_from_path(path)
-        .map(|ulid| ulid.to_string())
+    id_from_path(path)
+        .map(|id| id.to_string())
         .unwrap_or_else(|_| {
             path.file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or_default()
                 .to_string()
         })
-}
-
-/// The creation time a ULID encodes in its millisecond timestamp, falling back
-/// to the epoch for the impossible case of a timestamp outside the calendar's
-/// range.
-fn created_at(ulid: Ulid) -> OffsetDateTime {
-    OffsetDateTime::from_unix_timestamp_nanos(i128::from(ulid.timestamp_ms()) * 1_000_000)
-        .unwrap_or(OffsetDateTime::UNIX_EPOCH)
 }
 
 /// Render the session groups. With `show_projects`, each group leads with its
@@ -272,7 +265,7 @@ fn render_list(
                     let marker = if row.active { '*' } else { ' ' };
                     out.push_str(&format!(
                         "{indent}{marker} {}  {}  {}\n",
-                        row.ulid,
+                        row.id,
                         headline(row),
                         tally(row.comments, row.open),
                     ));
@@ -422,18 +415,18 @@ fn strip_ref(name: &str) -> String {
 mod tests {
     use super::{SessionEntry, SessionRow, render_list};
     use time::OffsetDateTime;
-    use ulid::Ulid;
-    use wiff_core::record::{ChangeId, ForgeUrl, RevisionId, ScmSource, SourceKind, TipRule};
-    use wiff_core::{BaseRuleset, ScmType};
 
-    fn ulid(text: &str) -> Ulid {
-        Ulid::from_string(text).unwrap()
+    use wiff_core::record::{ChangeId, ForgeUrl, RevisionId, ScmSource, SourceKind, TipRule};
+    use wiff_core::{BaseRuleset, ScmType, SessionId};
+
+    fn session_id(text: &str) -> SessionId {
+        text.parse().unwrap()
     }
 
     /// An inactive row created and last written an hour ago, for tests that
     /// exercise the headline and range rather than the timings.
     fn row(
-        ulid_text: &str,
+        id_text: &str,
         source: SourceKind,
         forge: Option<ForgeUrl>,
         base: Option<RevisionId>,
@@ -442,7 +435,7 @@ mod tests {
         open: usize,
     ) -> SessionEntry {
         SessionEntry::Summary(SessionRow {
-            ulid: ulid(ulid_text),
+            id: session_id(id_text),
             source,
             forge,
             base_revision: base,
@@ -485,7 +478,7 @@ mod tests {
             // A plain `wiff new`: the working copy on a branch, base pinned
             // at the commit it was created on.
             SessionRow {
-                ulid: ulid("00000000000000000000000001"),
+                id: session_id("000000001"),
                 source: scm(
                     "ref(name(deadbeef))",
                     TipRule::WorkingCopy,
@@ -504,7 +497,7 @@ mod tests {
             // `wiff new --from-base`: the same working copy, its base taken
             // from the configured whole-branch ruleset instead.
             SessionRow {
-                ulid: ulid("00000000000000000000000002"),
+                id: session_id("000000002"),
                 source: scm(
                     "merge-base(trunk)",
                     TipRule::WorkingCopy,
@@ -523,7 +516,7 @@ mod tests {
             // `wiff forge fetch`: a pinned range with both endpoints, and
             // the pull request URL as its identity.
             SessionRow {
-                ulid: ulid("00000000000000000000000003"),
+                id: session_id("000000003"),
                 source: scm(
                     "merge-base(name(9f8e7d6))",
                     TipRule::Pinned {
@@ -543,7 +536,7 @@ mod tests {
             },
             // A working copy captured on a detached head names no branch.
             SessionRow {
-                ulid: ulid("00000000000000000000000004"),
+                id: session_id("000000004"),
                 source: scm("ref(name(deadbeef))", TipRule::WorkingCopy, None),
                 forge: None,
                 base_revision: Some(rev("aabbccd0000")),
@@ -557,7 +550,7 @@ mod tests {
             },
             // A diff piped in on stdin: a one-shot snapshot.
             SessionRow {
-                ulid: ulid("00000000000000000000000005"),
+                id: session_id("000000005"),
                 source: SourceKind::Stdin,
                 forge: None,
                 base_revision: None,
@@ -576,15 +569,15 @@ mod tests {
         )];
         let out = render_list(&groups, false, now());
         let expected = "\
-* 00000000000000000000000001  topic  (3 comments, 1 open)
+* 000000001  topic  (3 comments, 1 open)
     a1b2c3d..working copy  base ref(name(deadbeef))  created 2h ago, updated 12m ago
-  00000000000000000000000002  topic  (no comments)
+  000000002  topic  (no comments)
     e4f5a6b..working copy  base merge-base(trunk)  created 1d ago
-  00000000000000000000000003  https://github.com/o/r/pull/42  (5 comments, 2 open)
+  000000003  https://github.com/o/r/pull/42  (5 comments, 2 open)
     9f8e7d6..d4c3b2a  base merge-base(name(9f8e7d6))  created 3d ago, updated 4h ago
-  00000000000000000000000004  (detached)  (no comments)
+  000000004  (detached)  (no comments)
     aabbccd..working copy  base ref(name(deadbeef))  created 5d ago
-  00000000000000000000000005  stdin snapshot  (1 comment, 0 open)
+  000000005  stdin snapshot  (1 comment, 0 open)
     one-shot diff, not regenerable  created 2w ago
 ";
         wince::assert_eq!(out, expected.to_string());
@@ -596,7 +589,7 @@ mod tests {
             (
                 "demo".to_string(),
                 vec![SessionEntry::Summary(SessionRow {
-                    ulid: ulid("00000000000000000000000001"),
+                    id: session_id("000000001"),
                     source: scm(
                         "ref(name(deadbeef))",
                         TipRule::WorkingCopy,
@@ -616,7 +609,7 @@ mod tests {
             (
                 "other".to_string(),
                 vec![SessionEntry::Summary(SessionRow {
-                    ulid: ulid("00000000000000000000000002"),
+                    id: session_id("000000002"),
                     source: SourceKind::Stdin,
                     forge: None,
                     base_revision: None,
@@ -633,10 +626,10 @@ mod tests {
         let out = render_list(&groups, true, now());
         let expected = "\
 demo
-  * 00000000000000000000000001  topic  (1 comment, 0 open)
+  * 000000001  topic  (1 comment, 0 open)
       a1b2c3d..working copy  base ref(name(deadbeef))  created 2h ago
 other
-    00000000000000000000000002  stdin snapshot  (2 comments, 2 open)
+    000000002  stdin snapshot  (2 comments, 2 open)
       one-shot diff, not regenerable  created 1d ago
 ";
         wince::assert_eq!(out, expected.to_string());
@@ -647,7 +640,7 @@ other
         let groups = vec![(
             "demo".to_string(),
             vec![row(
-                "00000000000000000000000001",
+                "000000001",
                 SourceKind::Forge,
                 Some(ForgeUrl::parse("https://github.com/o/r/pull/7").unwrap()),
                 Some(rev("9f8e7d60000")),
@@ -657,8 +650,7 @@ other
             )],
         )];
         let out = render_list(&groups, false, now());
-        let expected =
-            "  00000000000000000000000001  https://github.com/o/r/pull/7  (2 comments, 0 open)
+        let expected = "  000000001  https://github.com/o/r/pull/7  (2 comments, 0 open)
     9f8e7d6..d4c3b2a  not regenerable  created 1h ago
 ";
         wince::assert_eq!(out, expected.to_string());
@@ -672,7 +664,7 @@ other
                 // `wiff new --change main`: a ref tip resolves to a commit and
                 // reads as its branch.
                 row(
-                    "00000000000000000000000001",
+                    "000000001",
                     scm(
                         "parent(@)",
                         TipRule::Ref {
@@ -688,7 +680,7 @@ other
                 ),
                 // The staged index on a branch reads as that branch.
                 row(
-                    "00000000000000000000000002",
+                    "000000002",
                     scm("ref(name(x))", TipRule::Index, Some("refs/heads/dev")),
                     None,
                     Some(rev("3333333000")),
@@ -698,7 +690,7 @@ other
                 ),
                 // A change tip reads as the change it names.
                 row(
-                    "00000000000000000000000003",
+                    "000000003",
                     scm(
                         "parent(@)",
                         TipRule::ChangeId {
@@ -714,7 +706,7 @@ other
                 ),
                 // A detached index names no branch.
                 row(
-                    "00000000000000000000000004",
+                    "000000004",
                     scm("ref(name(x))", TipRule::Index, None),
                     None,
                     Some(rev("6666666000")),
@@ -725,13 +717,13 @@ other
             ],
         )];
         let out = render_list(&groups, false, now());
-        let expected = "  00000000000000000000000001  main  (no comments)
+        let expected = "  000000001  main  (no comments)
     1111111..2222222  base parent(@)  created 1h ago
-  00000000000000000000000002  dev  (no comments)
+  000000002  dev  (no comments)
     3333333..index  base ref(name(x))  created 1h ago
-  00000000000000000000000003  zxcvbnm  (no comments)
+  000000003  zxcvbnm  (no comments)
     4444444..5555555  base parent(@)  created 1h ago
-  00000000000000000000000004  (detached)  (no comments)
+  000000004  (detached)  (no comments)
     6666666..index  base ref(name(x))  created 1h ago
 ";
         wince::assert_eq!(out, expected.to_string());
@@ -743,12 +735,12 @@ other
             "demo".to_string(),
             vec![
                 SessionEntry::Unreadable {
-                    label: "00000000000000000000000009".to_string(),
-                    reason: "session format version 4 does not match supported version 5"
+                    label: "000000009".to_string(),
+                    reason: "session format version 4 does not match supported version 6"
                         .to_string(),
                 },
                 row(
-                    "00000000000000000000000001",
+                    "000000001",
                     SourceKind::Stdin,
                     None,
                     None,
@@ -759,9 +751,9 @@ other
             ],
         )];
         let out = render_list(&groups, false, now());
-        let expected = "  00000000000000000000000009  unreadable session
-    session format version 4 does not match supported version 5
-  00000000000000000000000001  stdin snapshot  (no comments)
+        let expected = "  000000009  unreadable session
+    session format version 4 does not match supported version 6
+  000000001  stdin snapshot  (no comments)
     one-shot diff, not regenerable  created 1h ago
 ";
         wince::assert_eq!(out, expected.to_string());

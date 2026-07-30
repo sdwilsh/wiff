@@ -15,11 +15,11 @@ pub mod git;
 use std::path::Path;
 
 use async_trait::async_trait;
-use ulid::Ulid;
 
 use crate::error::Result;
 use crate::identity::ScmType;
 use crate::record::{RevisionId, SourceKind};
+use crate::session_id::SessionId;
 
 pub use explore::{ExploreCapture, SkipReason, capture_explore};
 pub use git::{GitRepo, GitSource};
@@ -155,7 +155,7 @@ pub trait ScmRepo {
     /// session's `head` pin, and return the commit it resolved to. Fails when
     /// this SCM cannot speak the protocol `source` names, or when the fetched
     /// ref does not resolve to the commit `source` expects.
-    async fn fetch_pinned(&self, source: &FetchSource, session: Ulid) -> Result<RevisionId>;
+    async fn fetch_pinned(&self, source: &FetchSource, session: SessionId) -> Result<RevisionId>;
 
     /// Fetch the target branch `source` names, pin the commit `source` reports
     /// under the session's `base` pin, and return it. Unlike
@@ -167,7 +167,7 @@ pub trait ScmRepo {
     /// of its ancestors. Fails when this SCM cannot speak the protocol `source`
     /// names, or when the reported commit is absent from the fetched branch (a
     /// force-push or rebase of the target since the last sync).
-    async fn fetch_base(&self, source: &FetchSource, session: Ulid) -> Result<RevisionId>;
+    async fn fetch_base(&self, source: &FetchSource, session: SessionId) -> Result<RevisionId>;
 
     /// List the repository's remotes, one per remote name with the URL git
     /// fetches from (a remote configured with several URLs reports its first).
@@ -197,5 +197,5 @@ pub trait ScmRepo {
     /// collected. The session's own files are untouched; discarding a session
     /// calls this to leave nothing behind in the repo. A pin that is already
     /// absent is not an error.
-    async fn remove_pins(&self, session: Ulid) -> Result<()>;
+    async fn remove_pins(&self, session: SessionId) -> Result<()>;
 }

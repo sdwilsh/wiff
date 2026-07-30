@@ -39,12 +39,12 @@ cannot be derived from the working directory, select it explicitly:
 
 ```bash
 wiff session list
-wiff render --session 01J8ZC0FEXAMPLEULID26
-wiff comment add --agent --session 01J8ZC0FEXAMPLEULID26 --review --body "..."
+wiff render --session 2br8zf30h
+wiff comment add --agent --session 2br8zf30h --review --body "..."
 ```
 
-- `wiff session list` prints the sessions for this project and their ULIDs.
-- `--session <ULID>` targets a specific session instead of the active one.
+- `wiff session list` prints the sessions for this project and their ids.
+- `--session <id>` targets a specific session instead of the active one.
 - `--project <name>` forces the project when the working directory cannot name
   it on its own.
 

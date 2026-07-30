@@ -37,7 +37,7 @@ struct AddArgs {
     /// directory.
     #[arg(required = true, value_name = "PATH")]
     paths: Vec<String>,
-    /// Add to a specific session by ULID instead of the active one.
+    /// Add to a specific session by id instead of the active one.
     #[arg(long)]
     session: Option<String>,
     /// Force the project bucket name when it cannot be derived from the cwd.
@@ -70,7 +70,7 @@ impl AddArgs {
             bail!(
                 "session {} is not an explore review; `wiff explore add` applies only to a \
                  session created with `wiff new --explore`",
-                state.session.ulid
+                state.session.id
             );
         }
         let root = explore_root(&state.session);

@@ -9,12 +9,12 @@ use wiff_core::session::{
     LockAttempt, LockWait, ProjectLock, SessionLog, SyncState, active_session, list_projects,
     list_sessions, read_records, remove_session, session_bound_to, session_with_source,
 };
-use wiff_core::{BaseRuleset, ScmType};
+use wiff_core::{BaseRuleset, ScmType, SessionId};
 use wiff_diff::{LineNo, Side};
 
-fn header(ulid: Ulid) -> RecordBody {
+fn header(id: SessionId) -> RecordBody {
     RecordBody::Session(SessionHeader {
-        ulid,
+        id,
         version: wiff_core::record::FORMAT_VERSION,
         project: "demo".to_string(),
         repo_root: Some("/repos/demo".to_string()),
@@ -68,7 +68,7 @@ fn create_append_and_read_round_trip() {
         .into_iter()
         .map(|record| (record.seq.get(), record.body))
         .collect();
-    wince::assert_eq!(got, vec![(0, header(log.ulid())), (1, comment())]);
+    wince::assert_eq!(got, vec![(0, header(log.id())), (1, comment())]);
 }
 
 #[test]
@@ -137,7 +137,7 @@ fn lock_and_sync_resyncs_a_stale_handle_and_appends_at_the_tail() {
         .collect();
     wince::assert_eq!(
         got,
-        vec![(0, header(writer.ulid())), (1, comment()), (2, comment())]
+        vec![(0, header(writer.id())), (1, comment()), (2, comment())]
     );
 }
 
@@ -160,7 +160,7 @@ fn a_locked_batch_appends_every_record_in_order() {
         .collect();
     wince::assert_eq!(
         got,
-        vec![(0, header(reopened.ulid())), (1, comment()), (2, comment()),]
+        vec![(0, header(reopened.id())), (1, comment()), (2, comment()),]
     );
 }
 
@@ -191,7 +191,7 @@ fn a_diverged_batch_writes_none_of_its_records() {
         .into_iter()
         .map(|record| (record.seq.get(), record.body))
         .collect();
-    wince::assert_eq!(got, vec![(0, header(writer.ulid())), (1, comment())]);
+    wince::assert_eq!(got, vec![(0, header(writer.id())), (1, comment())]);
 }
 
 #[test]
@@ -221,10 +221,10 @@ fn discovery_lists_projects_sessions_and_the_active_one() {
 }
 
 /// Build a session header with `source`, for the discovery tests.
-fn scm_header(source: SourceKind) -> impl FnOnce(Ulid) -> RecordBody {
-    move |ulid| {
+fn scm_header(source: SourceKind) -> impl FnOnce(SessionId) -> RecordBody {
+    move |id| {
         RecordBody::Session(SessionHeader {
-            ulid,
+            id,
             version: wiff_core::record::FORMAT_VERSION,
             project: "demo".to_string(),
             repo_root: Some("/repos/demo".to_string()),
@@ -447,11 +447,11 @@ fn discovery_surfaces_a_corrupt_most_recent_when_no_session_names_the_branch() {
 
 /// Build a session header bound to the pull request at `url`, for the
 /// binding-selection tests.
-fn forge_header(url: &str) -> impl FnOnce(Ulid) -> RecordBody {
+fn forge_header(url: &str) -> impl FnOnce(SessionId) -> RecordBody {
     let forge = Some(ForgeUrl::parse(url).unwrap());
-    move |ulid| {
+    move |id| {
         RecordBody::Session(SessionHeader {
-            ulid,
+            id,
             version: wiff_core::record::FORMAT_VERSION,
             project: "demo".to_string(),
             repo_root: Some("/repos/demo".to_string()),
@@ -579,9 +579,9 @@ fn removing_a_session_deletes_the_log_and_sideband() {
 
 /// A stdin session, for asserting `session_with_source` neither offers it nor
 /// matches a stdin query.
-fn stdin_header(ulid: Ulid) -> RecordBody {
+fn stdin_header(id: SessionId) -> RecordBody {
     RecordBody::Session(SessionHeader {
-        ulid,
+        id,
         version: wiff_core::record::FORMAT_VERSION,
         project: "demo".to_string(),
         repo_root: Some("/repos/demo".to_string()),

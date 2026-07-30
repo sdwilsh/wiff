@@ -13,13 +13,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nix::fcntl::{Flock, FlockArg};
 use time::OffsetDateTime;
-use ulid::Ulid;
 
 use crate::error::{Error, Result};
 use crate::identity::ScmType;
 use crate::record::{
     ForgeUrl, Record, RecordBody, ScmSource, Seq, SessionHeader, SourceKind, TipRule, VersionNumber,
 };
+use crate::session_id::SessionId;
 
 /// The environment variable that overrides the base data directory.
 pub const DATA_DIR_ENV: &str = "WIFF_DATA_DIR";
@@ -39,12 +39,12 @@ fn sessions_root(base: &Path) -> PathBuf {
     base.join("sessions")
 }
 
-/// A handle to a session log: its path, ULID, and next sequence number. It
-/// holds no file descriptor and no lock; appending requires a [`SessionLock`].
+/// A handle to a session log: its path, id, and next sequence number. It holds
+/// no file descriptor and no lock; appending requires a [`SessionLock`].
 #[derive(Debug, Clone)]
 pub struct SessionLog {
     path: PathBuf,
-    ulid: Ulid,
+    id: SessionId,
     next_seq: u64,
 }
 
@@ -140,9 +140,9 @@ impl ProjectLock {
 }
 
 impl SessionLog {
-    /// The session's ULID.
-    pub fn ulid(&self) -> Ulid {
-        self.ulid
+    /// The session's id.
+    pub fn id(&self) -> SessionId {
+        self.id
     }
 
     /// The session file's path.
@@ -150,7 +150,7 @@ impl SessionLog {
         &self.path
     }
 
-    /// The sideband directory beside the session file (`<ULID>.d/`).
+    /// The sideband directory beside the session file (`<id>.d/`).
     pub fn sideband_dir(&self) -> PathBuf {
         self.path.with_extension("d")
     }
@@ -169,38 +169,38 @@ impl SessionLog {
 
     /// Create a new session for `project` under `base`, writing its header
     /// through the returned lock. The header is built from the freshly assigned
-    /// ULID via `build_header` so its embedded id matches the file name. The
-    /// lock is taken before the header is written so no other process can claim
-    /// the fresh file in the gap.
+    /// id via `build_header` so its embedded id matches the file name. The lock
+    /// is taken before the header is written so no other process can claim the
+    /// fresh file in the gap.
     pub fn create(
         base: &Path,
         project: &str,
-        build_header: impl FnOnce(Ulid) -> RecordBody,
+        build_header: impl FnOnce(SessionId) -> RecordBody,
     ) -> Result<(Self, SessionLock)> {
-        Self::create_with_ulid(base, project, Ulid::new(), build_header)
+        Self::create_with_id(base, project, SessionId::new(), build_header)
     }
 
-    /// Create a new session under a caller-chosen `ulid`, for a flow that keys
+    /// Create a new session under a caller-chosen `id`, for a flow that keys
     /// state on the session id before the session file exists: a forge import
-    /// writes its pins under the session's ULID, and must fetch into them before
+    /// writes its pins under the session's id, and must fetch into them before
     /// the captured diff that the session is created from is in hand. An id that
     /// already names a session is reported as [`Error::SessionExists`], which a
     /// caller reusing the existing session can match on.
-    pub fn create_with_ulid(
+    pub fn create_with_id(
         base: &Path,
         project: &str,
-        ulid: Ulid,
-        build_header: impl FnOnce(Ulid) -> RecordBody,
+        id: SessionId,
+        build_header: impl FnOnce(SessionId) -> RecordBody,
     ) -> Result<(Self, SessionLock)> {
         let dir = sessions_root(base).join(project);
         std::fs::create_dir_all(&dir).map_err(|source| Error::io(&dir, source))?;
-        let path = dir.join(format!("{ulid}.jsonl"));
+        let path = dir.join(format!("{id}.jsonl"));
         let file = std::fs::OpenOptions::new()
             .create_new(true)
             .append(true)
             .open(&path)
             .map_err(|source| match source.kind() {
-                std::io::ErrorKind::AlreadyExists => Error::SessionExists(ulid),
+                std::io::ErrorKind::AlreadyExists => Error::SessionExists(id),
                 _ => Error::io(&path, source),
             })?;
         let locked = Flock::lock(file, FlockArg::LockExclusive)
@@ -211,10 +211,10 @@ impl SessionLog {
         };
         let mut log = Self {
             path,
-            ulid,
+            id,
             next_seq: 0,
         };
-        log.append(&mut lock, build_header(ulid))?;
+        log.append(&mut lock, build_header(id))?;
         Ok((log, lock))
     }
 
@@ -222,7 +222,7 @@ impl SessionLog {
     /// record. Opens no descriptor and takes no lock: it reads the file lock-free
     /// to recover the next sequence number.
     pub fn open(path: &Path) -> Result<Self> {
-        let ulid = ulid_from_path(path)?;
+        let id = id_from_path(path)?;
         let records = read_records(path)?;
         let next_seq = records
             .last()
@@ -230,7 +230,7 @@ impl SessionLog {
             .unwrap_or(0);
         Ok(Self {
             path: path.to_path_buf(),
-            ulid,
+            id,
             next_seq,
         })
     }
@@ -459,14 +459,14 @@ impl SessionWatcher {
     }
 }
 
-/// Recover a session's ULID from its `<ULID>.jsonl` path.
-pub fn ulid_from_path(path: &Path) -> Result<Ulid> {
+/// Recover a session's id from its `<id>.jsonl` path.
+pub fn id_from_path(path: &Path) -> Result<SessionId> {
     path.file_stem()
         .and_then(|stem| stem.to_str())
-        .and_then(|stem| Ulid::from_string(stem).ok())
+        .and_then(|stem| stem.parse().ok())
         .ok_or_else(|| Error::NotASession {
             path: path.to_path_buf(),
-            reason: "file name is not a ULID".to_string(),
+            reason: "file name is not a session id".to_string(),
         })
 }
 
@@ -492,12 +492,11 @@ pub fn list_projects(base: &Path) -> Result<Vec<String>> {
 }
 
 /// List a project's session files, most recent first. Recency is the later of
-/// the session's creation time (decoded from the ULID file name) and the file's
-/// modification time; a session created earlier but written to more recently
-/// still sorts ahead. Equal recencies break on the file name; distinct ULIDs
-/// compare deterministically, so the order is total, though two sessions created
-/// in the same millisecond may break in either direction, since `Ulid::new`
-/// randomizes the bits below the timestamp rather than ordering them by mint.
+/// the session's creation time (decoded from the id in the file name) and the
+/// file's modification time; a session created earlier but written to more
+/// recently still sorts ahead. Equal recencies break on the file name; distinct
+/// ids compare deterministically, so the order is total. Ids minted in the same
+/// millisecond order by their monotonic tail, so this is a total order by mint.
 pub fn list_sessions(base: &Path, project: &str) -> Result<Vec<PathBuf>> {
     let dir = sessions_root(base).join(project);
     let entries = match std::fs::read_dir(&dir) {
@@ -521,22 +520,26 @@ pub fn list_sessions(base: &Path, project: &str) -> Result<Vec<PathBuf>> {
     Ok(sessions.into_iter().map(|(_, path)| path).collect())
 }
 
-/// The recency of a session file: the later of its creation time (the timestamp
-/// embedded in the ULID file name) and its last modification. A ULID whose name
-/// cannot be decoded contributes only its modification time.
+/// The recency of a session file: the later of its creation time (decoded from
+/// the id in the file name) and its last modification. An id that cannot be
+/// decoded contributes only its modification time.
 fn recency(path: &Path, modified: SystemTime) -> SystemTime {
-    match ulid_from_path(path) {
-        Ok(ulid) => modified.max(UNIX_EPOCH + Duration::from_millis(ulid.timestamp_ms())),
+    match id_from_path(path) {
+        Ok(id) => {
+            let created_ms =
+                u64::try_from(id.created_at().unix_timestamp_nanos() / 1_000_000).unwrap_or(0);
+            modified.max(UNIX_EPOCH + Duration::from_millis(created_ms))
+        }
         Err(_) => modified,
     }
 }
 
-/// The path a session with `ulid` would occupy under `project`. The file need
-/// not exist; this only names where it lives.
-pub fn session_file(base: &Path, project: &str, ulid: Ulid) -> PathBuf {
+/// The path a session with `id` would occupy under `project`. The file need not
+/// exist; this only names where it lives.
+pub fn session_file(base: &Path, project: &str, id: SessionId) -> PathBuf {
     sessions_root(base)
         .join(project)
-        .join(format!("{ulid}.jsonl"))
+        .join(format!("{id}.jsonl"))
 }
 
 /// The session to act on in the current repository: the most recent session
@@ -676,7 +679,7 @@ pub struct BoundSession {
     pub path: PathBuf,
     /// The session's identifier. Several sessions can bind one pull request (a
     /// fresh review forks a new one), so this is what tells them apart.
-    pub ulid: Ulid,
+    pub id: SessionId,
     /// The pull request the session is bound to.
     pub url: ForgeUrl,
 }
@@ -684,7 +687,7 @@ pub struct BoundSession {
 /// Every session in `project` bound to a pull request, most recent first. A
 /// caller with no pull request in hand (a bare `wiff forge push`) uses this to
 /// find the review to publish: one bound session is unambiguous, while several
-/// mean the caller must name which by ULID.
+/// mean the caller must name which by id.
 ///
 /// A momentarily unreadable session errors rather than reading as "unbound", so
 /// a caller does not act on a partial view of the bucket and, say, publish the
@@ -697,7 +700,7 @@ pub fn forge_bound_sessions(base: &Path, project: &str) -> Result<Vec<BoundSessi
                 if let Some(url) = header.forge {
                     bound.push(BoundSession {
                         path,
-                        ulid: header.ulid,
+                        id: header.id,
                         url,
                     });
                 }

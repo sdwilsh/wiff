@@ -10,6 +10,7 @@
 use anyhow::Result;
 use std::path::Path;
 use ulid::Ulid;
+use wiff_core::SessionId;
 use wiff_core::capture::create_forge_session;
 use wiff_core::identity::ProjectIdentity;
 use wiff_core::record::{CommentEventKind, ExternalKind, RecordBody, VersionNumber};
@@ -25,7 +26,7 @@ use crate::types::FetchedPullRequest;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportOutcome {
     /// The imported session's id.
-    pub session: Ulid,
+    pub session: SessionId,
     /// The diff version the import captured, always the first (`v0`).
     pub version: VersionNumber,
     /// How many of the pull request's comments the session mirrors: inline
@@ -40,7 +41,7 @@ pub struct ImportOutcome {
 /// Where an imported session is written and under which id it is bound.
 pub struct ImportRequest<'a> {
     /// The id the session is created under, which the bound header records.
-    pub session: Ulid,
+    pub session: SessionId,
     /// The sessions root the session file is written beneath.
     pub base: &'a Path,
     /// The project the session belongs to.

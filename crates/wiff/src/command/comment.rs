@@ -83,7 +83,7 @@ struct CommentAddArgs {
     /// Attribute the comment to an agent rather than a human.
     #[arg(long)]
     agent: bool,
-    /// Comment on a specific session by ULID instead of the active one.
+    /// Comment on a specific session by id instead of the active one.
     #[arg(long)]
     session: Option<String>,
     /// Force the project bucket name when it cannot be derived from the cwd.
@@ -157,7 +157,7 @@ impl CommentAddArgs {
 /// Arguments for `wiff comment list`.
 #[derive(Debug, Args)]
 struct CommentListArgs {
-    /// List a specific session by ULID instead of the active one.
+    /// List a specific session by id instead of the active one.
     #[arg(long)]
     session: Option<String>,
     /// Force the project bucket name when it cannot be derived from the cwd.
@@ -189,7 +189,7 @@ struct CommentResolveArgs {
     /// Attribute the change to an agent rather than a human.
     #[arg(long)]
     agent: bool,
-    /// Resolve a comment in a specific session by ULID instead of the active one.
+    /// Resolve a comment in a specific session by id instead of the active one.
     #[arg(long)]
     session: Option<String>,
     /// Force the project bucket name when it cannot be derived from the cwd.
@@ -228,7 +228,7 @@ struct CommentVerdictArgs {
     /// Attribute the change to an agent rather than a human.
     #[arg(long)]
     agent: bool,
-    /// Act on a specific session by ULID instead of the active one.
+    /// Act on a specific session by id instead of the active one.
     #[arg(long)]
     session: Option<String>,
     /// Force the project bucket name when it cannot be derived from the cwd.
@@ -271,7 +271,7 @@ struct CommentRmArgs {
     /// Attribute the withdrawal to an agent rather than a human.
     #[arg(long)]
     agent: bool,
-    /// Withdraw a comment in a specific session by ULID instead of the active one.
+    /// Withdraw a comment in a specific session by id instead of the active one.
     #[arg(long)]
     session: Option<String>,
     /// Force the project bucket name when it cannot be derived from the cwd.

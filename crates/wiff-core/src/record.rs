@@ -16,11 +16,12 @@ use wiff_diff::{FileStatus, LineNo, Side};
 use crate::base_ruleset::BaseRuleset;
 use crate::hash::SidebandHash;
 use crate::identity::ScmType;
+use crate::session_id::SessionId;
 
 /// The session format version, bumped when the record schema changes
 /// incompatibly. A log whose header version differs from this, older or newer,
 /// is refused rather than misread.
-pub const FORMAT_VERSION: u32 = 5;
+pub const FORMAT_VERSION: u32 = 6;
 
 /// A record's 0-based position in its session log and its stable id within the
 /// session. The same integer is a comment's `created_seq`/`updated_seq` and the
@@ -289,8 +290,8 @@ pub struct VerdictSyncRecord {
 /// obtained.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionHeader {
-    /// The session's ULID (also its file name stem).
-    pub ulid: Ulid,
+    /// The session's id (also its file name stem).
+    pub id: SessionId,
     /// The record schema version.
     pub version: u32,
     /// The project bucket the session lives under.

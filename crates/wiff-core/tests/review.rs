@@ -72,7 +72,7 @@ fn create_event(
 
 fn header() -> SessionHeader {
     SessionHeader {
-        ulid: Ulid::from_string("00000000000000000000000009").unwrap(),
+        id: "000000009".parse().unwrap(),
         version: FORMAT_VERSION,
         project: "demo".to_string(),
         repo_root: Some("/repos/demo".to_string()),
@@ -854,7 +854,7 @@ fn a_newer_format_version_is_refused() {
     );
     wince::snapshot_display!(
         error,
-        "session format version 4294967295 does not match supported version 5"
+        "session format version 4294967295 does not match supported version 6"
     );
 }
 
@@ -874,7 +874,7 @@ fn an_older_format_version_is_refused() {
     );
     wince::snapshot_display!(
         error,
-        "session format version 1 does not match supported version 5"
+        "session format version 1 does not match supported version 6"
     );
 }
 

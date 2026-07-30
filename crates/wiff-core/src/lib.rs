@@ -18,6 +18,8 @@ pub mod record;
 pub mod refresh;
 pub mod review;
 pub mod session;
+pub mod session_id;
+pub mod short_id;
 pub mod source;
 
 pub use base_resolve::{RevisionResolver, resolve_base};
@@ -46,6 +48,8 @@ pub use refresh::{
 };
 pub use review::{CommentState, DescriptionState, ReviewState, fold};
 pub use session::{LockWait, ProjectLock, SessionLock, SessionLog};
+pub use session_id::SessionId;
+pub use short_id::ShortId;
 pub use source::{
     CapturedDiff, DiffSource, ExploreCapture, FetchSource, GitSource, Remote, ScmRepo, SkipReason,
     TrackingBranch, capture_explore,

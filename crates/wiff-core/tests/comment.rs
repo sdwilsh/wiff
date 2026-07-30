@@ -148,7 +148,7 @@ fn adding_comments_captures_anchors_and_folds_to_current_state() {
 
     let state = fold(&read_records(log.path()).unwrap()).unwrap();
     let expected_header = SessionHeader {
-        ulid: log.ulid(),
+        id: log.id(),
         version: FORMAT_VERSION,
         project: "demo".to_string(),
         repo_root: None,

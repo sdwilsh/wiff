@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use ulid::Ulid;
 
 use crate::record::CommentNumber;
+use crate::session_id::SessionId;
 
 /// The result type used throughout the core layer.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -79,7 +80,7 @@ pub enum Error {
     /// through the caller-chosen-id path, where a resync that re-imports a pull
     /// request can detect the existing session and reuse it rather than fail.
     #[error("session {0} already exists")]
-    SessionExists(Ulid),
+    SessionExists(SessionId),
 
     /// A session's records lacked the leading header, so it cannot be folded.
     #[error("session has no header record")]

@@ -921,7 +921,7 @@ mod tests {
     use wiff_core::session::{SessionLog, SessionWatcher, read_records};
     use wiff_core::{
         CapturedDiff, DraftComment, LockWait, ProjectIdentity, RefreshOutcome, ReviewState,
-        ScmType, capture_explore, create_session,
+        ScmType, SessionId, capture_explore, create_session,
     };
     use wiff_diff::{LineNo, Side};
     use wiff_forge::{DeclinedWrite, PushOutcome, ResyncOutcome};
@@ -950,7 +950,7 @@ mod tests {
     fn source_state(source: SourceKind) -> ReviewState {
         ReviewState {
             session: SessionHeader {
-                ulid: Ulid(1),
+                id: "000000001".parse().expect("a valid session id"),
                 version: wiff_core::record::FORMAT_VERSION,
                 project: "demo".to_string(),
                 repo_root: Some("/repos/demo".to_string()),
@@ -966,10 +966,10 @@ mod tests {
         }
     }
 
-    /// A session header for `ulid`, the first record of a fresh log.
-    fn header(ulid: Ulid) -> RecordBody {
+    /// A session header for `id`, the first record of a fresh log.
+    fn header(id: SessionId) -> RecordBody {
         RecordBody::Session(SessionHeader {
-            ulid,
+            id,
             version: wiff_core::record::FORMAT_VERSION,
             project: "demo".to_string(),
             repo_root: Some("/repos/demo".to_string()),
@@ -984,7 +984,7 @@ mod tests {
         let base = tempfile::tempdir().expect("tempdir");
         let (log, lock) = SessionLog::create(base.path(), "demo", header).expect("create");
         let path = log.path().to_path_buf();
-        let ulid = log.ulid();
+        let id = log.id();
         drop(lock);
         drop(log);
 
@@ -1004,7 +1004,7 @@ mod tests {
         wince::assert_eq!(
             got,
             vec![
-                (0, header(ulid)),
+                (0, header(id)),
                 (1, resolve_event(Ulid(1), wez(), true)),
                 (2, delete_event(Ulid(2), wez())),
             ]
@@ -1016,7 +1016,7 @@ mod tests {
         let base = tempfile::tempdir().expect("tempdir");
         let (log, lock) = SessionLog::create(base.path(), "demo", header).expect("create");
         let path = log.path().to_path_buf();
-        let ulid = log.ulid();
+        let id = log.id();
         drop(lock);
         drop(log);
 
@@ -1027,7 +1027,7 @@ mod tests {
             .into_iter()
             .map(|record| (record.seq.get(), record.body))
             .collect();
-        wince::assert_eq!(got, vec![(0, header(ulid))]);
+        wince::assert_eq!(got, vec![(0, header(id))]);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2055,11 +2055,11 @@ new file mode 100644
 
         // The rendered review shows the comment with its captured snippet: the
         // changed line marked, with the line above and below as context. The
-        // session's ulid is variable, so it is normalized before the comparison.
+        // session's id is variable, so it is normalized before the comparison.
         let state = ReviewState::load(&session_path).expect("reload state");
         let rendered = crate::render::render(&state, crate::render::Format::Markdown)
             .expect("render markdown");
-        let normalized = rendered.replace(&state.session.ulid.to_string(), "SESSION");
+        let normalized = rendered.replace(&state.session.id.to_string(), "SESSION");
         #[rustfmt::skip]
         wince::snapshot_str!(
             normalized,
@@ -2169,7 +2169,7 @@ new file mode 100644
         let state = ReviewState::load(&session_path).expect("reload state");
         let rendered = crate::render::render(&state, crate::render::Format::Markdown)
             .expect("render markdown");
-        let normalized = rendered.replace(&state.session.ulid.to_string(), "SESSION");
+        let normalized = rendered.replace(&state.session.id.to_string(), "SESSION");
         #[rustfmt::skip]
         wince::snapshot_str!(
             normalized,

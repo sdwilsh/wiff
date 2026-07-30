@@ -11,7 +11,7 @@ use wiff_core::record::{
 };
 use wiff_core::review::{CommentState, ReviewState};
 use wiff_core::source::{CapturedDiff, FetchSource};
-use wiff_core::{BaseRuleset, ScmType};
+use wiff_core::{BaseRuleset, ScmType, SessionId};
 use wiff_diff::{LineNo, Side};
 use wiff_forge::types::{
     FetchedComment, FetchedDescription, FetchedPullRequest, FetchedReview, ForgeAnchor, Resolution,
@@ -248,7 +248,7 @@ async fn importing_a_pull_request_binds_a_session_and_mirrors_its_metadata() {
     let base = tempfile::tempdir().expect("tempdir");
     let source = captured();
     let fetched = fetched();
-    let session = Ulid::from_string("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+    let session: SessionId = "000000001".parse().unwrap();
     let identity = identity();
     let req = ImportRequest {
         session,

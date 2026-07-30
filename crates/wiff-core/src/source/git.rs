@@ -11,13 +11,13 @@ use async_trait::async_trait;
 use tempfile::NamedTempFile;
 use tokio::io::AsyncWriteExt;
 use tracing::trace;
-use ulid::Ulid;
 
 use crate::base_resolve::{RevisionResolver, resolve_base};
 use crate::base_ruleset::{BaseRuleset, parse_ruleset};
 use crate::error::{Error, Result};
 use crate::identity::ScmType;
 use crate::record::{RevisionId, ScmSource, SourceKind, TipRule};
+use crate::session_id::SessionId;
 use crate::source::{
     CapturedDiff, DiffSource, FetchSource, HeadBranch, Remote, ScmRepo, TrackingBranch,
 };
@@ -444,12 +444,12 @@ impl PinSlot {
 
 /// The prefix under which wiff owns all of `session`'s refs, kept apart from
 /// `refs/heads/` so a pin can never name or clobber a user's own branch.
-fn session_ref_prefix(session: Ulid) -> String {
+fn session_ref_prefix(session: SessionId) -> String {
     format!("refs/wiff/{session}/")
 }
 
 /// Build the ref that pins one slot of `session`, under wiff's own namespace.
-fn pin_ref(session: Ulid, slot: PinSlot) -> String {
+fn pin_ref(session: SessionId, slot: PinSlot) -> String {
     format!("{}{}", session_ref_prefix(session), slot.as_str())
 }
 
@@ -589,7 +589,7 @@ impl GitRepo {
     async fn fetch_and_pin(
         &self,
         source: &FetchSource,
-        session: Ulid,
+        session: SessionId,
         slot: PinSlot,
         expect: FetchExpect,
     ) -> Result<RevisionId> {
@@ -668,12 +668,12 @@ impl GitRepo {
 
 #[async_trait]
 impl ScmRepo for GitRepo {
-    async fn fetch_pinned(&self, source: &FetchSource, session: Ulid) -> Result<RevisionId> {
+    async fn fetch_pinned(&self, source: &FetchSource, session: SessionId) -> Result<RevisionId> {
         self.fetch_and_pin(source, session, PinSlot::Head, FetchExpect::Exact)
             .await
     }
 
-    async fn fetch_base(&self, source: &FetchSource, session: Ulid) -> Result<RevisionId> {
+    async fn fetch_base(&self, source: &FetchSource, session: SessionId) -> Result<RevisionId> {
         self.fetch_and_pin(source, session, PinSlot::Base, FetchExpect::Reachable)
             .await
     }
@@ -852,7 +852,7 @@ impl ScmRepo for GitRepo {
             .await
     }
 
-    async fn remove_pins(&self, session: Ulid) -> Result<()> {
+    async fn remove_pins(&self, session: SessionId) -> Result<()> {
         // Delete every ref under the session's namespace, not just the head and
         // base pins: a fetch that died between writing its `incoming` scratch
         // ref and cleaning it up would otherwise orphan a commit that stays
@@ -1089,13 +1089,12 @@ mod tests {
     use std::path::Path;
     use std::process::{Command, Output};
 
-    use ulid::Ulid;
-
     use super::{GitRepo, GitSource};
     use crate::base_resolve::{ResolvedBase, RevisionResolver, resolve_base};
     use crate::base_ruleset::{BaseRuleset, parse_ruleset};
     use crate::identity::ScmType;
     use crate::record::{RevisionId, ScmSource, SourceKind, TipRule};
+    use crate::session_id::SessionId;
     use crate::source::{DiffSource, FetchSource, Remote, ScmRepo, TrackingBranch};
 
     /// Run `git` with `args` in `repo` under a laundered environment so neither
@@ -1714,9 +1713,9 @@ index HASHES
         );
     }
 
-    /// A ULID for a session, distinct across tests so pin refs never collide.
-    fn session(n: u128) -> Ulid {
-        Ulid(n)
+    /// A session id distinct across tests so pin refs never collide.
+    fn session(n: u64) -> SessionId {
+        format!("{n:09}").parse().expect("a valid session id")
     }
 
     #[tokio::test]

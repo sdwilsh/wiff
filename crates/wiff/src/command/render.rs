@@ -12,7 +12,7 @@ pub struct RenderArgs {
     /// The output format.
     #[arg(long, value_enum, default_value_t = Format::Markdown)]
     format: Format,
-    /// Render a specific session by ULID instead of the active one.
+    /// Render a specific session by id instead of the active one.
     #[arg(long)]
     session: Option<String>,
     /// Force the project bucket name when it cannot be derived from the cwd.

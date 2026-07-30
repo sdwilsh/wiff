@@ -14,7 +14,7 @@ use super::visible_threads;
 /// and disappears once its whole thread is withdrawn.
 pub(super) fn render(state: &ReviewState) -> String {
     let mut out = String::new();
-    out.push_str(&format!("# Review {}\n\n", state.session.ulid));
+    out.push_str(&format!("# Review {}\n\n", state.session.id));
     out.push_str(&format!("- project: {}\n", state.session.project));
     out.push_str(&format!("- source: {}\n", state.session.source.describe()));
     match state.latest_version() {
@@ -278,7 +278,7 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_str!(
             render(&state()),
-            "# Review 00000000000000000000000000\n",
+            "# Review 000000000\n",
             "\n",
             "- project: demo\n",
             "- source: git working copy\n",

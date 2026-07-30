@@ -74,11 +74,11 @@ fn verify_binding(log: &SessionLog, url: &ForgeUrl) -> Result<()> {
         Some(bound) if bound == url => Ok(()),
         Some(bound) => bail!(
             "session {} is bound to {}, not {}",
-            log.ulid(),
+            log.id(),
             bound.as_str(),
             url.as_str()
         ),
-        None => bail!("session {} is not bound to a pull request", log.ulid()),
+        None => bail!("session {} is not bound to a pull request", log.id()),
     }
 }
 

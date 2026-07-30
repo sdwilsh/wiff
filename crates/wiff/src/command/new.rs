@@ -5,12 +5,11 @@ use std::path::Path;
 
 use anyhow::{Context, bail};
 use clap::{ArgGroup, Args};
-use ulid::Ulid;
 use wiff_config::Config;
 use wiff_core::record::{Author, Description, SourceKind};
 use wiff_core::session::data_dir;
 use wiff_core::{
-    BaseRuleset, CapturedDiff, IfNeeded, ProjectIdentity, RefreshOutcome, SessionLog,
+    BaseRuleset, CapturedDiff, IfNeeded, ProjectIdentity, RefreshOutcome, SessionId, SessionLog,
     capture_explore, create_session, parse_ruleset, reuse_or_create,
 };
 use wiff_forge::TokenOverride;
@@ -117,11 +116,11 @@ impl NewArgs {
             IfNeeded::Created(log) => report_created(&log),
             IfNeeded::Unchanged(log) => {
                 warn_description_ignored(self.description.as_deref());
-                report_unchanged(log.ulid());
+                report_unchanged(log.id());
             }
             IfNeeded::Refreshed(log, outcome) => {
                 warn_description_ignored(self.description.as_deref());
-                report_refreshed(log.ulid(), &outcome);
+                report_refreshed(log.id(), &outcome);
             }
             // No session covers this range and there is nothing to open one
             // from, the same dead end a plain `wiff new` reports on a clean tree.
@@ -224,7 +223,7 @@ impl NewArgs {
 
 /// Print where a freshly created session lives.
 fn report_created(log: &SessionLog) {
-    println!("created session {}", log.ulid());
+    println!("created session {}", log.id());
     println!("  log: {}", log.path().display());
     println!("  sideband: {}", log.sideband_dir().display());
 }
@@ -243,13 +242,13 @@ fn warn_description_ignored(description: Option<&str>) {
 
 /// Report that `--if-needed` left a matching session untouched because it already
 /// describes the current state.
-fn report_unchanged(ulid: Ulid) {
-    println!("session {ulid} already describes the current state");
+fn report_unchanged(id: SessionId) {
+    println!("session {id} already describes the current state");
 }
 
 /// Report that `--if-needed` refreshed a matching session in place, warning on
 /// stderr when the review's base moved and tallying how its comments rebased.
-fn report_refreshed(ulid: Ulid, outcome: &RefreshOutcome) {
+fn report_refreshed(id: SessionId, outcome: &RefreshOutcome) {
     if let Some(shift) = &outcome.base_shift {
         eprintln!(
             "warning: the review's base moved from {} to {}; it now starts from a different commit",
@@ -258,7 +257,7 @@ fn report_refreshed(ulid: Ulid, outcome: &RefreshOutcome) {
     }
     let total = outcome.exact + outcome.approximate + outcome.relocated + outcome.outdated;
     println!(
-        "refreshed session {ulid}: captured v{}; rebased {total} comment{}: {} exact, {} shifted, \
+        "refreshed session {id}: captured v{}; rebased {total} comment{}: {} exact, {} shifted, \
          {} moved, {} outdated",
         outcome.version,
         if total == 1 { "" } else { "s" },

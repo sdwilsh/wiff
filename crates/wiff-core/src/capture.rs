@@ -7,7 +7,6 @@
 
 use std::path::Path;
 
-use ulid::Ulid;
 use wiff_diff::parse::parse;
 
 use crate::error::{Error, Result};
@@ -19,6 +18,7 @@ use crate::record::{
 };
 use crate::refresh::{RefreshOutcome, refresh_session};
 use crate::session::{LockWait, ProjectLock, SessionLock, SessionLog, session_with_source};
+use crate::session_id::SessionId;
 use crate::source::CapturedDiff;
 
 /// Create a session for `identity` under `base`, capturing `captured` as its
@@ -42,7 +42,7 @@ pub fn create_session(
 /// The identity of a session being written: its id, and the pull request it
 /// binds for a forge import.
 struct NewSession {
-    ulid: Ulid,
+    id: SessionId,
     forge: Option<ForgeUrl>,
 }
 
@@ -50,16 +50,16 @@ impl NewSession {
     /// A freshly minted, unbound session, the shape a local `wiff new` creates.
     fn fresh() -> Self {
         Self {
-            ulid: Ulid::new(),
+            id: SessionId::new(),
             forge: None,
         }
     }
 
     /// A session under a caller-chosen id bound to the pull request at `forge`,
     /// the shape a forge import creates.
-    fn bound(ulid: Ulid, forge: ForgeUrl) -> Self {
+    fn bound(id: SessionId, forge: ForgeUrl) -> Self {
         Self {
-            ulid,
+            id,
             forge: Some(forge),
         }
     }
@@ -143,7 +143,7 @@ pub fn create_forge_session(
     identity: &ProjectIdentity,
     cwd: &Path,
     forge: ForgeUrl,
-    session: Ulid,
+    session: SessionId,
     captured: &CapturedDiff,
     initial: Vec<RecordBody>,
 ) -> Result<SessionLog> {
@@ -181,9 +181,9 @@ impl ProjectLock {
         let cwd_text = cwd.to_string_lossy().into_owned();
         let source = captured.source.clone();
         let (mut log, mut lock) =
-            SessionLog::create_with_ulid(base, &identity.canonical, new.ulid, |ulid| {
+            SessionLog::create_with_id(base, &identity.canonical, new.id, |id| {
                 RecordBody::Session(SessionHeader {
-                    ulid,
+                    id,
                     version: FORMAT_VERSION,
                     project: identity.canonical.clone(),
                     repo_root,

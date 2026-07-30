@@ -8,14 +8,14 @@ use super::{latest_files, live_comments};
 
 /// The version of the JSON shape emitted by `wiff render --format json`,
 /// incremented whenever that shape changes in a way a consumer must notice.
-const JSON_SCHEMA_VERSION: u32 = 5;
+const JSON_SCHEMA_VERSION: u32 = 6;
 
 /// Render `state` as a versioned JSON document.
 pub(super) fn render(state: &ReviewState) -> anyhow::Result<String> {
     let envelope = JsonEnvelope {
         schema_version: JSON_SCHEMA_VERSION,
         session: JsonSession {
-            ulid: state.session.ulid.to_string(),
+            id: state.session.id.to_string(),
             project: &state.session.project,
             repo_root: state.session.repo_root.as_deref(),
             cwd: &state.session.cwd,
@@ -42,11 +42,11 @@ struct JsonEnvelope<'a> {
     verdicts: &'a [ActorVerdict],
 }
 
-/// The session identity fields exposed in JSON, with the ULID and source as
+/// The session identity fields exposed in JSON, with the id and source as
 /// stable strings rather than their in-memory representations.
 #[derive(Serialize)]
 struct JsonSession<'a> {
-    ulid: String,
+    id: String,
     project: &'a str,
     repo_root: Option<&'a str>,
     cwd: &'a str,
@@ -65,9 +65,9 @@ mod tests {
         let out = render(&state()).unwrap();
         let value: serde_json::Value = serde_json::from_str(&out).unwrap();
         let expected = json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "session": {
-                "ulid": "00000000000000000000000000",
+                "id": "000000000",
                 "project": "demo",
                 "repo_root": "/repos/demo",
                 "cwd": "/repos/demo",

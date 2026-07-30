@@ -13,7 +13,7 @@ use wiff_core::record::{
 use wiff_core::review::{CommentState, ReviewState};
 use wiff_core::session::SessionLog;
 use wiff_core::source::{CapturedDiff, FetchSource};
-use wiff_core::{BaseRuleset, RefreshOutcome, ScmType};
+use wiff_core::{BaseRuleset, RefreshOutcome, ScmType, SessionId};
 use wiff_diff::{LineNo, Side};
 use wiff_forge::types::{
     FetchedComment, FetchedDescription, FetchedPullRequest, FetchedReview, ForgeAnchor,
@@ -220,7 +220,7 @@ async fn seed(
     fetched: &FetchedPullRequest,
 ) -> (std::path::PathBuf, SessionLog) {
     let identity = identity();
-    let session = Ulid::from_string("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+    let session: SessionId = "000000001".parse().unwrap();
     import_pull_request(
         &captured(DIFF_V0, "head0"),
         fetched,
@@ -547,6 +547,6 @@ async fn resyncing_rejects_a_fetch_for_a_different_pull_request() {
 
     wince::assert_eq!(
         error.to_string(),
-        "session 01ARZ3NDEKTSV4RRFFQ69G5FAV is bound to https://github.com/octo/demo/pull/7, not https://github.com/octo/demo/pull/99"
+        "session 000000001 is bound to https://github.com/octo/demo/pull/7, not https://github.com/octo/demo/pull/99"
     );
 }

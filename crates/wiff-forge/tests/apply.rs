@@ -14,7 +14,7 @@ use wiff_core::record::{
     VersionNumber, comment_body_marker,
 };
 use wiff_core::review::ReviewState;
-use wiff_core::{BaseRuleset, ScmType, SessionLog, SidebandHash};
+use wiff_core::{BaseRuleset, ScmType, SessionId, SessionLog, SidebandHash};
 use wiff_diff::{LineNo, Side};
 use wiff_forge::{
     DeclinedWrite, Forge, NewPullRequest, OutgoingComment, OutgoingReview, PushOutcome,
@@ -71,9 +71,9 @@ fn create(id: u128, author: &str, target: CommentTarget, body: &str) -> RecordBo
     })
 }
 
-fn header(ulid: Ulid) -> SessionHeader {
+fn header(id: SessionId) -> SessionHeader {
     SessionHeader {
-        ulid,
+        id,
         version: FORMAT_VERSION,
         project: "demo".to_string(),
         repo_root: Some("/repos/demo".to_string()),
@@ -108,10 +108,9 @@ fn pull_request() -> ForgeUrl {
 /// returning it open for appending.
 fn session_with(events: Vec<RecordBody>) -> (tempfile::TempDir, SessionLog) {
     let base = tempfile::tempdir().expect("tempdir");
-    let (mut log, mut lock) = SessionLog::create(base.path(), "demo", |ulid| {
-        RecordBody::Session(header(ulid))
-    })
-    .expect("create session");
+    let (mut log, mut lock) =
+        SessionLog::create(base.path(), "demo", |id| RecordBody::Session(header(id)))
+            .expect("create session");
     log.append(&mut lock, RecordBody::DiffVersion(version()))
         .expect("append version");
     for body in events {

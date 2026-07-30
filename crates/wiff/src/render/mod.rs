@@ -93,11 +93,15 @@ mod fixture {
         SourceKind, TipRule, VersionNumber,
     };
     use wiff_core::review::{ActorVerdict, CommentState, DescriptionState, ReviewState};
-    use wiff_core::{BaseRuleset, ScmType, SidebandHash};
+    use wiff_core::{BaseRuleset, ScmType, SessionId, SidebandHash};
     use wiff_diff::{FileStatus, LineNo, Side};
 
     fn ulid(text: &str) -> Ulid {
         Ulid::from_string(text).unwrap()
+    }
+
+    fn session_id(text: &str) -> SessionId {
+        text.parse().unwrap()
     }
 
     fn author(name: &str, kind: AuthorKind) -> Author {
@@ -249,7 +253,7 @@ mod fixture {
 
         ReviewState {
             session: SessionHeader {
-                ulid: ulid("00000000000000000000000000"),
+                id: session_id("000000000"),
                 version: FORMAT_VERSION,
                 project: "demo".to_string(),
                 repo_root: Some("/repos/demo".to_string()),

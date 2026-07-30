@@ -8,14 +8,13 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, anyhow, bail};
 use clap::{Args, Subcommand};
-use ulid::Ulid;
 use wiff_config::Config;
 use wiff_core::record::{Author, ForgeUrl, SourceKind, TipRule};
 use wiff_core::session::{
     data_dir, forge_bound_sessions, session_binding, session_bound_to, session_file,
 };
 use wiff_core::source::CapturedDiff;
-use wiff_core::{BaseRuleset, GitSource, ProjectIdentity, ScmRepo, SessionLog};
+use wiff_core::{BaseRuleset, GitSource, ProjectIdentity, ScmRepo, SessionId, SessionLog};
 use wiff_forge::{
     DeclinedWrite, FetchedPullRequest, Forge, GithubForge, ImportRequest, PushOutcome,
     ResyncOutcome, TokenOverride, assemble_diff, import_pull_request, push, resolve_token,
@@ -119,7 +118,7 @@ struct PushArgs {
     /// pull-request URL. Omitted when the repository holds a single bound review.
     #[arg(value_name = "NUMBER|URL")]
     pr: Option<String>,
-    /// The exact session to publish, by ULID. Names one fork when several
+    /// The exact session to publish, by id. Names one fork when several
     /// reviews of the same pull request share a binding and a URL cannot tell
     /// them apart.
     #[arg(long, conflicts_with = "pr")]
@@ -163,7 +162,7 @@ impl PushArgs {
     }
 
     /// The session to publish, its bound pull request, and an adapter for that
-    /// pull request's host. A ULID names one session outright; a pull request
+    /// pull request's host. An id names one session outright; a pull request
     /// resolves to the most recent session bound to it; with neither given, the
     /// repository's single bound session is published, and it is an error to
     /// have none, or to have several without naming which.
@@ -176,15 +175,16 @@ impl PushArgs {
         cli: &TokenOverride,
     ) -> anyhow::Result<(PathBuf, ForgeUrl, Box<dyn Forge>)> {
         if let Some(session) = &self.session {
-            let ulid = Ulid::from_string(session)
-                .with_context(|| format!("{session} is not a valid session ULID"))?;
-            let path = session_file(base, &identity.canonical, ulid);
+            let id: SessionId = session
+                .parse()
+                .map_err(|_| anyhow!("{session} is not a valid session id"))?;
+            let path = session_file(base, &identity.canonical, id);
             if !path.exists() {
-                bail!("`wiff forge push --session {ulid}` names no session in this repository");
+                bail!("`wiff forge push --session {id}` names no session in this repository");
             }
             let url = session_binding(&path)?.ok_or_else(|| {
                 anyhow!(
-                    "session {ulid} is not bound to a pull request; pull one with `wiff forge \
+                    "session {id} is not bound to a pull request; pull one with `wiff forge \
                      pull` before pushing"
                 )
             })?;
@@ -216,12 +216,12 @@ impl PushArgs {
             _ => {
                 let listing = bound
                     .iter()
-                    .map(|session| format!("{} ({})", session.ulid, session.url.as_str()))
+                    .map(|session| format!("{} ({})", session.id, session.url.as_str()))
                     .collect::<Vec<_>>()
                     .join(", ");
                 bail!(
                     "several sessions here are bound to pull requests: {listing}; name which to \
-                     push with `wiff forge push --session <ULID>`"
+                     push with `wiff forge push --session <id>`"
                 )
             }
         }
@@ -260,7 +260,7 @@ pub(crate) async fn reconcile_before_push(
     author: Author,
 ) -> anyhow::Result<ResyncOutcome> {
     let fetched = forge.fetch(url).await?;
-    let source = prepare_source(repo, root, &fetched, log.ulid()).await?;
+    let source = prepare_source(repo, root, &fetched, log.id()).await?;
     resync_pull_request(log, &source, &fetched, author).await
 }
 
@@ -463,12 +463,12 @@ async fn mirror_into_repo(
     match existing {
         Some(path) => {
             let mut log = SessionLog::open(&path)?;
-            let source = prepare_source(repo.as_ref(), &root, &fetched, log.ulid()).await?;
+            let source = prepare_source(repo.as_ref(), &root, &fetched, log.id()).await?;
             resync_pull_request(&mut log, &source, &fetched, author).await?;
             Ok(path)
         }
         None => {
-            let session = Ulid::new();
+            let session = SessionId::new();
             let source = prepare_source(repo.as_ref(), &root, &fetched, session).await?;
             let request = ImportRequest {
                 session,
@@ -509,7 +509,7 @@ async fn mirror_without_repo(
             Ok(path)
         }
         None => {
-            let session = Ulid::new();
+            let session = SessionId::new();
             let request = ImportRequest {
                 session,
                 base,
@@ -549,7 +549,7 @@ async fn prepare_source(
     repo: &dyn ScmRepo,
     root: &Path,
     fetched: &FetchedPullRequest,
-    session: Ulid,
+    session: SessionId,
 ) -> anyhow::Result<GitSource> {
     let head = repo.fetch_pinned(&fetched.head, session).await?;
     repo.fetch_base(&fetched.base, session).await?;
@@ -617,6 +617,7 @@ mod tests {
 
     use super::*;
     use crate::testutil::{git, git_out};
+    use ulid::Ulid;
 
     /// A config whose forge table is `table` and whose other fields are the
     /// defaults, for exercising `connect_forge` without a config file.
@@ -1572,9 +1573,9 @@ mod tests {
     #[tokio::test]
     async fn pushing_with_no_bound_session_is_refused() {
         let data = tempfile::tempdir().expect("data tempdir");
-        let (_log, lock) = SessionLog::create(data.path(), "demo", |ulid| {
+        let (_log, lock) = SessionLog::create(data.path(), "demo", |id| {
             RecordBody::Session(SessionHeader {
-                ulid,
+                id,
                 version: FORMAT_VERSION,
                 project: "demo".to_string(),
                 repo_root: Some("/repos/demo".to_string()),
@@ -1623,11 +1624,14 @@ mod tests {
 
     /// A session header for `project` bound to `forge`, with an inert
     /// working-copy source, for populating a bucket without a repository.
-    fn bucket_header(project: &str, forge: Option<ForgeUrl>) -> impl FnOnce(Ulid) -> RecordBody {
+    fn bucket_header(
+        project: &str,
+        forge: Option<ForgeUrl>,
+    ) -> impl FnOnce(SessionId) -> RecordBody {
         let project = project.to_string();
-        move |ulid| {
+        move |id| {
             RecordBody::Session(SessionHeader {
-                ulid,
+                id,
                 version: FORMAT_VERSION,
                 project: project.clone(),
                 repo_root: Some("/repos/demo".to_string()),
@@ -1700,27 +1704,25 @@ mod tests {
 
     // Two reviews forked from one pull request (the `--new-session` workflow)
     // share a binding, so a bare push cannot choose between them and names both
-    // by ULID for the user to pick with `--session`.
+    // by id for the user to pick with `--session`.
     #[tokio::test]
-    async fn a_bare_push_across_same_pull_request_forks_names_each_by_ulid() {
+    async fn a_bare_push_across_same_pull_request_forks_names_each_by_id() {
         let data = tempfile::tempdir().expect("data tempdir");
         let url = ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("valid url");
-        // Choose the forks' ULIDs so the second sorts ahead of the first,
-        // rather than leaving it to how Ulid::new randomizes the bits below the
-        // timestamp for two mints in the same millisecond. Recency then orders
-        // them unambiguously and the listing is deterministic.
-        let (first, lock) = SessionLog::create_with_ulid(
+        // Choose the forks' ids so the second sorts ahead of the first, making
+        // recency order them unambiguously and the listing deterministic.
+        let (first, lock) = SessionLog::create_with_id(
             data.path(),
             "demo",
-            Ulid::from_parts(1, 1),
+            "000000001".parse().expect("a valid session id"),
             bucket_header("demo", Some(url.clone())),
         )
         .expect("create first fork");
         drop(lock);
-        let (second, lock) = SessionLog::create_with_ulid(
+        let (second, lock) = SessionLog::create_with_id(
             data.path(),
             "demo",
-            Ulid::from_parts(2, 2),
+            "000000002".parse().expect("a valid session id"),
             bucket_header("demo", Some(url.clone())),
         )
         .expect("create second fork");
@@ -1748,25 +1750,25 @@ mod tests {
             .await
             .map(|_| ())
             .expect_err("same-pull-request forks cannot be chosen between");
-        // The listing is most recent first, so the second fork, whose ULID
-        // sorts ahead, is named before the first.
+        // The listing is most recent first, so the second fork, whose id sorts
+        // ahead, is named before the first.
         wince::assert_eq!(
             error.to_string(),
             format!(
                 "several sessions here are bound to pull requests: {} \
                  (https://github.com/octo/demo/pull/7), {} \
                  (https://github.com/octo/demo/pull/7); name which to push with `wiff forge push \
-                 --session <ULID>`",
-                second.ulid(),
-                first.ulid(),
+                 --session <id>`",
+                second.id(),
+                first.id(),
             )
         );
     }
 
-    // Naming one fork by ULID publishes exactly that session, reaching a fork a
+    // Naming one fork by id publishes exactly that session, reaching a fork a
     // bare push or a URL (which resolves to the most recent) could not.
     #[tokio::test]
-    async fn a_session_ulid_selects_one_same_pull_request_fork() {
+    async fn a_session_id_selects_one_same_pull_request_fork() {
         let data = tempfile::tempdir().expect("data tempdir");
         let url = ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("valid url");
         let (older, lock) = SessionLog::create(
@@ -1791,7 +1793,7 @@ mod tests {
         };
         let args = PushArgs {
             pr: None,
-            session: Some(older.ulid().to_string()),
+            session: Some(older.id().to_string()),
             author: None,
             agent: false,
         };
@@ -1820,20 +1822,20 @@ mod tests {
         );
     }
 
-    // A syntactically valid ULID that names no session file reports that plainly
+    // A syntactically valid id that names no session file reports that plainly
     // rather than leaking the internal path through a raw I/O error.
     #[tokio::test]
-    async fn a_session_ulid_naming_no_session_reports_it_plainly() {
+    async fn a_session_id_naming_no_session_reports_it_plainly() {
         let data = tempfile::tempdir().expect("data tempdir");
         let identity = ProjectIdentity {
             canonical: "demo".to_string(),
             repo_root: Some(PathBuf::from("/repos/demo")),
             scm: Some(ScmType::Git),
         };
-        let ulid = Ulid::from_string("01BX5ZZKBKACTAV9WEVGEMMVRZ").expect("valid ulid");
+        let id: SessionId = "00000000z".parse().expect("valid session id");
         let args = PushArgs {
             pr: None,
-            session: Some(ulid.to_string()),
+            session: Some(id.to_string()),
             author: None,
             agent: false,
         };
@@ -1850,7 +1852,7 @@ mod tests {
             .expect_err("an unknown session is refused");
         wince::assert_eq!(
             format!("{error:#}"),
-            "`wiff forge push --session 01BX5ZZKBKACTAV9WEVGEMMVRZ` names no session in this \
+            "`wiff forge push --session 00000000z` names no session in this \
              repository"
                 .to_string()
         );

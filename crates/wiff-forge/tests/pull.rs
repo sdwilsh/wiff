@@ -175,7 +175,7 @@ fn fold_reviews(events: Vec<RecordBody>) -> String {
 
 fn header() -> SessionHeader {
     SessionHeader {
-        ulid: Ulid::from_string("00000000000000000000000009").unwrap(),
+        id: "000000009".parse().unwrap(),
         version: FORMAT_VERSION,
         project: "demo".to_string(),
         repo_root: Some("/repos/demo".to_string()),
