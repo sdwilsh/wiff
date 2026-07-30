@@ -21,8 +21,8 @@ use wiff_core::{
 use wiff_diff::decode_text;
 use wiff_forge::{Forge, PushOutcome, ResyncOutcome, TokenOverride, push};
 use wiff_tui::{
-    App, CommentSync, CompareRequest, DiffView, Exit, ExitDefault, Hooks, KeyHints, PublishStep,
-    Review, Theme, run,
+    App, CommentSync, CompareRequest, DiffView, Exit, ExitDefault, HighlightMode, Hooks, KeyHints,
+    PublishStep, Review, Theme, run,
 };
 
 use crate::command::explore::to_slash;
@@ -85,13 +85,21 @@ pub fn open(
     // Comments authored in the TUI are attributed to the human reviewer and
     // anchored against the diff version being reviewed.
     let author = config.author.resolve(AuthorKind::Human);
-    let review = Review::deferred(
+    // Under deterministic recording, highlight eagerly so each captured frame is
+    // reproducible; interactive use defers highlighting to background threads.
+    let highlight = if wiff_core::determinism::enabled() {
+        HighlightMode::Eager
+    } else {
+        HighlightMode::Deferred
+    };
+    let review = Review::with_highlight_mode(
         view,
         diff,
         author.clone(),
         version.number.get(),
         comments,
         state.description.clone(),
+        highlight,
     );
     let mut app = App::reviewing(review, 0, &theme)
         .with_exit_default(exit_default(config.on_exit))

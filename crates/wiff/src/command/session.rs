@@ -76,7 +76,7 @@ impl SessionListArgs {
         }
         print!(
             "{}",
-            render_list(&groups, self.all, OffsetDateTime::now_utc())
+            render_list(&groups, self.all, wiff_core::determinism::now())
         );
         Ok(())
     }
@@ -739,15 +739,7 @@ other
                     reason: "session format version 4 does not match supported version 6"
                         .to_string(),
                 },
-                row(
-                    "000000001",
-                    SourceKind::Stdin,
-                    None,
-                    None,
-                    None,
-                    0,
-                    0,
-                ),
+                row("000000001", SourceKind::Stdin, None, None, None, 0, 0),
             ],
         )];
         let out = render_list(&groups, false, now());

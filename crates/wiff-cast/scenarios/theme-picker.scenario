@@ -1,0 +1,24 @@
+# Open the review and step the theme picker down to a light theme, recoloring
+# the whole diff live, then settle on it.
+%size 100 30
+
+%prep
+. review-change.fixture.sh
+
+%record
+$ wiff new
+%status T shows the theme picker
+%pause 1.6
+%keys T
+%pause 0.8
+# Jump to the top of the list, then descend to Catppuccin Latte so selecting it
+# recolors the whole diff from dark to light.
+%keys g
+%pause 0.6
+%keys j
+%pause 0.5
+%keys j
+%pause 0.8
+%keys enter
+%pause 1.2
+%keys q enter

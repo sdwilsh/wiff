@@ -1,0 +1,17 @@
+/* Scale the whole page up by 10%. The theme sizes its type in rem off a
+   responsive root font size (125% at the base, rising at wider viewports), so
+   each of its breakpoints is reproduced here multiplied by 1.1 rather than
+   overridden with a single value that would drop the larger steps. */
+html {
+  font-size: 137.5%;
+}
+@media screen and (min-width: 100em) {
+  html {
+    font-size: 151.25%;
+  }
+}
+@media screen and (min-width: 125em) {
+  html {
+    font-size: 165%;
+  }
+}

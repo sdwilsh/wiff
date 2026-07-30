@@ -76,7 +76,7 @@ impl DraftComment {
             }
             CommentTarget::File { .. } | CommentTarget::Review => None,
         };
-        let id = Ulid::new();
+        let id = crate::determinism::new_ulid();
         let event = CommentEvent {
             id,
             author: self.author,

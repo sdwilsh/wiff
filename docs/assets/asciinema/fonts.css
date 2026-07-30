@@ -1,0 +1,18 @@
+/* JetBrains Mono, subset to the ranges the casts use (Latin-1, punctuation,
+   box drawing, and geometric shapes) and served locally so the cast borders
+   and gutter rules render edge to edge on any visitor's machine, not only
+   those that happen to have a full-coverage monospace font installed. */
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("jetbrains-mono-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("jetbrains-mono-700.woff2") format("woff2");
+}

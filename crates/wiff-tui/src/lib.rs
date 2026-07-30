@@ -36,6 +36,6 @@ pub use input::Input;
 pub use key::{Chord, Key, KeyPress};
 pub use keymap::{Keymap, KeymapError, KeymapOverrides, Resolution};
 pub use render::{BoxId, DiffView, Document, Fold, KeyHints, ParsedFile, Row, RowKind};
-pub use review::{CommentSync, Review};
+pub use review::{CommentSync, HighlightMode, Review};
 pub use run::{Hooks, run};
 pub use theme::Theme;

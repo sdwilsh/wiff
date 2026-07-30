@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/wiff",
+    "crates/wiff-cast",
     "crates/wiff-config",
     "crates/wiff-core",
     "crates/wiff-diff",
@@ -30,6 +31,7 @@ nix = { version = "0.29", features = ["fs", "signal"] }
 nucleo-matcher = "0.3"
 octocrab = "0.54"
 percent-encoding = "2"
+portable-pty = "0.9"
 pulldown-cmark = { version = "0.12", default-features = false }
 ratatui = { version = "0.29", default-features = false }
 serde = { version = "1", features = ["derive"] }
@@ -38,6 +40,7 @@ serde_plain = "1"
 similar = "2"
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 tempfile = "3"
+termwiz = { version = "0.23", default-features = false }
 thiserror = "2"
 time = { version = "0.3", features = ["serde-well-known"] }
 tokio = { version = "1", features = ["fs", "io-std", "io-util", "macros", "process", "rt-multi-thread"] }

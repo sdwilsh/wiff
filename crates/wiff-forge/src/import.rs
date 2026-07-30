@@ -9,9 +9,9 @@
 
 use anyhow::Result;
 use std::path::Path;
-use ulid::Ulid;
 use wiff_core::SessionId;
 use wiff_core::capture::create_forge_session;
+use wiff_core::determinism::new_ulid;
 use wiff_core::identity::ProjectIdentity;
 use wiff_core::record::{CommentEventKind, ExternalKind, RecordBody, VersionNumber};
 use wiff_core::source::DiffSource;
@@ -105,8 +105,8 @@ fn mirror_events(
     number: VersionNumber,
 ) -> (Vec<RecordBody>, Mirrored) {
     let description = reconcile_description(&fetched.description, None);
-    let comments = reconcile_comments(&fetched.comments, &[], diff, number, Ulid::new);
-    let reviews = reconcile_reviews(&fetched.reviews, &[], number, Ulid::new);
+    let comments = reconcile_comments(&fetched.comments, &[], diff, number, new_ulid);
+    let reviews = reconcile_reviews(&fetched.reviews, &[], number, new_ulid);
 
     let mirrored = Mirrored {
         comments: created_count(&comments, ExternalKind::ReviewComment),

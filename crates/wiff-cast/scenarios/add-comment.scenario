@@ -1,0 +1,15 @@
+# Open the review, move onto the changed line, and leave a comment.
+%size 100 30
+
+%prep
+. review-change.fixture.sh
+
+%record
+$ wiff new
+%keys k k c
+%pause 0.6
+%type A named binding reads much better here.
+%pause 0.8
+%keys ctrl-d
+%pause 1.2
+%keys q enter

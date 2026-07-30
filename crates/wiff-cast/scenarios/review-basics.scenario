@@ -1,0 +1,17 @@
+# Make a change, look at it with git status, then open it in wiff and browse
+# the diff.
+%size 100 30
+
+%prep
+. review-basics.fixture.sh
+
+%record
+$ git status
+$ wiff new
+%keys j j
+%pause 0.5
+%keys space
+%pause 1.0
+%keys space
+%pause 1.0
+%keys q enter

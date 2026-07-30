@@ -1,0 +1,46 @@
+[project]
+site_name = "wiff"
+site_description = "wiff -- a terminal-centric diff and code-review utility."
+site_author = "Wez Furlong"
+site_url = "https://wiff.dev/"
+copyright = """
+Copyright &copy; 2026-Present Wez Furlong
+"""
+
+nav = [
+  { "Home" = "index.md" },
+  "screencasts.md",
+]
+
+# The vendored asciinema player, loaded before the initializer that turns each
+# cast placeholder on a page into a player.
+extra_css = [
+  "assets/asciinema/asciinema-player.css",
+  "assets/asciinema/fonts.css",
+  "assets/extra.css",
+]
+extra_javascript = [
+  "assets/asciinema/asciinema-player.min.js",
+  "assets/asciinema/init.js",
+]
+
+[project.theme]
+language = "en"
+features = ["navigation.instances", "content.code.copy"]
+
+[[project.theme.palette]]
+scheme = "default"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+scheme = "slate"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to light mode"
+
+[project.markdown_extensions.admonition]
+[project.markdown_extensions.attr_list]
+[project.markdown_extensions.md_in_html]
+[project.markdown_extensions.toc]
+[project.markdown_extensions.pymdownx.highlight]
+[project.markdown_extensions.pymdownx.superfences]

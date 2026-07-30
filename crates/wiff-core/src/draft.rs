@@ -425,7 +425,7 @@ pub fn draft_create(
     body: String,
 ) -> CommentEvent {
     CommentEvent {
-        id: Ulid::new(),
+        id: crate::determinism::new_ulid(),
         author,
         authored_at: None,
         origin: None,

@@ -36,6 +36,18 @@ fn description_render_id() -> Ulid {
     Ulid::from_string("0000000000DESCR1PT10N00000").expect("a valid synthetic ULID literal")
 }
 
+/// Whether a review colors its diff on construction or hands the work to
+/// background threads. Eager highlighting keeps a review's rendered output a
+/// pure function of its inputs, which the tests and the deterministic recorder
+/// rely on; deferred highlighting opens a large diff without waiting for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HighlightMode {
+    /// Parse and color every file on the calling thread during construction.
+    Eager,
+    /// Hand parsing to background worker threads, starting every file plain.
+    Deferred,
+}
+
 /// A comparison against an earlier version: the reference version whose after
 /// content the presented before side shows, and, per file, the version and side
 /// that before content came from so a comment placed on it anchors correctly.
@@ -115,9 +127,10 @@ pub struct Review {
 
 impl Review {
     /// A review over `diff` with its already-committed `comments` and
-    /// `description`, and no pending drafts. Comments authored in the TUI are
-    /// attributed to `author` and anchored against diff `version`. The caller
-    /// filters out withdrawn committed comments.
+    /// `description`, and no pending drafts, highlighted eagerly on the calling
+    /// thread. Comments authored in the TUI are attributed to `author` and
+    /// anchored against diff `version`. The caller filters out withdrawn
+    /// committed comments.
     pub fn new(
         view: DiffView,
         diff: Diff,
@@ -126,27 +139,21 @@ impl Review {
         comments: Vec<CommentState>,
         description: Option<DescriptionState>,
     ) -> Self {
-        let mut review = Self {
+        Self::with_highlight_mode(
             view,
             diff,
-            parsed: Vec::new(),
-            highlights: Vec::new(),
-            highlighter: None,
             author,
             version,
-            committed: comments,
-            committed_description: description,
-            drafts: DraftBuffer::new(),
-            comparing: None,
-        };
-        review.highlight_eagerly();
-        review
+            comments,
+            description,
+            HighlightMode::Eager,
+        )
     }
 
-    /// Build a review over `diff` that parses its syntax highlighting on
-    /// background worker threads instead of on construction. Every file starts
-    /// plain; the caller polls [`poll_highlights`](Review::poll_highlights) to
-    /// fold in each parse as it completes.
+    /// A review over `diff` that parses its syntax highlighting on background
+    /// worker threads instead of on construction. Every file starts plain; the
+    /// caller polls [`poll_highlights`](Review::poll_highlights) to fold in each
+    /// parse as it completes.
     pub fn deferred(
         view: DiffView,
         diff: Diff,
@@ -155,13 +162,39 @@ impl Review {
         comments: Vec<CommentState>,
         description: Option<DescriptionState>,
     ) -> Self {
-        let highlighter = BackgroundHighlighter::new(view.parser());
+        Self::with_highlight_mode(
+            view,
+            diff,
+            author,
+            version,
+            comments,
+            description,
+            HighlightMode::Deferred,
+        )
+    }
+
+    /// A review over `diff` with its already-committed `comments` and
+    /// `description`, highlighting its files as `highlight` chooses: eagerly on
+    /// the calling thread, or deferred to background worker threads.
+    pub fn with_highlight_mode(
+        view: DiffView,
+        diff: Diff,
+        author: Author,
+        version: u32,
+        comments: Vec<CommentState>,
+        description: Option<DescriptionState>,
+        highlight: HighlightMode,
+    ) -> Self {
+        let highlighter = match highlight {
+            HighlightMode::Eager => None,
+            HighlightMode::Deferred => Some(BackgroundHighlighter::new(view.parser())),
+        };
         let mut review = Self {
             view,
             diff,
             parsed: Vec::new(),
             highlights: Vec::new(),
-            highlighter: Some(highlighter),
+            highlighter,
             author,
             version,
             committed: comments,
@@ -169,7 +202,7 @@ impl Review {
             drafts: DraftBuffer::new(),
             comparing: None,
         };
-        review.start_background();
+        review.rehighlight();
         review
     }
 

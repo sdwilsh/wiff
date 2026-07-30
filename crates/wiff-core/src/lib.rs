@@ -9,6 +9,7 @@ pub mod comment;
 pub mod compare;
 pub mod config;
 pub mod description;
+pub mod determinism;
 pub mod draft;
 pub mod error;
 pub mod hash;

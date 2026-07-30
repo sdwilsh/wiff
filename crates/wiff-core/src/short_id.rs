@@ -56,7 +56,13 @@ impl ShortId {
     /// increments from the last id minted in this process rather than being
     /// drawn afresh, so a burst never repeats and never goes backwards even if
     /// the system clock does; a new second re-seeds the tail at random.
+    ///
+    /// Under the deterministic recording mode the id instead follows the fixed
+    /// sequence the [`determinism`](crate::determinism) facility hands out.
     pub fn new() -> Self {
+        if let Some(id) = crate::determinism::deterministic_short_id() {
+            return id;
+        }
         static LAST: Mutex<Option<(u64, u64)>> = Mutex::new(None);
         let now = now_sec();
         let mut last = LAST.lock().expect("short id clock");
@@ -80,6 +86,15 @@ impl ShortId {
         let sec = EPOCH_SEC + (self.0 >> TAIL_BITS);
         OffsetDateTime::from_unix_timestamp(i64::try_from(sec).unwrap_or(i64::MAX))
             .expect("short id timestamp is a valid instant")
+    }
+
+    /// Builds an id whose timestamp is `at` and whose tail is `seq`, for the
+    /// deterministic recording facility that needs a reproducible sequence.
+    pub(crate) fn from_instant_and_seq(at: OffsetDateTime, seq: u64) -> Self {
+        let sec = u64::try_from(at.unix_timestamp())
+            .unwrap_or(0)
+            .saturating_sub(EPOCH_SEC);
+        Self::from_parts(sec, seq)
     }
 
     /// Packs a second offset past [`EPOCH_SEC`] and a tail into the value. A

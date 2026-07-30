@@ -11,6 +11,7 @@
 
 use anyhow::{Result, bail};
 use ulid::Ulid;
+use wiff_core::determinism::new_ulid;
 use wiff_core::record::{Author, CommentEvent, ForgeUrl, RecordBody};
 use wiff_core::review::{ReviewState, fold};
 use wiff_core::session::{LockWait, SessionLog};
@@ -104,8 +105,8 @@ fn reconcile_metadata(log: &mut SessionLog, fetched: &FetchedPullRequest) -> Res
     let diff = parse(&log.read_diff(number)?)?;
 
     let description = reconcile_description(&fetched.description, state.description.as_ref());
-    let comments = reconcile_comments(&fetched.comments, &state.comments, &diff, number, Ulid::new);
-    let reviews = reconcile_reviews(&fetched.reviews, &state.comments, number, Ulid::new);
+    let comments = reconcile_comments(&fetched.comments, &state.comments, &diff, number, new_ulid);
+    let reviews = reconcile_reviews(&fetched.reviews, &state.comments, number, new_ulid);
 
     let tally = Metadata {
         comments: comments_touched(&comments),

@@ -1,1 +1,7 @@
 /target
+/site
+/.zensical
+
+# Per-scenario gifs are transient; only the amalgamated docs/assets/wiff-demo.gif
+# is kept.
+/docs/assets/casts/*.gif

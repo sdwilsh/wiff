@@ -12,7 +12,6 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nix::fcntl::{Flock, FlockArg};
-use time::OffsetDateTime;
 
 use crate::error::{Error, Result};
 use crate::identity::ScmType;
@@ -245,7 +244,7 @@ impl SessionLog {
         let seq = Seq(self.next_seq);
         let record = Record {
             seq,
-            at: OffsetDateTime::now_utc(),
+            at: crate::determinism::now(),
             body,
         };
         let mut line = serde_json::to_string(&record)?;

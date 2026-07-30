@@ -1,0 +1,64 @@
+# List the project's sessions, then resume the one that is not active on the
+# current branch by its id, opening its review without a checkout.
+%size 100 30
+
+%prep
+git init -q -b main repo
+cd repo
+cat > main.rs <<'EOT'
+fn main() {
+    println!("hello");
+}
+EOT
+git add .
+git commit -qm "Initial commit"
+# A remote-tracking main to review against, so each session's base reads as
+# origin/main rather than a pinned commit hash.
+git update-ref refs/remotes/origin/main HEAD
+
+# A branch that names a value before printing it, captured three hours ago, then
+# committed to free the tree for the next branch.
+git checkout -q -b add-greeting
+cat > main.rs <<'EOT'
+fn main() {
+    let name = "world";
+    println!("hello, {name}!");
+}
+EOT
+greeting_log=$(asof 2025-06-01T09:00:00Z wiff new --no-tui --base 'ref(name(origin/main))' | sed -n 's/^  log: //p')
+git commit -qam "Greet by name"
+
+# A second branch off main with an unrelated tidy-up, captured half an hour ago.
+git checkout -q main
+git checkout -q -b tidy-imports
+cat > main.rs <<'EOT'
+use std::process::exit;
+
+fn main() {
+    println!("hello");
+    exit(0);
+}
+EOT
+tidy_out=$(asof 2025-06-01T11:30:00Z wiff new --no-tui --base 'ref(name(origin/main))')
+tidy_log=$(printf '%s\n' "$tidy_out" | sed -n 's/^  log: //p')
+# Resume the tidy-imports session below by whatever id it actually minted,
+# rather than transcribing a computed ULID that depends on seed order.
+echo "resume_id=$(printf '%s\n' "$tidy_out" | sed -n 's/^created session //p')" >> "$WIFF_CAST_VARS"
+git commit -qam "Tidy up exit path"
+
+# End on the greeting branch, so its session is the active one in the list, and
+# leave it a note.
+git checkout -q add-greeting
+asof 2025-06-01T11:50:00Z wiff comment add --file main.rs --line 2 --body "A named binding reads much better here."
+
+# Pin each log's mtime: the greeting session was written to ten minutes ago, the
+# tidy-imports session not since it was captured.
+touch -d 2025-06-01T11:50:00Z "$greeting_log"
+touch -d 2025-06-01T11:30:00Z "$tidy_log"
+
+%record
+$ wiff session list
+%pause 1.4
+$ wiff resume --session {{resume_id}}
+%pause 1.8
+%keys q enter
