@@ -2,7 +2,9 @@
 site_name = "wiff"
 site_description = "wiff -- a terminal-centric diff and code-review utility."
 site_author = "Wez Furlong"
-site_url = "https://wiff.dev/"
+site_url = "https://wezfurlong.org/wiff/"
+repo_url = "https://github.com/wez/wiff"
+repo_name = "wez/wiff"
 copyright = """
 Copyright &copy; 2026-Present Wez Furlong
 """
