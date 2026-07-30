@@ -81,6 +81,25 @@ impl ShortId {
         Self::from_parts(sec, tail)
     }
 
+    /// Normalizes a typed prefix of an id's text for matching against minted
+    /// ids, folding case and Crockford's aliases (`o` to `0`, `i` and `l` to
+    /// `1`). Returns `None` when a character is outside the alphabet, when the
+    /// fragment is longer than a full id, or when it is empty once trimmed:
+    /// none can begin an id, and an empty fragment would otherwise match every
+    /// id rather than name one.
+    pub fn canonical_prefix(fragment: &str) -> Option<String> {
+        let fragment = fragment.trim();
+        if fragment.is_empty() || fragment.len() > WIDTH {
+            return None;
+        }
+        let mut canonical = String::with_capacity(fragment.len());
+        for byte in fragment.bytes() {
+            let digit = crockford_value(byte)?;
+            canonical.push(ALPHABET[digit as usize] as char);
+        }
+        Some(canonical)
+    }
+
     /// The instant this id was minted, decoded from its timestamp.
     pub fn minted_at(self) -> OffsetDateTime {
         let sec = EPOCH_SEC + (self.0 >> TAIL_BITS);
@@ -227,6 +246,33 @@ mod tests {
         let canonical: ShortId = "0000000hj".parse().expect("canonical parses");
         let aliased: ShortId = "OOOOOOOHJ".parse().expect("aliased parses");
         wince::assert_eq!(aliased, canonical);
+    }
+
+    #[test]
+    fn canonical_prefix_folds_aliases_and_rejects_the_impossible() {
+        let outcomes: Vec<Option<String>> =
+            ["", "  ", "bb", "OOoIiLl", "aaaaaaaa1", "aaaaaaaa1x", "a!"]
+                .into_iter()
+                .map(ShortId::canonical_prefix)
+                .collect();
+        wince::assert_eq!(
+            outcomes,
+            vec![
+                // Empty, and whitespace that trims to empty, would match every
+                // id rather than name one.
+                None,
+                None,
+                Some("bb".to_string()),
+                // Uppercase folds to lowercase and Crockford's `o`/`i`/`l`
+                // aliases fold to `0`/`1`/`1`.
+                Some("0001111".to_string()),
+                Some("aaaaaaaa1".to_string()),
+                // Longer than a full id, so it can begin none.
+                None,
+                // `!` is outside the alphabet.
+                None,
+            ]
+        );
     }
 
     #[test]

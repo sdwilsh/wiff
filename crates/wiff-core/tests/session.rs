@@ -7,7 +7,8 @@ use wiff_core::record::{
 };
 use wiff_core::session::{
     LockAttempt, LockWait, ProjectLock, SessionLog, SyncState, active_session, list_projects,
-    list_sessions, read_records, remove_session, session_bound_to, session_with_source,
+    list_sessions, read_records, remove_session, resolve_session_id, session_bound_to,
+    session_with_source,
 };
 use wiff_core::{BaseRuleset, ScmType, SessionId};
 use wiff_diff::{LineNo, Side};
@@ -692,5 +693,85 @@ fn source_selection_never_matches_a_stdin_source_in_either_direction() {
         )
         .unwrap(),
         None
+    );
+}
+
+/// Create empty sessions with the given ids under "demo", for prefix-resolution
+/// tests. Each id must be valid short-id text.
+fn seed_sessions(base: &std::path::Path, ids: &[&str]) {
+    for text in ids {
+        let id: SessionId = text.parse().expect("valid session id");
+        let (_log, _lock) =
+            SessionLog::create_with_id(base, "demo", id, header).expect("create session");
+    }
+}
+
+#[test]
+fn a_full_id_resolves_to_itself() {
+    let base = tempfile::tempdir().unwrap();
+    seed_sessions(base.path(), &["aaaaaaaa1", "bbbbbbbb2"]);
+    let id = resolve_session_id(base.path(), "demo", "bbbbbbbb2").unwrap();
+    wince::assert_eq!(id.to_string(), "bbbbbbbb2".to_string());
+}
+
+#[test]
+fn a_unique_prefix_resolves_to_the_one_session() {
+    let base = tempfile::tempdir().unwrap();
+    seed_sessions(base.path(), &["aaaaaaaa1", "bbbbbbbb2"]);
+    let id = resolve_session_id(base.path(), "demo", "bbbb").unwrap();
+    wince::assert_eq!(id.to_string(), "bbbbbbbb2".to_string());
+}
+
+#[test]
+fn a_prefix_matches_case_insensitively_under_crockford_aliases() {
+    let base = tempfile::tempdir().unwrap();
+    // The minted id shows `0` and `1`; a query may spell them `O`, `I`, or `L`.
+    seed_sessions(base.path(), &["00000001a"]);
+    let id = resolve_session_id(base.path(), "demo", "OOOOOOOIA").unwrap();
+    wince::assert_eq!(id.to_string(), "00000001a".to_string());
+}
+
+#[test]
+fn an_ambiguous_prefix_lists_the_candidates() {
+    let base = tempfile::tempdir().unwrap();
+    seed_sessions(base.path(), &["aaaaaaaa1", "aaaaaaaa2"]);
+    let err = resolve_session_id(base.path(), "demo", "aaaaaaaa").unwrap_err();
+    wince::assert_eq!(
+        err.to_string(),
+        "session id \"aaaaaaaa\" is ambiguous; it matches aaaaaaaa2, aaaaaaaa1".to_string()
+    );
+}
+
+#[test]
+fn an_unmatched_prefix_reports_no_session() {
+    let base = tempfile::tempdir().unwrap();
+    seed_sessions(base.path(), &["aaaaaaaa1"]);
+    let err = resolve_session_id(base.path(), "demo", "zzz").unwrap_err();
+    wince::assert_eq!(
+        err.to_string(),
+        "no session in project demo matches id \"zzz\"".to_string()
+    );
+}
+
+#[test]
+fn an_empty_query_reports_no_session_rather_than_matching_any() {
+    let base = tempfile::tempdir().unwrap();
+    seed_sessions(base.path(), &["aaaaaaaa1"]);
+    let err = resolve_session_id(base.path(), "demo", "  ").unwrap_err();
+    wince::assert_eq!(
+        err.to_string(),
+        "no session in project demo matches id \"  \"".to_string()
+    );
+}
+
+#[test]
+fn a_malformed_query_reports_no_session() {
+    let base = tempfile::tempdir().unwrap();
+    seed_sessions(base.path(), &["aaaaaaaa1"]);
+    // `!` is outside the alphabet, and a query longer than an id cannot begin one.
+    let err = resolve_session_id(base.path(), "demo", "aaaaaaaa1x").unwrap_err();
+    wince::assert_eq!(
+        err.to_string(),
+        "no session in project demo matches id \"aaaaaaaa1x\"".to_string()
     );
 }

@@ -1,13 +1,13 @@
 //! `wiff session`: list and remove review sessions.
 
-use anyhow::{Context, bail};
+use anyhow::Context;
 use clap::{Args, Subcommand};
 use time::OffsetDateTime;
 use wiff_core::record::{ForgeUrl, RevisionId, ScmSource, SourceKind, TipRule};
 use wiff_core::review::ReviewState;
 use wiff_core::session::{
     active_session, data_dir, id_from_path, list_projects, list_sessions, remove_session,
-    session_file,
+    resolve_session_id, session_file,
 };
 use wiff_core::{ProjectIdentity, ScmType, SessionId};
 
@@ -98,14 +98,8 @@ impl SessionRmArgs {
         let cwd = std::env::current_dir().context("could not determine the current directory")?;
         let identity = ProjectIdentity::for_dir_or_forced(&cwd, self.project.as_deref())?;
         let base = data_dir()?;
-        let id: SessionId = self
-            .id
-            .parse()
-            .map_err(|_| anyhow::anyhow!("{} is not a valid session id", self.id))?;
+        let id = resolve_session_id(&base, &identity.canonical, &self.id)?;
         let path = session_file(&base, &identity.canonical, id);
-        if !path.exists() {
-            bail!("no session {id} in project {}", identity.canonical);
-        }
         remove_session(&path)?;
         println!("removed session {id}");
         Ok(())

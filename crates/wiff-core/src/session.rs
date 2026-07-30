@@ -19,6 +19,7 @@ use crate::record::{
     ForgeUrl, Record, RecordBody, ScmSource, Seq, SessionHeader, SourceKind, TipRule, VersionNumber,
 };
 use crate::session_id::SessionId;
+use crate::short_id::ShortId;
 
 /// The environment variable that overrides the base data directory.
 pub const DATA_DIR_ENV: &str = "WIFF_DATA_DIR";
@@ -539,6 +540,35 @@ pub fn session_file(base: &Path, project: &str, id: SessionId) -> PathBuf {
     sessions_root(base)
         .join(project)
         .join(format!("{id}.jsonl"))
+}
+
+/// Resolve `query`, a full session id or any leading prefix of one, to the sole
+/// session it names under `project`. Matching is case-insensitive and folds
+/// Crockford's aliases, so a typed prefix need not reproduce an id's exact
+/// spelling.
+///
+/// Fails when no session's id begins with `query` (including when `query` is not
+/// valid id text), or when several do, in which case the error lists the
+/// candidates so the caller can lengthen the prefix.
+pub fn resolve_session_id(base: &Path, project: &str, query: &str) -> Result<SessionId> {
+    let unknown = || Error::UnknownSessionId {
+        project: project.to_string(),
+        query: query.to_string(),
+    };
+    let canonical = ShortId::canonical_prefix(query).ok_or_else(unknown)?;
+    let mut matches: Vec<SessionId> = list_sessions(base, project)?
+        .iter()
+        .filter_map(|path| id_from_path(path).ok())
+        .filter(|id| id.has_prefix(&canonical))
+        .collect();
+    match matches.len() {
+        0 => Err(unknown()),
+        1 => Ok(matches.remove(0)),
+        _ => Err(Error::AmbiguousSessionId {
+            query: query.to_string(),
+            matches,
+        }),
+    }
 }
 
 /// The session to act on in the current repository: the most recent session

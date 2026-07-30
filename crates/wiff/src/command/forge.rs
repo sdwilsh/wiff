@@ -11,7 +11,8 @@ use clap::{Args, Subcommand};
 use wiff_config::Config;
 use wiff_core::record::{Author, ForgeUrl, SourceKind, TipRule};
 use wiff_core::session::{
-    data_dir, forge_bound_sessions, session_binding, session_bound_to, session_file,
+    data_dir, forge_bound_sessions, resolve_session_id, session_binding, session_bound_to,
+    session_file,
 };
 use wiff_core::source::CapturedDiff;
 use wiff_core::{BaseRuleset, GitSource, ProjectIdentity, ScmRepo, SessionId, SessionLog};
@@ -175,13 +176,8 @@ impl PushArgs {
         cli: &TokenOverride,
     ) -> anyhow::Result<(PathBuf, ForgeUrl, Box<dyn Forge>)> {
         if let Some(session) = &self.session {
-            let id: SessionId = session
-                .parse()
-                .map_err(|_| anyhow!("{session} is not a valid session id"))?;
+            let id = resolve_session_id(base, &identity.canonical, session)?;
             let path = session_file(base, &identity.canonical, id);
-            if !path.exists() {
-                bail!("`wiff forge push --session {id}` names no session in this repository");
-            }
             let url = session_binding(&path)?.ok_or_else(|| {
                 anyhow!(
                     "session {id} is not bound to a pull request; pull one with `wiff forge \
@@ -1852,9 +1848,7 @@ mod tests {
             .expect_err("an unknown session is refused");
         wince::assert_eq!(
             format!("{error:#}"),
-            "`wiff forge push --session 00000000z` names no session in this \
-             repository"
-                .to_string()
+            "no session in project demo matches id \"00000000z\"".to_string()
         );
     }
 }

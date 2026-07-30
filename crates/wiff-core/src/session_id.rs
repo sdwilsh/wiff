@@ -25,6 +25,12 @@ impl SessionId {
     pub fn created_at(self) -> OffsetDateTime {
         self.0.minted_at()
     }
+
+    /// Returns `true` when the id's text begins with `canonical`, a fragment
+    /// already put through [`ShortId::canonical_prefix`].
+    pub fn has_prefix(self, canonical: &str) -> bool {
+        self.to_string().starts_with(canonical)
+    }
 }
 
 impl Default for SessionId {

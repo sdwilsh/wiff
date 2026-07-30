@@ -22,11 +22,11 @@ use tokio::io::AsyncReadExt;
 use wiff_config::Config;
 use wiff_core::record::{Author, AuthorKind, ScmSource, SessionHeader, SourceKind, TipRule};
 use wiff_core::review::ReviewState;
-use wiff_core::session::{active_session, data_dir, session_file};
+use wiff_core::session::{active_session, data_dir, resolve_session_id, session_file};
 use wiff_core::source::{GitRepo, HeadBranch, ScmRepo, head_branch};
 use wiff_core::{
-    BaseRuleset, CapturedDiff, DiffSource, GitSource, ProjectIdentity, ScmType, SessionId,
-    capture_explore, explore_file_set,
+    BaseRuleset, CapturedDiff, DiffSource, GitSource, ProjectIdentity, ScmType, capture_explore,
+    explore_file_set,
 };
 
 use self::comment::CommentArgs;
@@ -91,9 +91,7 @@ fn resolve_session(session: Option<&str>, project: Option<&str>) -> anyhow::Resu
     let base = data_dir()?;
     match session {
         Some(session) => {
-            let id: SessionId = session
-                .parse()
-                .map_err(|_| anyhow::anyhow!("{session} is not a valid session id"))?;
+            let id = resolve_session_id(&base, &identity.canonical, session)?;
             Ok(session_file(&base, &identity.canonical, id))
         }
         None => Ok(active_session(

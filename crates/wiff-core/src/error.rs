@@ -76,6 +76,25 @@ pub enum Error {
     #[error("no session found for project {0}")]
     NoSession(String),
 
+    /// A session id or id prefix named no session in the project.
+    #[error("no session in project {project} matches id {query:?}")]
+    UnknownSessionId {
+        /// The project directory searched.
+        project: String,
+        /// The id or prefix provided.
+        query: String,
+    },
+
+    /// A session id prefix named more than one session; more characters are
+    /// needed to pick one out.
+    #[error("session id {query:?} is ambiguous; it matches {}", join_ids(.matches))]
+    AmbiguousSessionId {
+        /// The prefix provided.
+        query: String,
+        /// Every session whose id begins with the prefix, most recent first.
+        matches: Vec<SessionId>,
+    },
+
     /// A session was created under an id that already names one. Reachable only
     /// through the caller-chosen-id path, where a resync that re-imports a pull
     /// request can detect the existing session and reuse it rather than fail.
@@ -141,6 +160,14 @@ pub enum Error {
         /// Why it could not be included.
         reason: String,
     },
+}
+
+/// Render session ids as a comma-separated list for the ambiguity message.
+fn join_ids(ids: &[SessionId]) -> String {
+    ids.iter()
+        .map(SessionId::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 impl Error {
