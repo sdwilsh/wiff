@@ -460,7 +460,7 @@ impl SessionWatcher {
 }
 
 /// Recover a session's ULID from its `<ULID>.jsonl` path.
-fn ulid_from_path(path: &Path) -> Result<Ulid> {
+pub fn ulid_from_path(path: &Path) -> Result<Ulid> {
     path.file_stem()
         .and_then(|stem| stem.to_str())
         .and_then(|stem| Ulid::from_string(stem).ok())

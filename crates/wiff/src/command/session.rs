@@ -8,6 +8,7 @@ use wiff_core::record::{ForgeUrl, RevisionId, ScmSource, SourceKind, TipRule};
 use wiff_core::review::ReviewState;
 use wiff_core::session::{
     active_session, data_dir, list_projects, list_sessions, remove_session, session_file,
+    ulid_from_path,
 };
 use wiff_core::{ProjectIdentity, ScmType};
 
@@ -110,6 +111,22 @@ impl SessionRmArgs {
     }
 }
 
+/// A session in the listing, either readable or not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SessionEntry {
+    /// A session whose log folded cleanly into a summary.
+    Summary(SessionRow),
+    /// A session whose log could not be read, labelled by its ULID (or file
+    /// name when that cannot be decoded) alongside the reason.
+    Unreadable {
+        /// The session's ULID as text, or its file name when the name is not a
+        /// ULID.
+        label: String,
+        /// The human-readable reason the log could not be loaded.
+        reason: String,
+    },
+}
+
 /// A summary of a session for the two-line listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SessionRow {
@@ -141,26 +158,48 @@ struct SessionRow {
 }
 
 /// Summarize a project's sessions, most recent first, marking the active one.
+///
+/// A session whose log cannot be folded (an incompatible format version, or a
+/// corrupt file) does not abort the listing: it becomes an `Unreadable` entry
+/// noting the reason, and the remaining sessions still list.
 fn session_rows(
     base: &std::path::Path,
     project: &str,
     repo_root: Option<&std::path::Path>,
     scm: Option<ScmType>,
-) -> anyhow::Result<Vec<SessionRow>> {
+) -> anyhow::Result<Vec<SessionEntry>> {
     let active = active_session(base, project, repo_root, scm).ok();
     let mut rows = Vec::new();
     for path in list_sessions(base, project)? {
-        let modified = std::fs::metadata(&path)
-            .and_then(|meta| meta.modified())
-            .with_context(|| format!("reading the mtime of {}", path.display()))?;
-        let state = ReviewState::load(&path)?;
+        let state = match ReviewState::load(&path) {
+            Ok(state) => state,
+            // A session removed between enumeration and this read simply drops
+            // out of the listing; only a genuine format or content problem
+            // becomes an entry the reviewer can see.
+            Err(err) if vanished(&err) => continue,
+            Err(err) => {
+                rows.push(SessionEntry::Unreadable {
+                    label: session_label(&path),
+                    reason: err.to_string(),
+                });
+                continue;
+            }
+        };
+        let modified = match std::fs::metadata(&path).and_then(|meta| meta.modified()) {
+            Ok(modified) => modified,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(source) => {
+                return Err(source)
+                    .with_context(|| format!("reading the mtime of {}", path.display()));
+            }
+        };
         let live = state.comments.iter().filter(|c| !c.deleted);
         let comments = live.clone().count();
         let open = live.filter(|c| !c.resolved).count();
         let base_revision = state.latest_version().and_then(|v| v.base_revision.clone());
         let head_revision = state.latest_version().and_then(|v| v.head_revision.clone());
         let files = state.latest_version().map(|v| v.files.len()).unwrap_or(0);
-        rows.push(SessionRow {
+        rows.push(SessionEntry::Summary(SessionRow {
             ulid: state.session.ulid,
             source: state.session.source,
             forge: state.session.forge,
@@ -172,9 +211,31 @@ fn session_rows(
             comments,
             open,
             files,
-        });
+        }));
     }
     Ok(rows)
+}
+
+/// Whether a load failure means the session file is gone, having been removed
+/// between the directory listing and the read.
+fn vanished(err: &wiff_core::Error) -> bool {
+    matches!(
+        err,
+        wiff_core::Error::Io { source, .. } if source.kind() == std::io::ErrorKind::NotFound
+    )
+}
+
+/// The label for an unreadable session: its ULID, or its file name when the name
+/// is not a ULID.
+fn session_label(path: &std::path::Path) -> String {
+    ulid_from_path(path)
+        .map(|ulid| ulid.to_string())
+        .unwrap_or_else(|_| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_string()
+        })
 }
 
 /// The creation time a ULID encodes in its millisecond timestamp, falling back
@@ -190,7 +251,7 @@ fn created_at(ulid: Ulid) -> OffsetDateTime {
 /// group's rows are printed flat. `now` anchors the relative creation and
 /// modification times.
 fn render_list(
-    groups: &[(String, Vec<SessionRow>)],
+    groups: &[(String, Vec<SessionEntry>)],
     show_projects: bool,
     now: OffsetDateTime,
 ) -> String {
@@ -198,22 +259,30 @@ fn render_list(
         return "No sessions.\n".to_string();
     }
     let mut out = String::new();
-    for (project, rows) in groups {
+    for (project, entries) in groups {
         let indent = if show_projects {
             out.push_str(&format!("{project}\n"));
             "  "
         } else {
             ""
         };
-        for row in rows {
-            let marker = if row.active { '*' } else { ' ' };
-            out.push_str(&format!(
-                "{indent}{marker} {}  {}  {}\n",
-                row.ulid,
-                headline(row),
-                tally(row.comments, row.open),
-            ));
-            out.push_str(&format!("{indent}    {}\n", detail(row, now)));
+        for entry in entries {
+            match entry {
+                SessionEntry::Summary(row) => {
+                    let marker = if row.active { '*' } else { ' ' };
+                    out.push_str(&format!(
+                        "{indent}{marker} {}  {}  {}\n",
+                        row.ulid,
+                        headline(row),
+                        tally(row.comments, row.open),
+                    ));
+                    out.push_str(&format!("{indent}    {}\n", detail(row, now)));
+                }
+                SessionEntry::Unreadable { label, reason } => {
+                    out.push_str(&format!("{indent}  {label}  unreadable session\n"));
+                    out.push_str(&format!("{indent}    {reason}\n"));
+                }
+            }
         }
     }
     out
@@ -351,7 +420,7 @@ fn strip_ref(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{SessionRow, render_list};
+    use super::{SessionEntry, SessionRow, render_list};
     use time::OffsetDateTime;
     use ulid::Ulid;
     use wiff_core::record::{ChangeId, ForgeUrl, RevisionId, ScmSource, SourceKind, TipRule};
@@ -371,8 +440,8 @@ mod tests {
         head: Option<RevisionId>,
         comments: usize,
         open: usize,
-    ) -> SessionRow {
-        SessionRow {
+    ) -> SessionEntry {
+        SessionEntry::Summary(SessionRow {
             ulid: ulid(ulid_text),
             source,
             forge,
@@ -384,7 +453,7 @@ mod tests {
             comments,
             open,
             files: 0,
-        }
+        })
     }
 
     /// A fixed reference point for the relative times.
@@ -412,97 +481,98 @@ mod tests {
 
     #[test]
     fn lists_each_source_kind_with_its_range_ruleset_and_ages() {
+        let rows = vec![
+            // A plain `wiff new`: the working copy on a branch, base pinned
+            // at the commit it was created on.
+            SessionRow {
+                ulid: ulid("00000000000000000000000001"),
+                source: scm(
+                    "ref(name(deadbeef))",
+                    TipRule::WorkingCopy,
+                    Some("refs/heads/topic"),
+                ),
+                forge: None,
+                base_revision: Some(rev("a1b2c3d0000")),
+                head_revision: None,
+                created_at: ago(7_200),
+                updated_at: ago(720),
+                active: true,
+                comments: 3,
+                open: 1,
+                files: 0,
+            },
+            // `wiff new --from-base`: the same working copy, its base taken
+            // from the configured whole-branch ruleset instead.
+            SessionRow {
+                ulid: ulid("00000000000000000000000002"),
+                source: scm(
+                    "merge-base(trunk)",
+                    TipRule::WorkingCopy,
+                    Some("refs/heads/topic"),
+                ),
+                forge: None,
+                base_revision: Some(rev("e4f5a6b0000")),
+                head_revision: None,
+                created_at: ago(86_400),
+                updated_at: ago(86_400),
+                active: false,
+                comments: 0,
+                open: 0,
+                files: 0,
+            },
+            // `wiff forge fetch`: a pinned range with both endpoints, and
+            // the pull request URL as its identity.
+            SessionRow {
+                ulid: ulid("00000000000000000000000003"),
+                source: scm(
+                    "merge-base(name(9f8e7d6))",
+                    TipRule::Pinned {
+                        revision: rev("d4c3b2a0000"),
+                    },
+                    None,
+                ),
+                forge: Some(ForgeUrl::parse("https://github.com/o/r/pull/42").unwrap()),
+                base_revision: Some(rev("9f8e7d60000")),
+                head_revision: Some(rev("d4c3b2a0000")),
+                created_at: ago(259_200),
+                updated_at: ago(14_400),
+                active: false,
+                comments: 5,
+                open: 2,
+                files: 0,
+            },
+            // A working copy captured on a detached head names no branch.
+            SessionRow {
+                ulid: ulid("00000000000000000000000004"),
+                source: scm("ref(name(deadbeef))", TipRule::WorkingCopy, None),
+                forge: None,
+                base_revision: Some(rev("aabbccd0000")),
+                head_revision: None,
+                created_at: ago(432_000),
+                updated_at: ago(432_000),
+                active: false,
+                comments: 0,
+                open: 0,
+                files: 0,
+            },
+            // A diff piped in on stdin: a one-shot snapshot.
+            SessionRow {
+                ulid: ulid("00000000000000000000000005"),
+                source: SourceKind::Stdin,
+                forge: None,
+                base_revision: None,
+                head_revision: None,
+                created_at: ago(1_209_600),
+                updated_at: ago(1_209_600),
+                active: false,
+                comments: 1,
+                open: 0,
+                files: 0,
+            },
+        ];
         let groups = vec![(
             "demo".to_string(),
-            vec![
-                // A plain `wiff new`: the working copy on a branch, base pinned
-                // at the commit it was created on.
-                SessionRow {
-                    ulid: ulid("00000000000000000000000001"),
-                    source: scm(
-                        "ref(name(deadbeef))",
-                        TipRule::WorkingCopy,
-                        Some("refs/heads/topic"),
-                    ),
-                    forge: None,
-                    base_revision: Some(rev("a1b2c3d0000")),
-                    head_revision: None,
-                    created_at: ago(7_200),
-                    updated_at: ago(720),
-                    active: true,
-                    comments: 3,
-                    open: 1,
-                    files: 0,
-                },
-                // `wiff new --from-base`: the same working copy, its base taken
-                // from the configured whole-branch ruleset instead.
-                SessionRow {
-                    ulid: ulid("00000000000000000000000002"),
-                    source: scm(
-                        "merge-base(trunk)",
-                        TipRule::WorkingCopy,
-                        Some("refs/heads/topic"),
-                    ),
-                    forge: None,
-                    base_revision: Some(rev("e4f5a6b0000")),
-                    head_revision: None,
-                    created_at: ago(86_400),
-                    updated_at: ago(86_400),
-                    active: false,
-                    comments: 0,
-                    open: 0,
-                    files: 0,
-                },
-                // `wiff forge fetch`: a pinned range with both endpoints, and
-                // the pull request URL as its identity.
-                SessionRow {
-                    ulid: ulid("00000000000000000000000003"),
-                    source: scm(
-                        "merge-base(name(9f8e7d6))",
-                        TipRule::Pinned {
-                            revision: rev("d4c3b2a0000"),
-                        },
-                        None,
-                    ),
-                    forge: Some(ForgeUrl::parse("https://github.com/o/r/pull/42").unwrap()),
-                    base_revision: Some(rev("9f8e7d60000")),
-                    head_revision: Some(rev("d4c3b2a0000")),
-                    created_at: ago(259_200),
-                    updated_at: ago(14_400),
-                    active: false,
-                    comments: 5,
-                    open: 2,
-                    files: 0,
-                },
-                // A working copy captured on a detached head names no branch.
-                SessionRow {
-                    ulid: ulid("00000000000000000000000004"),
-                    source: scm("ref(name(deadbeef))", TipRule::WorkingCopy, None),
-                    forge: None,
-                    base_revision: Some(rev("aabbccd0000")),
-                    head_revision: None,
-                    created_at: ago(432_000),
-                    updated_at: ago(432_000),
-                    active: false,
-                    comments: 0,
-                    open: 0,
-                    files: 0,
-                },
-                // A diff piped in on stdin: a one-shot snapshot.
-                SessionRow {
-                    ulid: ulid("00000000000000000000000005"),
-                    source: SourceKind::Stdin,
-                    forge: None,
-                    base_revision: None,
-                    head_revision: None,
-                    created_at: ago(1_209_600),
-                    updated_at: ago(1_209_600),
-                    active: false,
-                    comments: 1,
-                    open: 0,
-                    files: 0,
-                },
-            ],
+            rows.into_iter().map(SessionEntry::Summary).collect(),
         )];
         let out = render_list(&groups, false, now());
         let expected = "\
@@ -525,7 +595,7 @@ mod tests {
         let groups = vec![
             (
                 "demo".to_string(),
-                vec![SessionRow {
+                vec![SessionEntry::Summary(SessionRow {
                     ulid: ulid("00000000000000000000000001"),
                     source: scm(
                         "ref(name(deadbeef))",
@@ -541,11 +611,11 @@ mod tests {
                     comments: 1,
                     open: 0,
                     files: 0,
-                }],
+                })],
             ),
             (
                 "other".to_string(),
-                vec![SessionRow {
+                vec![SessionEntry::Summary(SessionRow {
                     ulid: ulid("00000000000000000000000002"),
                     source: SourceKind::Stdin,
                     forge: None,
@@ -557,7 +627,7 @@ mod tests {
                     comments: 2,
                     open: 2,
                     files: 0,
-                }],
+                })],
             ),
         ];
         let out = render_list(&groups, true, now());
@@ -663,6 +733,36 @@ other
     4444444..5555555  base parent(@)  created 1h ago
   00000000000000000000000004  (detached)  (no comments)
     6666666..index  base ref(name(x))  created 1h ago
+";
+        wince::assert_eq!(out, expected.to_string());
+    }
+
+    #[test]
+    fn an_unreadable_session_lists_alongside_the_readable_ones() {
+        let groups = vec![(
+            "demo".to_string(),
+            vec![
+                SessionEntry::Unreadable {
+                    label: "00000000000000000000000009".to_string(),
+                    reason: "session format version 4 does not match supported version 5"
+                        .to_string(),
+                },
+                row(
+                    "00000000000000000000000001",
+                    SourceKind::Stdin,
+                    None,
+                    None,
+                    None,
+                    0,
+                    0,
+                ),
+            ],
+        )];
+        let out = render_list(&groups, false, now());
+        let expected = "  00000000000000000000000009  unreadable session
+    session format version 4 does not match supported version 5
+  00000000000000000000000001  stdin snapshot  (no comments)
+    one-shot diff, not regenerable  created 1h ago
 ";
         wince::assert_eq!(out, expected.to_string());
     }
