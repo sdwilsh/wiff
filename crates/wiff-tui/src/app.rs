@@ -35,7 +35,7 @@ use crate::help::{Help, HelpColors};
 use crate::key::{Key, KeyPress};
 use crate::keymap::{Keymap, Resolution};
 use crate::notice::{Notice, NoticeColors};
-use crate::picker::{Picker, PickerColors, PickerRow, RowSpan};
+use crate::picker::{Picker, PickerColors, PickerRow, PreviewRollback, RowSpan};
 use crate::render::{
     BoxId, COLUMN_DIVIDER, DEFAULT_SIDE_BY_SIDE_MIN_WIDTH, DiffMode, Document, LayoutMode,
     RAIL_TEE, RailCell, RowKind, ViewLayout, color, column_bounds, column_gutter_width,
@@ -436,8 +436,35 @@ impl PickerRow<App> for ThemeRow {
         self.name.clone()
     }
 
+    fn preview(&self, app: &mut App) {
+        // Recolor only when the highlight names a different theme than the one
+        // already showing, so re-running the preview after a keystroke that did
+        // not move the highlight does not recolor the view again.
+        if app.theme_name != self.name
+            && let Some(theme) = Theme::named(&self.name)
+        {
+            app.apply_theme(&theme);
+        }
+    }
+
     fn activate(self: Box<Self>, app: &mut App) {
         if let Some(theme) = Theme::named(&self.name) {
+            app.apply_theme(&theme);
+        }
+    }
+}
+
+/// The syntax theme in effect when the theme picker opened, to recolor back to
+/// if the reviewer cancels after previewing others.
+struct ThemeRollback {
+    name: String,
+}
+
+impl PreviewRollback<App> for ThemeRollback {
+    fn restore(self: Box<Self>, app: &mut App) {
+        if app.theme_name != self.name
+            && let Some(theme) = Theme::named(&self.name)
+        {
             app.apply_theme(&theme);
         }
     }
@@ -2029,8 +2056,12 @@ impl App {
         }
         let hint = self.picker_hint();
         let filter_hint = self.picker_filter_hint();
-        let mut picker =
-            Picker::new("Theme", rows, &hint, self.picker_colors).filterable(&filter_hint);
+        let rollback = Box::new(ThemeRollback {
+            name: self.theme_name.clone(),
+        });
+        let mut picker = Picker::new("Theme", rows, &hint, self.picker_colors)
+            .filterable(&filter_hint)
+            .with_rollback(rollback);
         if let Some(index) = selected {
             picker.select(index);
         }
@@ -2422,8 +2453,19 @@ impl App {
         }
     }
 
-    /// Close the modal list and act on its highlighted row. An explicit
-    /// selection supersedes any cancel fallback, so that is dropped. Does
+    /// Show the highlighted row's live preview on the open list, leaving it
+    /// open. The theme picker's rows recolor the whole view to the highlighted
+    /// theme; every other picker's rows do nothing. Does nothing when the list
+    /// is closed.
+    pub fn picker_preview(&mut self) {
+        if let Some(picker) = self.picker.take() {
+            picker.preview_selected(self);
+            self.picker = Some(picker);
+        }
+    }
+
+    /// Close the modal list and act on its highlighted row. An explicit choice
+    /// supersedes any cancel fallback, so a pending comparison is dropped. Does
     /// nothing when the list is closed.
     pub fn picker_activate(&mut self) {
         self.compare_on_cancel = None;
@@ -2432,13 +2474,16 @@ impl App {
         }
     }
 
-    /// Close the modal list without acting on any row, recording the comparison
-    /// the cancel resolves to when the picker set one.
+    /// Close the modal list without acting on any row. Records the comparison a
+    /// cancel resolves to when the picker set one, and lets the picker roll back
+    /// whatever its rows previewed live.
     pub fn picker_cancel(&mut self) {
         if let Some(request) = self.compare_on_cancel.take() {
             self.pending_compare = Some(request);
         }
-        self.picker = None;
+        if let Some(picker) = self.picker.take() {
+            picker.cancel(self);
+        }
     }
 
     /// Open the help overlay, listing the bindings active in the current keymap.
@@ -5238,6 +5283,42 @@ mod tests {
         wince::assert_eq!(app.picking(), false);
         let light = Theme::light();
         wince::assert_eq!(app.background(), light.background);
+    }
+
+    #[test]
+    fn the_theme_picker_previews_the_highlighted_theme_and_rolls_back_on_cancel() {
+        // Moving the highlight recolors the whole view to the highlighted theme
+        // before any choice; cancelling restores the view to the theme in effect
+        // when the picker opened rather than leaving the preview behind.
+        let mut app = App::reviewing(commented_review(), 8, &theme());
+        app.set_width(TEST_WIDTH);
+        let before = dump(&app.visible(TEST_WIDTH));
+
+        app.update(Action::PickTheme);
+        app.picker_nav(Action::Top);
+        let names = wiff_diff::theme_names();
+        let steps = names
+            .iter()
+            .position(|name| name == wiff_diff::highlight::DEFAULT_LIGHT_THEME)
+            .expect("light theme is listed");
+        for _ in 0..steps {
+            app.picker_nav(Action::LineDown);
+        }
+        app.picker_preview();
+
+        // The previewed view matches the same document rendered under the light
+        // theme, confirming the whole document recolored and not just the chrome.
+        let mut lit = App::reviewing(commented_review(), 8, &theme());
+        lit.set_width(TEST_WIDTH);
+        lit.apply_theme(&Theme::light());
+        wince::assert_eq!(
+            dump(&app.visible(TEST_WIDTH)),
+            dump(&lit.visible(TEST_WIDTH))
+        );
+
+        app.picker_cancel();
+        wince::assert_eq!(app.picking(), false);
+        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), before);
     }
 
     /// A review over a one-line file whose latest captured version is `version`,

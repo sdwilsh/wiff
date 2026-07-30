@@ -8,6 +8,12 @@
 //! modal drives all of them. A list taller than the space it is given scrolls,
 //! keeping the highlighted row in view.
 //!
+//! A row may also preview itself while merely highlighted, before the reviewer
+//! commits, so the host reshapes live as the highlight moves. A picker given a
+//! [rollback](Picker::with_rollback) snapshot restores the host to where it
+//! stood when the list opened if it closes without a choice; activating a row
+//! keeps the preview and discards the snapshot.
+//!
 //! A picker built [filterable](Picker::filterable) can also be narrowed by a
 //! typed query, but only once the reviewer asks for it: the list starts in
 //! navigation mode with the motion keys live, and `/` enters filter mode, where
@@ -46,8 +52,25 @@ pub trait PickerRow<Ctx> {
         String::new()
     }
 
+    /// Show this row's effect on the host while it is the highlighted one,
+    /// before the reviewer commits to it. Defaults to no effect; a row that
+    /// overrides this recolors, moves, or otherwise reshapes the host live as
+    /// the highlight reaches it, kept on [`activate`](Self::activate) and undone
+    /// by the picker's [rollback](Picker::with_rollback) if the list is
+    /// cancelled.
+    fn preview(&self, _ctx: &mut Ctx) {}
+
     /// Act on the host now that this row has been chosen.
     fn activate(self: Box<Self>, ctx: &mut Ctx);
+}
+
+/// A snapshot of the host taken when a previewing picker opens, able to undo
+/// whatever the rows previewed if the list is cancelled. The picker keeps it
+/// untouched while open, restores it on cancel, and drops it on activation so
+/// the chosen row's preview stands.
+pub trait PreviewRollback<Ctx> {
+    /// Return the host to the state captured when the picker opened.
+    fn restore(self: Box<Self>, ctx: &mut Ctx);
 }
 
 /// A styled fragment of a picker row: its text, an optional foreground color
@@ -155,6 +178,9 @@ pub struct Picker<Ctx> {
     note: Option<String>,
     /// The live fuzzy filter, present when the picker was built filterable.
     filter: Option<Filter>,
+    /// The host snapshot to restore if the list is cancelled, present when the
+    /// picker was given one to undo its rows' live previews.
+    rollback: Option<Box<dyn PreviewRollback<Ctx>>>,
     colors: PickerColors,
 }
 
@@ -178,6 +204,7 @@ impl<Ctx> Picker<Ctx> {
             hint: hint.to_string(),
             note: None,
             filter: None,
+            rollback: None,
             colors,
         };
         picker.reset_matches_to_all();
@@ -202,6 +229,14 @@ impl<Ctx> Picker<Ctx> {
             matcher: Matcher::new(Config::DEFAULT),
             hint: filter_hint.to_string(),
         });
+        self
+    }
+
+    /// Undo this picker's live previews on cancel by restoring `rollback`, a
+    /// snapshot of the host taken now, before any row has previewed. Activating
+    /// a row instead keeps its preview and drops the snapshot.
+    pub fn with_rollback(mut self, rollback: Box<dyn PreviewRollback<Ctx>>) -> Self {
+        self.rollback = Some(rollback);
         self
     }
 
@@ -423,6 +458,27 @@ impl<Ctx> Picker<Ctx> {
         };
         if let Some(entry) = self.rows.into_iter().nth(row) {
             entry.activate(ctx);
+        }
+    }
+
+    /// Show the highlighted row's live preview on the host, leaving the picker
+    /// open. A row without a preview does nothing. Does nothing when the picker
+    /// has no visible rows.
+    pub fn preview_selected(&self, ctx: &mut Ctx) {
+        let Some(row) = self.matches.get(self.selected).map(|entry| entry.row) else {
+            return;
+        };
+        if let Some(entry) = self.rows.get(row) {
+            entry.preview(ctx);
+        }
+    }
+
+    /// Consume the picker on a cancel, restoring the host to the rollback
+    /// snapshot so any live preview its rows showed is undone. Does nothing when
+    /// the picker was not given a rollback.
+    pub fn cancel(self, ctx: &mut Ctx) {
+        if let Some(rollback) = self.rollback {
+            rollback.restore(ctx);
         }
     }
 

@@ -660,6 +660,11 @@ fn event_loop<B: Backend>(
                 _ => {
                     if let Some(action) = input.press(press) {
                         app.picker_nav(action);
+                        // Preview tracks deliberate navigation only. Filter
+                        // edits and entering or leaving filter mode move the
+                        // highlight too, but recoloring the view on those would
+                        // jump it to the top match or the first row.
+                        app.picker_preview();
                     }
                 }
             }
