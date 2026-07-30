@@ -78,7 +78,7 @@ pub struct NewArgs {
 
 impl NewArgs {
     /// Create a session: capture a diff from git or piped stdin, persist it, and
-    /// report where it landed.
+    /// report the session it created.
     pub async fn run(self) -> anyhow::Result<()> {
         let cwd = std::env::current_dir().context("could not determine the current directory")?;
         let identity = ProjectIdentity::for_dir_or_forced(&cwd, self.project.as_deref())?;
@@ -221,11 +221,9 @@ impl NewArgs {
     }
 }
 
-/// Print where a freshly created session lives.
+/// Report a freshly created session by its id.
 fn report_created(log: &SessionLog) {
     println!("created session {}", log.id());
-    println!("  log: {}", log.path().display());
-    println!("  sideband: {}", log.sideband_dir().display());
 }
 
 /// Warn on stderr that a `--description` given alongside `--if-needed` was

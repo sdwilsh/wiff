@@ -23,6 +23,7 @@ impl SessionArgs {
     pub fn run(self) -> anyhow::Result<()> {
         match self.command {
             SessionCommand::List(args) => args.run(),
+            SessionCommand::Path(args) => args.run(),
             SessionCommand::Rm(args) => args.run(),
         }
     }
@@ -33,6 +34,8 @@ impl SessionArgs {
 enum SessionCommand {
     /// List sessions for the current project, or across all projects.
     List(SessionListArgs),
+    /// Print the filesystem path of a session's log.
+    Path(SessionPathArgs),
     /// Remove a session, deleting its log and sideband directory.
     Rm(SessionRmArgs),
 }
@@ -78,6 +81,26 @@ impl SessionListArgs {
             "{}",
             render_list(&groups, self.all, wiff_core::determinism::now())
         );
+        Ok(())
+    }
+}
+
+/// Arguments for `wiff session path`.
+#[derive(Debug, Args)]
+struct SessionPathArgs {
+    /// The session to locate by id or id prefix, defaulting to the active one.
+    #[arg(long)]
+    session: Option<String>,
+    /// Force the project bucket name when it cannot be derived from the cwd.
+    #[arg(long)]
+    project: Option<String>,
+}
+
+impl SessionPathArgs {
+    /// Print the path of the session's log file.
+    fn run(self) -> anyhow::Result<()> {
+        let path = super::resolve_session(self.session.as_deref(), self.project.as_deref())?;
+        println!("{}", path.display());
         Ok(())
     }
 }

@@ -279,6 +279,8 @@ an explicit subcommand, so behavior is unambiguous. Subcommands (v0):
 - `wiff resume`: resume a session (the active one by default, or `--session`)
   and launch the TUI.
 - `wiff session list`: list sessions (optionally across all projects).
+- `wiff session path`: print the path of a session's log file (the active one by
+  default, or `--session`).
 - `wiff session rm`: remove a session (deletes its `.jsonl` and `.d/`).
 - `wiff refresh`: capture a new diff version into a session and rebase comments.
 - `wiff comment add`: append a comment. Flags for target (`--file`, `--line`,

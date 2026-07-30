@@ -25,7 +25,8 @@ fn main() {
     println!("hello, {name}!");
 }
 EOT
-greeting_log=$(asof 2025-06-01T09:00:00Z wiff new --no-tui --base 'ref(name(origin/main))' | sed -n 's/^  log: //p')
+greeting_id=$(asof 2025-06-01T09:00:00Z wiff new --no-tui --base 'ref(name(origin/main))' | sed -n 's/^created session //p')
+greeting_log=$(wiff session path --session "$greeting_id")
 git commit -qam "Greet by name"
 
 # A second branch off main with an unrelated tidy-up, captured half an hour ago.
@@ -39,11 +40,11 @@ fn main() {
     exit(0);
 }
 EOT
-tidy_out=$(asof 2025-06-01T11:30:00Z wiff new --no-tui --base 'ref(name(origin/main))')
-tidy_log=$(printf '%s\n' "$tidy_out" | sed -n 's/^  log: //p')
+tidy_id=$(asof 2025-06-01T11:30:00Z wiff new --no-tui --base 'ref(name(origin/main))' | sed -n 's/^created session //p')
+tidy_log=$(wiff session path --session "$tidy_id")
 # Resume the tidy-imports session below by whatever id it actually minted,
 # rather than transcribing a computed ULID that depends on seed order.
-echo "resume_id=$(printf '%s\n' "$tidy_out" | sed -n 's/^created session //p')" >> "$WIFF_CAST_VARS"
+echo "resume_id=$tidy_id" >> "$WIFF_CAST_VARS"
 git commit -qam "Tidy up exit path"
 
 # End on the greeting branch, so its session is the active one in the list, and
