@@ -11,13 +11,48 @@ skill) can read and write at the same time.
 
 ## Install
 
-Build from source with a recent Rust toolchain:
+Install straight from the git repository with a recent Rust toolchain, without
+cloning it first:
+
+```bash
+cargo install --git https://github.com/wez/wiff.git wiff
+```
+
+Or, from a checkout of this repository:
 
 ```bash
 cargo install --path crates/wiff
 ```
 
-This puts the `wiff` binary on your PATH.
+Either way puts the `wiff` binary on your PATH.
+
+## Review types
+
+wiff has a rich local code-review model that needs no network access: it
+captures a diff from your working tree, index, or history, and stores the
+review -- comments, replies, verdicts, and all -- as a session on your own
+disk. That makes it a good fit for private review of code that never leaves
+your machine. On top of that same model, a forge integration mirrors a GitHub
+pull request into a local session and publishes your review back, so you can
+review a PR from the comfort of the terminal.
+
+- **Local change review** captures a diff and reviews the change it describes:
+  the working tree, the staged index, a branch or revision, or a whole branch
+  back to its fork point. This is the default.
+- **Forge review** mirrors a GitHub pull request into a local session so you can
+  read and annotate it in the TUI, then publishes your comments, replies, and
+  verdict back to the PR. Pull by number against the repo's forge remote, or by
+  full URL from anywhere, even without a local checkout:
+
+  ```bash
+  wiff forge pull 6185
+  wiff forge pull https://github.com/wezterm/wezterm/pull/6185
+  ```
+- **Explore review** annotates existing code rather than a change, which is
+  useful when laying out a new task. It opens an
+  empty review and reads a chosen set of files at their current state.
+  Start one with `wiff new --explore`, then add files with
+  `wiff explore add <PATH>...` or the file picker in the TUI.
 
 ## Reviewing with an agent
 

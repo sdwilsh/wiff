@@ -1,4 +1,5 @@
-# Open the review, move onto the changed line, and leave a comment.
+# Open the review, leave a comment on the changed line, then set a verdict,
+# reply, and resolve, introducing each step with a status note.
 %size 100 30
 
 %prep
@@ -6,10 +7,42 @@
 
 %record
 $ wiff new
-%keys k k c
+%status Move onto the changed line and press c to comment.
+%pause 2.2
+%keys k k
+%pause 1.0
+%keys c
 %pause 0.6
 %type A named binding reads much better here.
 %pause 0.8
 %keys ctrl-d
+%pause 1.4
+%status Press a to cycle your verdict: approve, then request_changes.
+%pause 2.2
+%keys a
 %pause 1.2
+%keys a
+%pause 1.4
+%status Press r to reply to the focused comment.
+%pause 2.2
+%keys r
+%pause 0.6
+%type Will do in the next revision.
+%pause 0.8
+%keys ctrl-d
+%pause 1.4
+%status Move back to the comment and press x to resolve the thread.
+%pause 2.2
+%keys {
+%pause 1.0
+%keys x
+%pause 1.6
+%status Press C to open the comment picker and jump to any comment.
+%pause 2.2
+%keys C
+%pause 1.6
+%keys down
+%pause 1.0
+%keys enter
+%pause 1.6
 %keys q enter

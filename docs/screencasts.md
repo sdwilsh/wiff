@@ -18,6 +18,13 @@ submit it with `ctrl-d`:
 
 <div class="asciinema-cast" data-cast="../assets/casts/add-comment.cast" data-autoplay="true" data-loop="true"></div>
 
+## Switching the diff layout
+
+Step a markdown diff through the unified, side-by-side, and after-side layouts,
+ending on the rendered view that shows it as formatted text:
+
+<div class="asciinema-cast" data-cast="../assets/casts/diff-layouts.cast" data-autoplay="true" data-loop="true"></div>
+
 ## Changing the theme
 
 Press `T` to open the theme picker and select a theme; the whole diff recolors

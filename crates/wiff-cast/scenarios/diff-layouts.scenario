@@ -1,0 +1,26 @@
+# Open a markdown diff and step through the layouts: unified, side-by-side,
+# after-side only, and the rendered markdown view, introducing each with a note.
+%size 100 30
+
+%prep
+. diff-layouts.fixture.sh
+
+%record
+$ wiff new
+%status Press 1 for the unified layout: one column, added and removed lines interleaved.
+%pause 2.4
+%keys 1
+%pause 2.0
+%status Press 2 for side-by-side: before on the left, after on the right.
+%pause 2.4
+%keys 2
+%pause 2.0
+%status Press 3 for the after side only: the resulting file in one column.
+%pause 2.4
+%keys 3
+%pause 2.0
+%status Press 4 for the rendered view: markdown shown as formatted text.
+%pause 2.4
+%keys 4
+%pause 4.5
+%keys q enter
