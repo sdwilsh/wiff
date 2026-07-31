@@ -7,6 +7,8 @@ browse and annotate it with syntax highlighting, and stores the review as a
 local session that both a human (in the TUI) and an agent (via the CLI and a
 skill) can read and write at the same time.
 
+[Read the full docs over at https://wezfurlong.org/wiff/](https://wezfurlong.org/wiff/)
+
 ![A tour of wiff: opening a change, leaving a comment, switching themes, and resuming a session by id](docs/assets/wiff-demo.gif)
 
 ## Install
