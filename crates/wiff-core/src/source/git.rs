@@ -63,8 +63,8 @@ impl GitRepo {
     }
 
     /// Copy the repo's real index into a temporary file. A repository without an
-    /// index yet (freshly initialized, no commits) yields an empty throwaway, so
-    /// every tracked-or-not file shows as an addition.
+    /// index yet (freshly initialized, no commits) gets a valid empty index, so
+    /// every file shows as an addition.
     async fn seed_temp_index(&self) -> Result<NamedTempFile> {
         let temp = NamedTempFile::new().map_err(|source| {
             Error::Source(format!("could not create a temporary index: {source}"))
@@ -83,7 +83,19 @@ impl GitRepo {
                     Error::Source(format!("could not write the temporary index: {source}"))
                 })?;
             }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                // git rejects a zero-length GIT_INDEX_FILE ("index file smaller
+                // than expected"), so write a valid empty index into the
+                // throwaway before anything else reads or updates it.
+                self.git(
+                    ["read-tree", "--empty"],
+                    GitEnv {
+                        index: Some(temp.path()),
+                        ..GitEnv::default()
+                    },
+                )
+                .await?;
+            }
             Err(source) => {
                 return Err(Error::Source(format!(
                     "could not read the git index: {source}"
@@ -1517,6 +1529,35 @@ index HASHES
         // tip, so a later move would be reported.
         wince::assert_eq!(captured.base_tip_relative, false);
         wince::assert_eq!(captured.head_revision, None);
+    }
+
+    #[tokio::test]
+    async fn a_working_copy_source_captures_a_repository_with_no_commits() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        // A freshly initialized repository has no commits and no index file yet.
+        git(repo.path(), home.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.path().join("fresh.txt"), "new\n").expect("write");
+
+        // `wiff new` pins the base at HEAD, which falls back to the empty tree
+        // when HEAD is unborn.
+        let base = GitSource::pinned_base_at_head(repo.path())
+            .await
+            .expect("base");
+        let captured = GitSource::working_copy(repo.path(), base)
+            .capture()
+            .await
+            .expect("capture");
+
+        let expected = "\
+diff --git a/fresh.txt b/fresh.txt
+new file mode 100644
+index HASHES
+--- /dev/null
++++ b/fresh.txt
+@@ -0,0 +1 @@
++new";
+        wince::assert_eq!(stable(&captured.text), expected.to_string());
     }
 
     /// Toggle the read-only bit on every file and directory under `root`
