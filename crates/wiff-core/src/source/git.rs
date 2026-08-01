@@ -1036,30 +1036,36 @@ impl GitSource {
             real_objects: Some(&real_objects),
         };
         self.repo.add_untracked_files_to_temp_index(env).await?;
-        backdate_stat_cache(&index)?;
+        backdate_stat_cache(index.path())?;
         self.repo.diff(&[base.as_str().into()], env).await
     }
 }
 
-/// Backdate `index` so git re-reads the working tree instead of trusting the
-/// stat cache copied into it. The temp index is a copy of the real one, but its
-/// file is written after the working files it describes; because it is newer
-/// than every entry, git's racy-git safeguard stays off and git trusts the
-/// copied stat cache, missing a same-size edit whose modification time coincides
-/// with the committed entry's. Backdating the index file to before every entry
-/// makes them all racily clean, which forces the content comparison. The chosen
-/// time is one second past the epoch rather than the epoch itself because git
-/// reads a zero index timestamp as "unknown" and disables the racy-git check.
-fn backdate_stat_cache(index: &NamedTempFile) -> Result<()> {
+/// Backdate the index file at `path` so git re-reads the working tree instead of
+/// trusting the stat cache copied into it. The temp index is a copy of the real
+/// one, but its file is written after the working files it describes; because it
+/// is newer than every entry, git's racy-git safeguard stays off and git trusts
+/// the copied stat cache, missing a same-size edit whose modification time
+/// coincides with the committed entry's. Backdating the index file to before
+/// every entry makes them all racily clean, which forces the content comparison.
+/// The chosen time is one second past the epoch rather than the epoch itself
+/// because git reads a zero index timestamp as "unknown" and disables the
+/// racy-git check.
+///
+/// The file is opened afresh by path rather than through the handle that seeded
+/// it: recording untracked files rewrites the index through a temp-and-rename,
+/// leaving that handle pointing at the replaced file, not the one git will read.
+fn backdate_stat_cache(path: &Path) -> Result<()> {
     let pre_historic = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
-    index
-        .as_file()
-        .set_modified(pre_historic)
-        .map_err(|source| {
-            Error::Source(format!(
-                "could not set the temporary index modification time: {source}"
-            ))
-        })
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|source| Error::Source(format!("could not open the temporary index: {source}")))?;
+    file.set_modified(pre_historic).map_err(|source| {
+        Error::Source(format!(
+            "could not set the temporary index modification time: {source}"
+        ))
+    })
 }
 
 #[async_trait]
@@ -1669,6 +1675,29 @@ index HASHES
             GitRepo::new(bare.path()).head_branch().await.expect("bare"),
             HeadBranch::Unknown
         );
+    }
+
+    #[tokio::test]
+    async fn backdating_reaches_the_index_left_by_recording_untracked_files() {
+        use std::time::{Duration, SystemTime};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("index");
+        std::fs::write(&path, b"seed").expect("seed");
+        // Recording untracked files rewrites the index through a temp-and-rename;
+        // mimic that by renaming a fresh file over the path, orphaning the file
+        // the original handle held.
+        let replacement = dir.path().join("index.new");
+        std::fs::write(&replacement, b"rewritten").expect("replacement");
+        std::fs::rename(&replacement, &path).expect("rename");
+
+        super::backdate_stat_cache(&path).expect("backdate");
+
+        let mtime = std::fs::metadata(&path)
+            .expect("metadata")
+            .modified()
+            .expect("modified");
+        wince::assert_eq!(mtime, SystemTime::UNIX_EPOCH + Duration::from_secs(1));
     }
 
     /// Toggle the read-only bit on every file and directory under `root`
