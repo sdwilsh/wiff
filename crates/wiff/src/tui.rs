@@ -924,12 +924,12 @@ mod tests {
     use wiff_core::comment::{delete_event, resolve_event};
     use wiff_core::record::{
         Author, AuthorKind, CommentCreate, CommentEvent, CommentEventKind, CommentTarget,
-        RecordBody, SessionHeader, SourceKind, VersionNumber,
+        RecordBody, RevisionId, ScmSource, SessionHeader, SourceKind, TipRule, VersionNumber,
     };
     use wiff_core::session::{SessionLog, SessionWatcher, read_records};
     use wiff_core::{
-        CapturedDiff, DraftComment, LockWait, ProjectIdentity, RefreshOutcome, ReviewState,
-        ScmType, SessionId, capture_explore, create_session,
+        BaseRuleset, CapturedDiff, DraftComment, LockWait, ProjectIdentity, RefreshOutcome,
+        ReviewState, ScmType, SessionId, capture_explore, create_session,
     };
     use wiff_diff::{LineNo, Side};
     use wiff_forge::{DeclinedWrite, PushOutcome, ResyncOutcome};
@@ -943,7 +943,7 @@ mod tests {
         source_changed, sync_report,
     };
     use crate::command::{DiffSelection, capture_scm_diff};
-    use crate::testutil::git;
+    use crate::testutil::{git, git_out};
 
     /// The human reviewer these tests attribute drafts to.
     fn wez() -> Author {
@@ -1099,6 +1099,100 @@ mod tests {
              refresh the review, or quit this session and start (or resume) a \
              session from the current state of the repo if that is what you wish \
              to review."
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn refresh_captures_uncommitted_work_in_a_repository_with_no_commits() {
+        // A repository with no commits reviews from the root (the empty tree),
+        // the same on every branch, so a refresh is not gated on branch context
+        // and recaptures whatever is uncommitted now, even from a branch other
+        // than the one the session was created on.
+        let repo = tempfile::tempdir().expect("repo tempdir");
+        let data = tempfile::tempdir().expect("data tempdir");
+
+        git(repo.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.path().join("f.txt"), "alpha\n").expect("write v0");
+
+        let identity = ProjectIdentity {
+            canonical: "demo".to_string(),
+            repo_root: Some(repo.path().to_path_buf()),
+            scm: Some(ScmType::Git),
+        };
+        let captured = capture_scm_diff(
+            Some(ScmType::Git),
+            repo.path().to_path_buf(),
+            DiffSelection::WorkingCopy,
+            None,
+        )
+        .await
+        .expect("capture v0");
+        let log = create_session(data.path(), &identity, repo.path(), &captured, None)
+            .expect("create session");
+        let session_path = log.path().to_path_buf();
+        drop(log);
+
+        // Still no commit: switch to a different unborn branch, extend the
+        // working copy, and add a file, then refresh. The branch has moved from
+        // the recorded `main`, which a non-root base would refuse.
+        git(repo.path(), &["checkout", "-q", "-b", "other"]);
+        std::fs::write(repo.path().join("f.txt"), "alpha\nbeta\n").expect("write v1");
+        std::fs::write(repo.path().join("g.txt"), "gamma\n").expect("write g");
+
+        let state = ReviewState::load(&session_path).expect("load state");
+        let recaptured = recapture(&state).expect("recapture");
+
+        let empty_tree = RevisionId(git_out(
+            repo.path(),
+            &["hash-object", "-t", "tree", "/dev/null"],
+        ));
+        // The variable blob hashes on each `index` line are blanked so the whole
+        // recaptured diff can be asserted.
+        let normalized = recaptured
+            .text
+            .lines()
+            .map(|line| {
+                if line.starts_with("index ") {
+                    "index HASHES"
+                } else {
+                    line
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        wince::assert_eq!(
+            CapturedDiff {
+                text: normalized,
+                ..recaptured
+            },
+            CapturedDiff {
+                text: "\
+diff --git a/f.txt b/f.txt
+new file mode 100644
+index HASHES
+--- /dev/null
++++ b/f.txt
+@@ -0,0 +1,2 @@
++alpha
++beta
+diff --git a/g.txt b/g.txt
+new file mode 100644
+index HASHES
+--- /dev/null
++++ b/g.txt
+@@ -0,0 +1 @@
++gamma"
+                    .to_string(),
+                source: SourceKind::Scm(ScmSource {
+                    scm: ScmType::Git,
+                    base: BaseRuleset::empty(),
+                    tip: TipRule::WorkingCopy,
+                    branch_hint: Some("refs/heads/other".to_string()),
+                }),
+                base_revision: Some(empty_tree),
+                base_tip_relative: false,
+                head_revision: None,
+            }
         );
     }
 

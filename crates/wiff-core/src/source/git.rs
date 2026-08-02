@@ -315,6 +315,20 @@ impl GitRepo {
             .await?;
         ref_name_from_symbolic(output.status.success(), &output.stdout)
     }
+
+    /// The branch state of the repository: the branch HEAD is on (full ref name,
+    /// even when unborn), a detached head, or an unknown state when HEAD is
+    /// neither. The async counterpart to the free [`head_branch`] function;
+    /// errors only when git could not be run at all.
+    async fn head_branch(&self) -> Result<HeadBranch> {
+        let output = self
+            .spawn(
+                &["symbolic-ref".into(), "--quiet".into(), "HEAD".into()],
+                GitEnv::default(),
+            )
+            .await?;
+        Ok(classify_head(output.status.code(), &output.stdout))
+    }
 }
 
 /// Interpret the output of `rev-parse --symbolic-full-name <spec>`: the full ref
@@ -331,36 +345,43 @@ fn ref_name_from_symbolic(success: bool, stdout: &[u8]) -> Result<Option<String>
     Ok(name.starts_with("refs/").then(|| name.to_string()))
 }
 
+/// Classify HEAD from the exit status and stdout of `git symbolic-ref --quiet
+/// HEAD`. git names the branch and exits 0 even when it is unborn (a repository
+/// with no commits, where HEAD points at a branch that has none), unlike
+/// `rev-parse HEAD`, which fails there. It exits 1 for a detached head, where
+/// HEAD is a commit but not a symbolic ref, and with any other code when this is
+/// not a repository git can read.
+fn classify_head(code: Option<i32>, stdout: &[u8]) -> HeadBranch {
+    match code {
+        Some(0) => match std::str::from_utf8(stdout)
+            .ok()
+            .map(str::trim)
+            .filter(|name| name.starts_with("refs/"))
+        {
+            Some(name) => HeadBranch::On(name.to_string()),
+            None => HeadBranch::Unknown,
+        },
+        Some(1) => HeadBranch::Detached,
+        _ => HeadBranch::Unknown,
+    }
+}
+
 /// The branch state of the git repository at `repo_root`: the branch it is on
 /// (full ref name, `refs/heads/...`), a detached head, or an unknown state when
 /// git cannot be reached or gives an answer that cannot be read. The sync
-/// counterpart to [`GitRepo::symbolic_ref`] for paths that run outside an async
-/// context; both run the same `rev-parse --symbolic-full-name HEAD`. The child
-/// inherits no stdin and runs against `-C repo_root`, matching the process
-/// policy of [`GitRepo::spawn`].
+/// counterpart to [`GitRepo::head_branch`] for paths that run outside an async
+/// context.
 pub fn head_branch(repo_root: &Path) -> HeadBranch {
     let Ok(output) = std::process::Command::new("git")
         .arg("-C")
         .arg(repo_root)
-        .args(["rev-parse", "--symbolic-full-name", "HEAD"])
+        .args(["symbolic-ref", "--quiet", "HEAD"])
         .stdin(Stdio::null())
         .output()
     else {
         return HeadBranch::Unknown;
     };
-    if !output.status.success() {
-        return HeadBranch::Unknown;
-    }
-    let Ok(text) = std::str::from_utf8(&output.stdout) else {
-        return HeadBranch::Unknown;
-    };
-    let name = text.trim();
-    if name.starts_with("refs/") {
-        HeadBranch::On(name.to_string())
-    } else {
-        // Git echoes the literal `HEAD` for a detached head.
-        HeadBranch::Detached
-    }
+    classify_head(output.status.code(), &output.stdout)
 }
 
 #[async_trait]
@@ -493,11 +514,12 @@ impl GitRepo {
     }
 
     /// The local branch name `HEAD` is on, or `None` when the head is detached.
+    /// Names an unborn branch (a repository with no commits) like any other.
     async fn current_branch_name(&self) -> Result<Option<String>> {
-        Ok(self
-            .symbolic_ref("HEAD")
-            .await?
-            .and_then(|full| full.strip_prefix("refs/heads/").map(str::to_string)))
+        Ok(match self.head_branch().await? {
+            HeadBranch::On(full) => full.strip_prefix("refs/heads/").map(str::to_string),
+            HeadBranch::Detached | HeadBranch::Unknown => None,
+        })
     }
 
     async fn config_is_set(&self, key: &str) -> Result<bool> {
@@ -1078,7 +1100,10 @@ impl DiffSource for GitSource {
             ),
         };
         let branch_hint = match &self.tip {
-            TipRule::WorkingCopy | TipRule::Index => self.repo.symbolic_ref("HEAD").await?,
+            TipRule::WorkingCopy | TipRule::Index => match self.repo.head_branch().await? {
+                HeadBranch::On(name) => Some(name),
+                HeadBranch::Detached | HeadBranch::Unknown => None,
+            },
             _ => None,
         };
         Ok(CapturedDiff {
@@ -1107,7 +1132,7 @@ mod tests {
     use crate::identity::ScmType;
     use crate::record::{RevisionId, ScmSource, SourceKind, TipRule};
     use crate::session_id::SessionId;
-    use crate::source::{DiffSource, FetchSource, Remote, ScmRepo, TrackingBranch};
+    use crate::source::{DiffSource, FetchSource, HeadBranch, Remote, ScmRepo, TrackingBranch};
 
     /// Run `git` with `args` in `repo` under a laundered environment so neither
     /// the setup nor the capture under test can pick up host or per-user git
@@ -1544,7 +1569,12 @@ index HASHES
         let base = GitSource::pinned_base_at_head(repo.path())
             .await
             .expect("base");
-        let captured = GitSource::working_copy(repo.path(), base)
+        let empty_tree = RevisionId(git_out(
+            repo.path(),
+            home.path(),
+            &["hash-object", "-t", "tree", "/dev/null"],
+        ));
+        let captured = GitSource::working_copy(repo.path(), base.clone())
             .capture()
             .await
             .expect("capture");
@@ -1558,6 +1588,87 @@ index HASHES
 @@ -0,0 +1 @@
 +new";
         wince::assert_eq!(stable(&captured.text), expected.to_string());
+        wince::assert_eq!(
+            captured.source,
+            SourceKind::Scm(ScmSource {
+                scm: ScmType::Git,
+                base,
+                tip: TipRule::WorkingCopy,
+                // HEAD sits on the unborn `main`, recorded like any other
+                // branch the review was taken on.
+                branch_hint: Some("refs/heads/main".to_string()),
+            })
+        );
+        wince::assert_eq!(captured.base_revision, Some(empty_tree));
+        wince::assert_eq!(captured.base_tip_relative, false);
+        wince::assert_eq!(captured.head_revision, None);
+    }
+
+    #[test]
+    fn head_branch_names_an_unborn_branch_a_detached_head_and_a_non_repository() {
+        let home = tempfile::tempdir().expect("home");
+
+        // A freshly initialized repository has no commits, so HEAD points at a
+        // branch that does not exist yet; it is still on that branch.
+        let unborn = tempfile::tempdir().expect("unborn");
+        git(unborn.path(), home.path(), &["init", "-q", "-b", "main"]);
+        wince::assert_eq!(
+            super::head_branch(unborn.path()),
+            HeadBranch::On("refs/heads/main".to_string())
+        );
+
+        // A commit followed by a detach leaves HEAD on no branch.
+        let detached = tempfile::tempdir().expect("detached");
+        git(detached.path(), home.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(detached.path().join("f.txt"), "a\n").expect("write");
+        git(detached.path(), home.path(), &["add", "f.txt"]);
+        git(detached.path(), home.path(), &["commit", "-q", "-m", "f"]);
+        git(
+            detached.path(),
+            home.path(),
+            &["checkout", "-q", "--detach"],
+        );
+        wince::assert_eq!(super::head_branch(detached.path()), HeadBranch::Detached);
+
+        // A directory that is not a git repository names no branch at all.
+        let bare = tempfile::tempdir().expect("bare");
+        wince::assert_eq!(super::head_branch(bare.path()), HeadBranch::Unknown);
+    }
+
+    #[tokio::test]
+    async fn async_head_branch_matches_the_sync_classification() {
+        let home = tempfile::tempdir().expect("home");
+
+        let unborn = tempfile::tempdir().expect("unborn");
+        git(unborn.path(), home.path(), &["init", "-q", "-b", "main"]);
+        wince::assert_eq!(
+            GitRepo::new(unborn.path()).head_branch().await.expect("on"),
+            HeadBranch::On("refs/heads/main".to_string())
+        );
+
+        let detached = tempfile::tempdir().expect("detached");
+        git(detached.path(), home.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(detached.path().join("f.txt"), "a\n").expect("write");
+        git(detached.path(), home.path(), &["add", "f.txt"]);
+        git(detached.path(), home.path(), &["commit", "-q", "-m", "f"]);
+        git(
+            detached.path(),
+            home.path(),
+            &["checkout", "-q", "--detach"],
+        );
+        wince::assert_eq!(
+            GitRepo::new(detached.path())
+                .head_branch()
+                .await
+                .expect("detached"),
+            HeadBranch::Detached
+        );
+
+        let bare = tempfile::tempdir().expect("bare");
+        wince::assert_eq!(
+            GitRepo::new(bare.path()).head_branch().await.expect("bare"),
+            HeadBranch::Unknown
+        );
     }
 
     /// Toggle the read-only bit on every file and directory under `root`

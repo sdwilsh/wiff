@@ -249,8 +249,9 @@ pub(crate) async fn recapture_diff(state: &ReviewState) -> anyhow::Result<Option
     // matches the one recorded at creation, treating a detached-created session
     // that has since moved onto a branch as just such a mismatch. A committed tip
     // resolves the same revision regardless of what is checked out and needs no
-    // guard.
-    if matches!(tip, TipRule::WorkingCopy | TipRule::Index) {
+    // guard, and neither does a root base, which is the same empty tree on every
+    // branch (the review of a repository with no commits yet).
+    if matches!(tip, TipRule::WorkingCopy | TipRule::Index) && !base.reviews_from_root() {
         match head_branch(Path::new(&root), scm) {
             HeadBranch::On(now) if branch_hint.as_deref() == Some(now.as_str()) => {}
             HeadBranch::Detached if branch_hint.is_none() => {}

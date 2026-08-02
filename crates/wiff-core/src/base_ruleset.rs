@@ -39,6 +39,19 @@ impl Ruleset {
     pub fn empty() -> Self {
         Self::single(RuleOp::Empty)
     }
+
+    /// Whether the base is the repository root, the empty tree that resolves the
+    /// same on every branch and so ties a review to no particular one (the
+    /// review of a repository with no commits yet).
+    pub fn reviews_from_root(&self) -> bool {
+        matches!(
+            self.rules.as_slice(),
+            [Rule {
+                scm: None,
+                op: RuleOp::Empty,
+            },]
+        )
+    }
 }
 
 impl std::fmt::Display for Ruleset {
@@ -115,6 +128,15 @@ impl BaseRuleset {
     /// Returns the ruleset grammar as written.
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Whether this base reviews from the repository root; see
+    /// [`Ruleset::reviews_from_root`]. Grammar that does not parse is not a root
+    /// base.
+    pub fn reviews_from_root(&self) -> bool {
+        parse_ruleset(&self.0)
+            .map(|ruleset| ruleset.reviews_from_root())
+            .unwrap_or(false)
     }
 }
 
@@ -682,6 +704,22 @@ mod tests {
             "ref(name(9c1b453))".to_string()
         );
         wince::assert_eq!(Ruleset::empty().to_string(), "empty".to_string());
+    }
+
+    #[test]
+    fn only_a_lone_empty_rule_reviews_from_root() {
+        wince::assert_eq!(BaseRuleset::empty().reviews_from_root(), true);
+        wince::assert_eq!(BaseRuleset::new("git:empty").reviews_from_root(), false);
+        wince::assert_eq!(
+            BaseRuleset::new("ref(name(main)), empty").reviews_from_root(),
+            false
+        );
+        wince::assert_eq!(
+            BaseRuleset::pinned(&RevisionId("9c1b453".to_string())).reviews_from_root(),
+            false
+        );
+        // Grammar that does not parse is not a root base.
+        wince::assert_eq!(BaseRuleset::new("nonsense(").reviews_from_root(), false);
     }
 
     #[test]
