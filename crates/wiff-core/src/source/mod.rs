@@ -126,14 +126,15 @@ impl FetchSource {
 }
 
 /// A remote of the local repository: its local name paired with the clone URL
-/// it points at. The URL is the scm's own text, left whole; decomposing it into
-/// a host, owner, and repository is the forge layer's concern.
+/// it points at. The URL is the one the scm would fetch from, with any of its
+/// own alias rewrites (git's `url.<base>.insteadOf`) already applied; decomposing
+/// it into a host, owner, and repository is the forge layer's concern.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Remote {
     /// The local name of the remote, such as `origin`.
     pub name: String,
-    /// The clone URL configured for the remote, in whatever form the user set
-    /// it (an `https://` URL or an scp-style `git@host:owner/repo.git`).
+    /// The clone URL the remote fetches from, as an `https://` URL or an
+    /// scp-style `git@host:owner/repo.git`.
     pub url: String,
 }
 

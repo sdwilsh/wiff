@@ -713,56 +713,59 @@ impl ScmRepo for GitRepo {
     }
 
     async fn remotes(&self) -> Result<Vec<Remote>> {
-        // Read remote URLs from config rather than parsing `git remote -v`,
-        // whose output pairs a fetch and a push line per remote. --get-regexp
-        // prints matches in config-file order, and git fetches from a remote's
-        // first `url` value, so keeping the first per name yields the fetch URL
-        // and folds a multi-URL remote (git remote set-url --add) into one.
-        let output = self
-            .spawn(
-                &[
-                    "config".into(),
-                    "--get-regexp".into(),
-                    OsString::from(r"^remote\..*\.url$"),
-                ],
-                GitEnv::default(),
-            )
-            .await?;
-        match output.status.code() {
-            // git config exits 1 when the pattern matches nothing: a repo with
-            // no remotes yet, not a failure.
-            Some(1) => return Ok(Vec::new()),
-            Some(0) => {}
-            _ => {
+        // List remote names, then ask `git remote get-url` for each fetch URL.
+        // get-url applies url.<base>.insteadOf rewrites the way git does when it
+        // contacts a remote, whereas reading remote.<name>.url from config would
+        // report the alias unrewritten; a remote configured through an alias
+        // names neither its forge host nor the repository, so downstream host
+        // detection needs the URL git would really fetch from. get-url returns a
+        // remote's first URL, the one git fetches from, folding a remote given
+        // several URLs (git remote set-url --add) into one.
+        let names = self.spawn(&["remote".into()], GitEnv::default()).await?;
+        if !names.status.success() {
+            let stderr = String::from_utf8_lossy(&names.stderr);
+            return Err(Error::Repo(format!(
+                "git remote failed ({}): {}",
+                names.status,
+                stderr.trim()
+            )));
+        }
+        let listing = String::from_utf8(names.stdout).map_err(|source| {
+            Error::Repo(format!("git printed a non-UTF-8 remote name: {source}"))
+        })?;
+        let mut remotes = Vec::new();
+        for name in listing
+            .lines()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            let output = self
+                .spawn(
+                    &[
+                        "remote".into(),
+                        "get-url".into(),
+                        "--".into(),
+                        OsString::from(name),
+                    ],
+                    GitEnv::default(),
+                )
+                .await?;
+            if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 return Err(Error::Repo(format!(
-                    "git config --get-regexp for remotes failed ({}): {}",
+                    "git remote get-url for {name} failed ({}): {}",
                     output.status,
                     stderr.trim()
                 )));
             }
-        }
-        let listing = String::from_utf8(output.stdout).map_err(|source| {
-            Error::Repo(format!("git printed a non-UTF-8 remote URL: {source}"))
-        })?;
-        let mut remotes = Vec::new();
-        for line in listing.lines() {
-            let Some((key, url)) = line.split_once(' ') else {
-                return Err(Error::Repo(format!(
-                    "git config printed an unreadable remote line: {line:?}"
-                )));
-            };
-            // The key is `remote.<name>.url`; a remote name may itself contain a
-            // dot, so strip the fixed prefix and suffix rather than splitting.
-            let name = key
-                .strip_prefix("remote.")
-                .and_then(|rest| rest.strip_suffix(".url"))
-                .ok_or_else(|| {
-                    Error::Repo(format!(
-                        "git config printed an unexpected remote key: {key:?}"
-                    ))
-                })?;
-            if remotes.iter().any(|remote: &Remote| remote.name == name) {
+            let url = String::from_utf8(output.stdout).map_err(|source| {
+                Error::Repo(format!("git printed a non-UTF-8 remote URL: {source}"))
+            })?;
+            let url = url.trim();
+            // A remote configured with only a pushurl has no fetch URL; get-url
+            // then echoes the remote's own name back rather than failing. That
+            // is no clone URL, so such a remote does not appear.
+            if url.is_empty() || url == name {
                 continue;
             }
             remotes.push(Remote {
@@ -1916,20 +1919,130 @@ index HASHES
             &["remote", "add", "fork", "https://codeberg.org/me/demo.git"],
         );
 
+        // `git remote` lists names alphabetically, so fork sorts before origin.
         let repo = GitRepo::new(w);
         let remotes = repo.remotes().await.expect("remotes");
         wince::assert_eq!(
             remotes,
             vec![
                 Remote {
+                    name: "fork".to_string(),
+                    url: "https://codeberg.org/me/demo.git".to_string(),
+                },
+                Remote {
                     name: "origin".to_string(),
                     url: "git@github.com:octo/demo.git".to_string(),
                 },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn remotes_expands_url_rewrite_aliases() {
+        let work = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        let (w, h) = (work.path(), home.path());
+        git(w, h, &["init", "-q", "-b", "main"]);
+        // A remote configured with a `url.<base>.insteadOf` alias names neither
+        // its host nor repository on its own, so it must come back expanded the
+        // way git would contact it.
+        git(
+            w,
+            h,
+            &["config", "url.git@github.com:octo/.insteadOf", "octo:"],
+        );
+        git(w, h, &["remote", "add", "origin", "octo:demo.git"]);
+        git(
+            w,
+            h,
+            &["remote", "add", "fork", "https://codeberg.org/me/demo.git"],
+        );
+
+        let repo = GitRepo::new(w);
+        let remotes = repo.remotes().await.expect("remotes");
+        wince::assert_eq!(
+            remotes,
+            vec![
                 Remote {
                     name: "fork".to_string(),
                     url: "https://codeberg.org/me/demo.git".to_string(),
                 },
+                Remote {
+                    name: "origin".to_string(),
+                    url: "git@github.com:octo/demo.git".to_string(),
+                },
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn remotes_skips_a_remote_with_only_a_push_url() {
+        let work = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        let (w, h) = (work.path(), home.path());
+        git(w, h, &["init", "-q", "-b", "main"]);
+        git(
+            w,
+            h,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/octo/demo.git",
+            ],
+        );
+        // A pushurl with no fetch URL: get-url echoes the remote's own name
+        // rather than a URL, and such a remote has nothing to detect a host
+        // from, so it must not appear.
+        git(
+            w,
+            h,
+            &[
+                "config",
+                "remote.mirror.pushurl",
+                "ssh://push.example/octo/demo.git",
+            ],
+        );
+
+        let repo = GitRepo::new(w);
+        let remotes = repo.remotes().await.expect("remotes");
+        wince::assert_eq!(
+            remotes,
+            vec![Remote {
+                name: "origin".to_string(),
+                url: "https://github.com/octo/demo.git".to_string(),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn remotes_reads_a_remote_named_with_a_leading_dash() {
+        let work = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        let (w, h) = (work.path(), home.path());
+        git(w, h, &["init", "-q", "-b", "main"]);
+        // git permits a remote name beginning with a dash; get-url must read it
+        // as a name and not an option.
+        git(
+            w,
+            h,
+            &[
+                "remote",
+                "add",
+                "--",
+                "-dash",
+                "https://github.com/octo/demo.git",
+            ],
+        );
+
+        let repo = GitRepo::new(w);
+        let remotes = repo.remotes().await.expect("remotes");
+        wince::assert_eq!(
+            remotes,
+            vec![Remote {
+                name: "-dash".to_string(),
+                url: "https://github.com/octo/demo.git".to_string(),
+            }]
         );
     }
 
