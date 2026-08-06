@@ -287,7 +287,8 @@ pub fn set_resolved(
 }
 
 /// Withdraw an existing comment, appending a delete tombstone attributed to
-/// `author`. The comment must already exist in the session.
+/// `author`. The comment must already exist in the session. A human may
+/// withdraw any comment; an agent may withdraw only its own.
 pub fn delete_comment(
     log: &mut SessionLog,
     id: Ulid,
@@ -296,7 +297,32 @@ pub fn delete_comment(
 ) -> Result<CommentState> {
     let (mut lock, records) = log.lock_and_sync(wait)?;
     let comment = require_comment_in_records(&records, id)?;
+    if !author.may_edit_or_withdraw(&comment.author) {
+        return Err(Error::ForeignDelete(id));
+    }
     log.append(&mut lock, delete_event(id, author))?;
+    Ok(comment)
+}
+
+/// Edit an existing comment's body, appending an edit record attributed to
+/// `author`. The comment must already exist and not be withdrawn. A human may
+/// edit any comment; an agent may edit only its own.
+pub fn edit_comment(
+    log: &mut SessionLog,
+    id: Ulid,
+    body: String,
+    author: Author,
+    wait: LockWait,
+) -> Result<CommentState> {
+    let (mut lock, records) = log.lock_and_sync(wait)?;
+    let comment = require_comment_in_records(&records, id)?;
+    if !author.may_edit_or_withdraw(&comment.author) {
+        return Err(Error::ForeignEdit(id));
+    }
+    if comment.deleted {
+        return Err(Error::EditWithdrawn(id));
+    }
+    log.append(&mut lock, edit_event(id, author, body))?;
     Ok(comment)
 }
 

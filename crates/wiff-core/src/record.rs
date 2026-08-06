@@ -566,6 +566,15 @@ pub struct Author {
     pub kind: AuthorKind,
 }
 
+impl Author {
+    /// Returns whether this author may edit or withdraw a comment authored by
+    /// `comment_author`. A human may edit or withdraw anyone's comment; an
+    /// agent is confined to its own.
+    pub fn may_edit_or_withdraw(&self, comment_author: &Author) -> bool {
+        self.kind == AuthorKind::Human || self == comment_author
+    }
+}
+
 /// Whether an annotation's author is a human or an agent.
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,

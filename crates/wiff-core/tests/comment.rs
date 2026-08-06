@@ -13,8 +13,8 @@ use wiff_core::review::{CommentState, fold};
 use wiff_core::session::read_records;
 use wiff_core::{
     CapturedDiff, DraftComment, Error, LockWait, ProjectIdentity, SessionLog, SidebandHash,
-    capture_draft_anchors, create_session, delete_comment, draft_create, set_disposition,
-    set_resolved,
+    capture_draft_anchors, create_session, delete_comment, draft_create, edit_comment,
+    set_disposition, set_resolved,
 };
 use wiff_diff::{FileStatus, LineNo, Side};
 
@@ -68,6 +68,13 @@ fn human(name: &str) -> Author {
     Author {
         name: name.to_string(),
         kind: AuthorKind::Human,
+    }
+}
+
+fn agent(name: &str) -> Author {
+    Author {
+        name: name.to_string(),
+        kind: AuthorKind::Agent,
     }
 }
 
@@ -502,6 +509,183 @@ fn mutating_an_unknown_comment_is_an_error() {
     wince::assert_eq!(
         delete_err.to_string(),
         format!("no comment {missing} in this session")
+    );
+}
+
+#[test]
+fn a_human_may_edit_and_withdraw_an_agents_comment() {
+    let (_base, mut log) = session();
+    let added = DraftComment {
+        author: agent("opus"),
+        target: CommentTarget::Review,
+        body: "agent take".to_string(),
+        disposition: None,
+    }
+    .append(&mut log, LockWait::Block)
+    .unwrap();
+    edit_comment(
+        &mut log,
+        added.id,
+        "human reworded it".to_string(),
+        human("wez"),
+        LockWait::Block,
+    )
+    .unwrap();
+    delete_comment(&mut log, added.id, human("wez"), LockWait::Block).unwrap();
+
+    let state = fold(&read_records(log.path()).unwrap()).unwrap();
+    let folded: Vec<(Author, String, bool, Author)> = state
+        .comments
+        .iter()
+        .map(|comment| {
+            (
+                comment.author.clone(),
+                comment.body.clone(),
+                comment.deleted,
+                comment.updated_by.clone(),
+            )
+        })
+        .collect();
+    wince::assert_eq!(
+        folded,
+        vec![(
+            agent("opus"),
+            "human reworded it".to_string(),
+            true,
+            human("wez"),
+        )]
+    );
+}
+
+#[test]
+fn an_agent_may_edit_and_withdraw_its_own_comment() {
+    let (_base, mut log) = session();
+    let added = DraftComment {
+        author: agent("opus"),
+        target: CommentTarget::Review,
+        body: "agent take".to_string(),
+        disposition: None,
+    }
+    .append(&mut log, LockWait::Block)
+    .unwrap();
+    edit_comment(
+        &mut log,
+        added.id,
+        "agent reworded it".to_string(),
+        agent("opus"),
+        LockWait::Block,
+    )
+    .unwrap();
+    delete_comment(&mut log, added.id, agent("opus"), LockWait::Block).unwrap();
+
+    let state = fold(&read_records(log.path()).unwrap()).unwrap();
+    let folded: Vec<(String, bool)> = state
+        .comments
+        .iter()
+        .map(|comment| (comment.body.clone(), comment.deleted))
+        .collect();
+    wince::assert_eq!(folded, vec![("agent reworded it".to_string(), true)]);
+}
+
+#[test]
+fn an_agent_cannot_edit_or_withdraw_a_comment_it_did_not_author() {
+    let (_base, mut log) = session();
+    let added = DraftComment {
+        author: human("wez"),
+        target: CommentTarget::Review,
+        body: "human take".to_string(),
+        disposition: None,
+    }
+    .append(&mut log, LockWait::Block)
+    .unwrap();
+    let edit_err = edit_comment(
+        &mut log,
+        added.id,
+        "agent meddling".to_string(),
+        agent("opus"),
+        LockWait::Block,
+    )
+    .unwrap_err();
+    let delete_err =
+        delete_comment(&mut log, added.id, agent("opus"), LockWait::Block).unwrap_err();
+
+    // A refused mutation must write nothing: the comment is still its original
+    // create record, unedited and not withdrawn.
+    let state = fold(&read_records(log.path()).unwrap()).unwrap();
+    let folded: Vec<(String, bool, bool)> = state
+        .comments
+        .iter()
+        .map(|comment| {
+            (
+                comment.body.clone(),
+                comment.deleted,
+                comment.updated_seq == comment.created_seq,
+            )
+        })
+        .collect();
+    wince::assert_eq!(
+        (
+            matches!(edit_err, Error::ForeignEdit(_)),
+            edit_err.to_string(),
+            matches!(delete_err, Error::ForeignDelete(_)),
+            delete_err.to_string(),
+            folded,
+        ),
+        (
+            true,
+            format!(
+                "cannot edit comment {}: an agent may only edit its own comments",
+                added.id
+            ),
+            true,
+            format!(
+                "cannot withdraw comment {}: an agent may only withdraw its own comments",
+                added.id
+            ),
+            vec![("human take".to_string(), false, true)],
+        )
+    );
+}
+
+#[test]
+fn editing_a_withdrawn_comment_is_refused() {
+    let (_base, mut log) = session();
+    let added = DraftComment {
+        author: human("wez"),
+        target: CommentTarget::Review,
+        body: "first take".to_string(),
+        disposition: None,
+    }
+    .append(&mut log, LockWait::Block)
+    .unwrap();
+    delete_comment(&mut log, added.id, human("wez"), LockWait::Block).unwrap();
+    let error = edit_comment(
+        &mut log,
+        added.id,
+        "revised after withdrawal".to_string(),
+        human("wez"),
+        LockWait::Block,
+    )
+    .unwrap_err();
+
+    // The tombstone keeps its withdrawn body; the refused edit wrote nothing.
+    let state = fold(&read_records(log.path()).unwrap()).unwrap();
+    let folded: Vec<(String, bool)> = state
+        .comments
+        .iter()
+        .map(|comment| (comment.body.clone(), comment.deleted))
+        .collect();
+    wince::assert_eq!(
+        (
+            matches!(error, Error::EditWithdrawn(_)),
+            error.to_string(),
+            folded,
+        ),
+        (
+            true,
+            format!("cannot edit withdrawn comment {}", added.id),
+            vec![("first take".to_string(), true)],
+        )
     );
 }
 

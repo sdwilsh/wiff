@@ -8,7 +8,7 @@ use ulid::Ulid;
 use wiff_core::record::{CommentRef, CommentTarget, Disposition};
 use wiff_core::review::ReviewState;
 use wiff_core::{
-    DraftComment, LockWait, SessionLog, delete_comment, set_disposition, set_resolved,
+    DraftComment, LockWait, SessionLog, delete_comment, edit_comment, set_disposition, set_resolved,
 };
 use wiff_diff::{LineNo, Side};
 
@@ -27,6 +27,7 @@ impl CommentArgs {
     pub async fn run(self) -> anyhow::Result<()> {
         match self.command {
             CommentCommand::Add(args) => args.run().await,
+            CommentCommand::Edit(args) => args.run().await,
             CommentCommand::List(args) => args.run(),
             CommentCommand::Resolve(args) => args.run(),
             CommentCommand::Verdict(args) => args.run(),
@@ -40,6 +41,8 @@ impl CommentArgs {
 enum CommentCommand {
     /// Append a comment to a session.
     Add(CommentAddArgs),
+    /// Rewrite a comment's body.
+    Edit(CommentEditArgs),
     /// List a session's comments with their ids.
     List(CommentListArgs),
     /// Mark a comment resolved, or reopen it.
@@ -154,6 +157,45 @@ impl CommentAddArgs {
     }
 }
 
+/// Arguments for `wiff comment edit`.
+#[derive(Debug, Args)]
+struct CommentEditArgs {
+    /// The comment to edit, named by its number or ULID. A human may edit any
+    /// comment; an agent may edit only its own.
+    id: String,
+    /// The new body. When omitted, it is read from stdin.
+    #[arg(long)]
+    body: Option<String>,
+    /// The author's display name.
+    #[arg(long)]
+    author: Option<String>,
+    /// Attribute the edit to an agent rather than a human.
+    #[arg(long)]
+    agent: bool,
+    /// Edit a comment in a specific session by id instead of the active one.
+    #[arg(long)]
+    session: Option<String>,
+    /// Force the project bucket name when it cannot be derived from the cwd.
+    #[arg(long)]
+    project: Option<String>,
+}
+
+impl CommentEditArgs {
+    /// Rewrite a comment's body and report the outcome.
+    async fn run(self) -> anyhow::Result<()> {
+        let path = resolve_session(self.session.as_deref(), self.project.as_deref())?;
+        let id = resolve_comment_ref(&path, &self.id)?;
+        let author = resolve_author(self.agent, self.author.clone())?;
+        let body = comment_body(self.body.clone()).await?;
+        let mut log = SessionLog::open(&path)?;
+        let comment = edit_comment(&mut log, id, body, author, LockWait::Block)?;
+        // Echo the ULID, not the number: it shows the cross-session identity of
+        // the comment the user named.
+        println!("edited comment {}", comment.id);
+        Ok(())
+    }
+}
+
 /// Arguments for `wiff comment list`.
 #[derive(Debug, Args)]
 struct CommentListArgs {
@@ -263,7 +305,8 @@ fn verdict_outcome(id: Ulid, disposition: Option<Disposition>) -> String {
 /// Arguments for `wiff comment rm`.
 #[derive(Debug, Args)]
 struct CommentRmArgs {
-    /// The comment to withdraw, named by its number or ULID.
+    /// The comment to withdraw, named by its number or ULID. A human may
+    /// withdraw any comment; an agent may withdraw only its own.
     id: String,
     /// The author's display name.
     #[arg(long)]

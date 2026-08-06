@@ -136,6 +136,22 @@ pub enum Error {
     #[error("cannot set a verdict on comment {0}, which you did not author")]
     ForeignDisposition(Ulid),
 
+    /// An agent tried to withdraw a comment it did not author. Withdrawal is
+    /// open to any human, but an agent is confined to its own comments.
+    #[error("cannot withdraw comment {0}: an agent may only withdraw its own comments")]
+    ForeignDelete(Ulid),
+
+    /// An agent tried to edit a comment it did not author. Editing is open to
+    /// any human, but an agent is confined to its own comments.
+    #[error("cannot edit comment {0}: an agent may only edit its own comments")]
+    ForeignEdit(Ulid),
+
+    /// An edit named a comment that has been withdrawn. A tombstoned comment's
+    /// body is fixed; rewriting it would change the text a later restore brings
+    /// back and, for a forge-linked comment, stage a spurious unpushed change.
+    #[error("cannot edit withdrawn comment {0}")]
+    EditWithdrawn(Ulid),
+
     /// A session was written by a format version that does not match this
     /// build's, older or newer, so it cannot be safely interpreted. wiff is
     /// pre-release with no migration: discard the session and re-capture.

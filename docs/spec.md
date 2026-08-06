@@ -113,11 +113,16 @@ bodies:
   authored against, the anchored snippet and its surrounding context lines
   (for rebasing), and the body text.
 - `CommentEdit`: revises a prior comment's body, referencing its annotation
-  ULID.
+  ULID. A human may edit any comment; an agent may edit only its own, so an
+  automated actor cannot rewrite another participant's words. This is gated
+  where edits are authored, not in the fold, keeping forge-imported edits
+  readable.
 - `CommentResolve` / `CommentDelete`: marks a comment resolved or withdrawn,
   attributed to the author who made the change so a reviewer can see who
   resolved or removed it. Deletes are tombstones, not physical removal
-  (append-only).
+  (append-only). Resolving is open to anyone; withdrawal follows the same rule
+  as editing (a human may withdraw any comment, an agent only its own),
+  likewise gated at authoring rather than in the fold.
 - `SetDisposition`: sets or clears the approve/request-changes verdict a
   comment holds. Only the comment's author may set it. Each actor's current
   verdict is reduced from their live comments: a request for changes dominates
@@ -286,13 +291,16 @@ an explicit subcommand, so behavior is unambiguous. Subcommands (v0):
 - `wiff comment add`: append a comment. Flags for target (`--file`, `--line`,
   line range, whole-file, review-level), `--body` (or stdin), author flags, and
   an optional `--session` that defaults to the active session.
+- `wiff comment edit`: rewrite a comment's body from `--body` or stdin. A human
+  may edit any comment; an agent may edit only its own.
 - `wiff comment list` / `wiff comment resolve` / `wiff comment verdict` /
-  `wiff comment rm`. Resolve, verdict, and rm take the same author flags as
-  `add`, so who resolved, judged, or withdrew a comment is recorded alongside
-  the change. `verdict` sets or clears an approve/request-changes verdict on
-  the caller's own comment. Each names its comment by either its ULID or its
-  review-scoped number (see Comment numbers), and `add --reply-to` accepts
-  either form too.
+  `wiff comment rm`. Resolve, verdict, edit, and rm take the same author flags
+  as `add`, so who resolved, judged, edited, or withdrew a comment is recorded
+  alongside the change. `verdict` sets or clears an approve/request-changes
+  verdict on the caller's own comment. `edit` and `rm` let a human act on any
+  comment while an agent is confined to its own. Each names its comment by
+  either its ULID or its review-scoped number (see Comment numbers), and
+  `add --reply-to` accepts either form too.
 - `wiff render`: emit the review state for consumption. `--format markdown`
   (default) or `--format json`. The format argument is designed to admit more
   formats later, so it is a value-taking option rather than a boolean flag.

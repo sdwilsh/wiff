@@ -152,6 +152,7 @@ wiff comment list
 wiff comment resolve --agent 3
 wiff comment resolve --agent --reopen 3
 wiff comment verdict --agent 3 request_changes
+wiff comment edit --agent 3 --body "Revised wording."
 wiff comment rm --agent 3
 ```
 
@@ -161,7 +162,10 @@ wiff comment rm --agent 3
   the verdict on your own comment. Only its author may. `wiff render` reports
   each actor's current verdict, reduced from their comments, under a
   `## Verdicts` heading and in a top-level `verdicts` field in the JSON.
-- `wiff comment rm <comment>` withdraws a comment.
+- `wiff comment edit <comment>` rewrites a comment's body from `--body` or
+  stdin. You may edit only your own comments.
+- `wiff comment rm <comment>` withdraws a comment. You may withdraw only your
+  own comments.
 
 ## Describing the review
 

@@ -33,7 +33,7 @@ pub use capture::{
 };
 pub use comment::{
     AddedComment, AnchorFailures, DraftComment, capture_draft_anchors, delete_comment,
-    set_disposition, set_resolved,
+    edit_comment, set_disposition, set_resolved,
 };
 pub use compare::{Comparison, LineOrigin, compare_versions};
 pub use config::AuthorDefaults;
