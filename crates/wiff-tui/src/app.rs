@@ -662,6 +662,10 @@ pub struct App {
     /// end of the document, shown alongside the tally rather than replacing it
     /// so the wrap is reported without wiping the position.
     search_note: Option<String>,
+    /// The light palette to switch to when a startup probe reads a light
+    /// terminal background. Present for the automatic appearance; absent for a
+    /// fixed dark or light choice, which no probe overrides.
+    auto_light_theme: Option<Theme>,
 }
 
 impl App {
@@ -745,6 +749,7 @@ impl App {
             last_search: None,
             active_search: None,
             search_note: None,
+            auto_light_theme: None,
         };
         app.rebuild_view();
         app
@@ -815,6 +820,35 @@ impl App {
     pub fn with_nudge_to_detach(mut self, nudge: bool) -> Self {
         self.nudge_to_detach = nudge;
         self
+    }
+
+    /// Set the light palette to switch to when a startup terminal probe reads a
+    /// light background. Pass the configured light theme for an automatic
+    /// appearance, or `None` for a fixed dark or light choice that no probe
+    /// overrides.
+    pub fn with_auto_light_theme(mut self, theme: Option<Theme>) -> Self {
+        self.auto_light_theme = theme;
+        self
+    }
+
+    /// Whether a startup terminal background probe could change the theme.
+    pub fn wants_background_probe(&self) -> bool {
+        self.auto_light_theme.is_some()
+    }
+
+    /// Apply what a startup probe learned about the terminal: recolor to the
+    /// light palette when `background` reads light under an automatic
+    /// appearance. Takes the candidate whatever the outcome, including a
+    /// `None` background from a terminal that did not answer, so that once the
+    /// probe has run `wants_background_probe` reports false and no later probe
+    /// can reapply a theme the reviewer has since changed. Does nothing for a
+    /// dark background or a fixed appearance.
+    pub fn apply_probed_background(&mut self, background: Option<Rgb>) {
+        if let Some(theme) = self.auto_light_theme.take()
+            && background.is_some_and(crate::theme::is_light)
+        {
+            self.apply_theme(&theme);
+        }
     }
 
     /// Set the busy modal headed `title` showing `body` that a forge fetch
@@ -5283,6 +5317,69 @@ mod tests {
         wince::assert_eq!(app.picking(), false);
         let light = Theme::light();
         wince::assert_eq!(app.background(), light.background);
+    }
+
+    #[test]
+    fn a_light_background_probe_switches_to_the_configured_light_theme() {
+        // With an automatic appearance, a startup probe that reads a light
+        // terminal background recolors the whole view to the light palette,
+        // matching the same document built under that theme.
+        let mut app = App::reviewing(commented_review(), 8, &theme())
+            .with_auto_light_theme(Some(Theme::light()));
+        app.set_width(TEST_WIDTH);
+        app.apply_probed_background(Some(wiff_diff::Rgb {
+            r: 0xff,
+            g: 0xff,
+            b: 0xff,
+        }));
+
+        let mut lit = App::reviewing(commented_review(), 8, &theme());
+        lit.set_width(TEST_WIDTH);
+        lit.apply_theme(&Theme::light());
+        wince::assert_eq!(
+            dump(&app.visible(TEST_WIDTH)),
+            dump(&lit.visible(TEST_WIDTH))
+        );
+        // The candidate is one-shot, so no later probe reapplies it.
+        wince::assert_eq!(app.wants_background_probe(), false);
+    }
+
+    #[test]
+    fn a_dark_background_probe_keeps_the_configured_dark_theme() {
+        // A probe that reads a dark background leaves the baseline palette in
+        // place, and still consumes the one-shot candidate.
+        let mut app = App::reviewing(commented_review(), 8, &theme())
+            .with_auto_light_theme(Some(Theme::light()));
+        app.set_width(TEST_WIDTH);
+        let before = dump(&app.visible(TEST_WIDTH));
+        app.apply_probed_background(Some(wiff_diff::Rgb {
+            r: 0x1e,
+            g: 0x1e,
+            b: 0x1e,
+        }));
+        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), before);
+        wince::assert_eq!(app.wants_background_probe(), false);
+    }
+
+    #[test]
+    fn a_silent_terminal_probe_keeps_the_dark_theme_and_consumes_the_candidate() {
+        // A terminal that answers nothing yields a None background. The
+        // baseline palette stays, and the one-shot candidate is still consumed
+        // so a later probe cannot reapply it mid-session.
+        let mut app = App::reviewing(commented_review(), 8, &theme())
+            .with_auto_light_theme(Some(Theme::light()));
+        app.set_width(TEST_WIDTH);
+        let before = dump(&app.visible(TEST_WIDTH));
+        app.apply_probed_background(None);
+        wince::assert_eq!(dump(&app.visible(TEST_WIDTH)), before);
+        wince::assert_eq!(app.wants_background_probe(), false);
+    }
+
+    #[test]
+    fn a_fixed_appearance_wants_no_background_probe() {
+        // Without an auto-light candidate the host runs no probe at all.
+        let app = App::reviewing(commented_review(), 8, &theme());
+        wince::assert_eq!(app.wants_background_probe(), false);
     }
 
     #[test]

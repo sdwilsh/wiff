@@ -20,6 +20,7 @@ pub mod keymap;
 mod markdown;
 pub mod notice;
 pub mod picker;
+mod probe;
 pub mod render;
 pub mod review;
 pub mod run;

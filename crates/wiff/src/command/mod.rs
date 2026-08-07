@@ -12,6 +12,7 @@ mod render;
 mod resume;
 mod session;
 mod skill;
+mod themes;
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -63,6 +64,8 @@ pub enum Command {
     Forge(ForgeArgs),
     /// Write the agent skill file and print its path.
     SkillPath,
+    /// List the bundled syntax theme names.
+    Themes,
 }
 
 impl Command {
@@ -79,6 +82,7 @@ impl Command {
             Command::Resume(args) => args.run(),
             Command::Forge(args) => args.run().await,
             Command::SkillPath => skill::run(),
+            Command::Themes => themes::run(),
         }
     }
 }

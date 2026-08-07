@@ -644,6 +644,13 @@ after the rest of v0.
   sequence of key presses; each press is a key with optional `ctrl-`/`alt-`/
   `shift-` modifier prefixes, lowercased (e.g. `"ctrl-f"`, `"g g"`).
 - `on_exit` selects keep/remove/prompt behavior on quit.
+- `[theme]` selects the color theme, with `appearance`, a per-appearance `dark`
+  and `light` syntax theme, and `probe`. `appearance` is `auto` (the default),
+  `dark`, or `light`. `auto` renders the dark theme and queries the terminal
+  background at startup, switching to the light theme on a light terminal; a
+  terminal that does not answer keeps the dark theme. The defaults are `wez` for
+  dark and `GitHub` for light. `probe` (default on, and never run for a fixed
+  appearance) can be set false to skip the background query.
 - `wrap_lines` (default on) soft-wraps diff content to the viewport width rather
   than clipping it at the edge; the `toggle_wrap` action flips it within a
   session.

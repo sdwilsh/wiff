@@ -12,7 +12,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use wiff_core::{AuthorDefaults, BaseRuleset, DEFAULT_BASE_REVISION_RULES};
-use wiff_diff::DEFAULT_TAB_WIDTH;
+use wiff_diff::highlight::{DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME};
+use wiff_diff::{DEFAULT_TAB_WIDTH, ThemeName};
 use wiff_forge::ForgeTable;
 use wiff_tui::keymap::Keymap;
 use wiff_tui::render::{
@@ -36,12 +37,86 @@ pub enum OnExit {
     Remove,
 }
 
+/// Which appearance the review UI renders.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Appearance {
+    /// Follow the terminal background: render dark by default, switching to
+    /// light on a terminal a probe reads as light.
+    #[default]
+    Auto,
+    /// Always render the dark palette.
+    Dark,
+    /// Always render the light palette.
+    Light,
+}
+
+/// How the review UI is colored: which theme to use and how it is chosen.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ThemeConfig {
+    /// Which appearance to render.
+    pub appearance: Appearance,
+    /// The syntax theme for the dark appearance, or `None` for the built-in
+    /// dark default.
+    pub dark: Option<ThemeName>,
+    /// The syntax theme for the light appearance, or `None` for the built-in
+    /// light default.
+    pub light: Option<ThemeName>,
+    /// Whether to query the terminal background at startup. Consulted only by
+    /// the automatic appearance; a fixed appearance never probes.
+    pub probe: bool,
+}
+
+impl Default for ThemeConfig {
+    fn default() -> Self {
+        Self {
+            appearance: Appearance::Auto,
+            dark: None,
+            light: None,
+            probe: true,
+        }
+    }
+}
+
+impl ThemeConfig {
+    /// The syntax theme to build the UI with at startup: the dark theme for the
+    /// automatic and dark appearances, the light theme for the light one.
+    pub fn baseline_theme(&self) -> &str {
+        match self.appearance {
+            Appearance::Auto | Appearance::Dark => self.dark_theme(),
+            Appearance::Light => self.light_theme(),
+        }
+    }
+
+    /// The syntax theme a startup probe switches to when it reads a light
+    /// terminal background, or `None` when the appearance is not automatic or
+    /// probing is disabled.
+    pub fn probed_light_theme(&self) -> Option<&str> {
+        (self.appearance == Appearance::Auto && self.probe).then(|| self.light_theme())
+    }
+
+    fn dark_theme(&self) -> &str {
+        self.dark
+            .as_ref()
+            .map_or(DEFAULT_DARK_THEME, ThemeName::as_str)
+    }
+
+    fn light_theme(&self) -> &str {
+        self.light
+            .as_ref()
+            .map_or(DEFAULT_LIGHT_THEME, ThemeName::as_str)
+    }
+}
+
 /// The whole of the user's configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// How to resolve keep-or-remove when the UI exits.
     pub on_exit: OnExit,
+    /// How the review UI is colored.
+    pub theme: ThemeConfig,
     /// The unchanged lines kept on each side of a change when rendering; longer
     /// runs fold away. This is a display choice, independent of how much context
     /// the diff was captured with.
@@ -99,6 +174,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             on_exit: OnExit::default(),
+            theme: ThemeConfig::default(),
             display_context: DEFAULT_DISPLAY_CONTEXT,
             min_fold: DEFAULT_MIN_FOLD,
             tab_width: DEFAULT_TAB_WIDTH,

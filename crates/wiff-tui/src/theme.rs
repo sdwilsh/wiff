@@ -105,7 +105,7 @@ impl Theme {
     /// The default palette for a light terminal.
     pub fn light() -> Self {
         Self::named(wiff_diff::highlight::DEFAULT_LIGHT_THEME)
-            .expect("bundled InspiredGitHub theme is always available")
+            .expect("bundled GitHub theme is always available")
     }
 
     /// Derive the whole palette from syntax theme `name` and its `chrome`.
@@ -192,6 +192,16 @@ fn luminance(c: Rgb) -> f64 {
     0.2126 * channel_luminance(c.r)
         + 0.7152 * channel_luminance(c.g)
         + 0.0722 * channel_luminance(c.b)
+}
+
+/// The relative-luminance threshold above which a terminal background reads as
+/// light: the WCAG crossover where black and white text clear equal contrast.
+const LIGHT_BACKGROUND_LUMINANCE: f64 = 0.179;
+
+/// Whether a terminal background `bg` counts as light, meaning dark text on it
+/// is the more legible choice and the light theme should be preferred.
+pub fn is_light(bg: Rgb) -> bool {
+    luminance(bg) > LIGHT_BACKGROUND_LUMINANCE
 }
 
 /// The WCAG contrast ratio between two colors, in `[1, 21]`.
@@ -308,23 +318,23 @@ mod tests {
         #[rustfmt::skip]
         wince::snapshot_str!(
             dump(&Theme::light()),
-            "syntax_theme InspiredGitHub\n",
+            "syntax_theme GitHub\n",
             "background #ffffff\n",
-            "gutter_fg #8e8e8e\n",
-            "file_header_fg #323232\n",
+            "gutter_fg #8f8f8f\n",
+            "file_header_fg #333333\n",
             "hunk_header_fg #627675\n",
             "added_bg #eef3ea\n",
             "removed_bg #f3e3e4\n",
             "added_emphasis_bg #dae5d1\n",
             "removed_emphasis_bg #e5c0c3\n",
             "whitespace_bg #dca8ad\n",
-            "cursor_bg #f5f5f5\n",
-            "search_match_bg #f8eec7\n",
+            "cursor_bg #f8eec7\n",
+            "search_match_bg #ffe792\n",
             "fold_fg #939393\n",
-            "status_fg #323232\n",
-            "status_bg #f8eec7\n",
+            "status_fg #333333\n",
+            "status_bg #b0cde7\n",
             "review_fg #81704c\n",
-            "comment_fg #323232\n",
+            "comment_fg #333333\n",
             "comment_author_fg #64717d\n",
             "comment_border_fg #939393\n",
             "comment_flag_fg #939393\n",

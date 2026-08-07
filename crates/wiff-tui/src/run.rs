@@ -97,9 +97,22 @@ pub struct Hooks<'a> {
 /// did. The terminal is put into raw mode on an alternate screen for the
 /// duration and restored before returning. Returns how the reviewer chose to
 /// leave together with any buffered draft edits still to commit.
-pub fn run(app: App, keymap: Keymap, hooks: Hooks) -> io::Result<(Exit, Vec<RecordBody>)> {
+pub fn run(mut app: App, keymap: Keymap, hooks: Hooks) -> io::Result<(Exit, Vec<RecordBody>)> {
     let mut terminal = TerminalGuard::enter()?;
+    detect_terminal_appearance(&mut app);
     event_loop(&mut terminal.terminal, app, keymap, hooks)
+}
+
+/// Probe the terminal background once, after taking over the terminal but before
+/// the event loop reads any input, and recolor to the light palette when the
+/// background reads light under an automatic appearance. Skipped under
+/// determinism (recording and tests), where no live terminal answers and the
+/// palette must stay fixed for reproducible frames.
+fn detect_terminal_appearance(app: &mut App) {
+    if wiff_core::determinism::enabled() || !app.wants_background_probe() {
+        return;
+    }
+    app.apply_probed_background(crate::probe::terminal_background());
 }
 
 /// Draw the current view: the visible lines over all but the last screen row,

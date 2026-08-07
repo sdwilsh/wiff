@@ -36,6 +36,31 @@ show_line_numbers = true
 was captured with. `wrap_lines` and `show_line_numbers` are the startup values;
 the `toggle_wrap` and `toggle_line_numbers` actions flip them within a session.
 
+### Theme
+
+By default wiff renders a dark theme and, at startup, asks the terminal for its
+background color; on a light terminal it switches to a light theme to match. A
+terminal that does not respond to the probe is assumed to use a dark theme.
+
+The `[theme]` table controls this behavior. Each appearance can name its own
+syntax theme, and the background probe can be turned off.
+
+```toml
+[theme]
+# auto, dark, or light. "auto" follows the terminal background; "dark" and
+# "light" fix the appearance.
+appearance = "auto"
+# The syntax theme for each appearance; omit either to use the built-in default
+# ("wez" for dark, "GitHub" for light).
+# You can use `wiff themes` to list the names, or just open the theme picker
+# (T by default) in the TUI to see them and live preview them.
+dark = "wez"
+light = "GitHub"
+# Query the terminal background so "auto" can tell light from dark. A fixed
+# appearance never probes.
+probe = true
+```
+
 ### Layout
 
 ```toml

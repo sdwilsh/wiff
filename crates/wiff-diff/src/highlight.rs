@@ -8,8 +8,10 @@
 //! syntect dependency and the output is straightforward to assert.
 
 use std::collections::BTreeMap;
+use std::str::FromStr;
 use std::sync::{Arc, LazyLock};
 
+use serde::Deserialize;
 use syntect::highlighting::{
     FontStyle, HighlightIterator, HighlightState, Highlighter as ThemeHighlighter, Theme, ThemeSet,
 };
@@ -24,7 +26,7 @@ use crate::reconstitute::{ReconLine, reconstitute};
 pub const DEFAULT_DARK_THEME: &str = "wez";
 
 /// The default theme for a light terminal.
-pub const DEFAULT_LIGHT_THEME: &str = "InspiredGitHub";
+pub const DEFAULT_LIGHT_THEME: &str = "GitHub";
 
 /// The bundled "wez" theme, a dark palette translated from the author's vim
 /// colorscheme. It is the default dark theme, named by [`DEFAULT_DARK_THEME`].
@@ -89,6 +91,54 @@ pub struct ThemeChrome {
     pub selection_foreground: Option<Rgb>,
     /// The background of a search match.
     pub find_highlight: Option<Rgb>,
+}
+
+/// A bundled syntax theme name, checked against the built-in set when it is
+/// built. Config names one of these for each appearance; validating on
+/// construction reports a typo where the name is set rather than later, when a
+/// wrong or ignored theme would be harder to trace back to the config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThemeName(String);
+
+impl ThemeName {
+    /// The name, for looking the theme up.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// The error from naming a theme that is not one of the built-in set.
+#[derive(Debug, thiserror::Error)]
+#[error("unknown theme {name:?}; run `wiff themes` for the built-in names")]
+pub struct UnknownTheme {
+    name: String,
+}
+
+impl FromStr for ThemeName {
+    type Err = UnknownTheme;
+
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        // Look up only the named theme rather than listing every bundled name,
+        // which would decompress the whole set on a path that runs for each CLI
+        // command that loads a config.
+        if theme(name).is_some() {
+            Ok(Self(name.to_string()))
+        } else {
+            Err(UnknownTheme {
+                name: name.to_string(),
+            })
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ThemeName {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let name = String::deserialize(deserializer)?;
+        name.parse().map_err(serde::de::Error::custom)
+    }
 }
 
 /// The names of the built-in syntax themes, sorted, for listing the choices a
@@ -538,7 +588,7 @@ impl LiveHighlighter {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{HighlightError, HighlightedLine, Highlighter, Rgb, Style, StyledSpan};
+    use super::{HighlightError, HighlightedLine, Highlighter, Rgb, Style, StyledSpan, ThemeName};
     use crate::line::LineNo;
     use crate::model::{DiffLine, FileDiff, FileStatus, Hunk, LineKind, Side};
 
@@ -671,6 +721,21 @@ mod tests {
     fn highlight_code_returns_none_for_an_unknown_language() {
         let highlighter = Highlighter::with_theme(TEST_THEME).unwrap();
         wince::assert_eq!(highlighter.highlight_code("nonesuch", "fn main() {}"), None);
+    }
+
+    #[test]
+    fn a_theme_name_parses_when_bundled_and_reports_a_typo_otherwise() {
+        let good: Result<ThemeName, _> = "GitHub".parse();
+        wince::assert_eq!(
+            good.map(|n| n.as_str().to_string())
+                .map_err(|err| err.to_string()),
+            Ok("GitHub".to_string())
+        );
+        let bad: Result<ThemeName, _> = "Draclua".parse();
+        wince::assert_eq!(
+            bad.map_err(|err| err.to_string()),
+            Err("unknown theme \"Draclua\"; run `wiff themes` for the built-in names".to_string())
+        );
     }
 
     #[test]

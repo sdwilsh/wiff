@@ -61,7 +61,15 @@ pub fn open(
     let text = log.read_diff(version.number)?;
     let diff = parse_diff(&text, config.tab_width)?;
 
-    let theme = Theme::dark();
+    // Build the UI with the appearance's baseline theme; when the appearance is
+    // automatic, a startup terminal probe may switch to the light palette.
+    let theme = Theme::named(config.theme.baseline_theme())
+        .with_context(|| format!("unknown theme {:?}", config.theme.baseline_theme()))?;
+    let auto_light = config
+        .theme
+        .probed_light_theme()
+        .map(|name| Theme::named(name).with_context(|| format!("unknown light theme {name:?}")))
+        .transpose()?;
     let sections = wiff_diff::SectionMatchers::new(&config.section)
         .context("a configured section pattern is not a valid regex")?;
     let generated =
@@ -109,7 +117,8 @@ pub fn open(
         .with_show_line_numbers(config.show_line_numbers)
         .with_diff_mode(config.diff_mode, config.side_by_side_min_width)
         .with_tab_width(config.tab_width)
-        .with_nudge_to_detach(config.nudge_to_detach);
+        .with_nudge_to_detach(config.nudge_to_detach)
+        .with_auto_light_theme(auto_light);
     // A forge-bound review refreshes by fetching the pull request over the
     // network, which blocks the loop, so give the app a modal to paint while it
     // runs. A local review recaptures a subprocess and shows no modal.

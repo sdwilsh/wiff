@@ -20,7 +20,7 @@ pub use content::decode_text;
 pub use generated_files::{GeneratedError, GeneratedMatchers, GeneratedReason};
 pub use highlight::{
     HighlightError, HighlightedLine, Highlighter, LiveHighlighter, ParsedSide, Parser, Rgb, Style,
-    StyledSpan, ThemeChrome, fence_language, theme_chrome, theme_names,
+    StyledSpan, ThemeChrome, ThemeName, UnknownTheme, fence_language, theme_chrome, theme_names,
 };
 pub use intraline::refine;
 pub use line::LineNo;

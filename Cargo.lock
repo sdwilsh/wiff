@@ -3759,6 +3759,7 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_json",
+ "termwiz",
  "thiserror 2.0.19",
  "time",
  "tui-textarea",
