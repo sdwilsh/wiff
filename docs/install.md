@@ -3,12 +3,38 @@
 wiff is written in Rust and builds with a recent stable toolchain. You do not
 need to clone the repository to install it.
 
+## Prebuilt binaries
+
+The rolling
+[`continuous`](https://github.com/wez/wiff/releases/tag/continuous) release is
+rebuilt from `main` on every commit. It attaches a
+`wiff-<target>.tar.gz` per platform, with a `.sha256` beside it; each archive
+holds the `wiff` binary, `LICENSE`, and `README.md`.
+
+The most convenient way to install is:
+
+```bash
+curl -fsSL https://github.com/wez/wiff/releases/download/continuous/install.sh | sh
+```
+
+The script picks the archive for your platform, checks it against the published
+SHA-256 to catch a corrupted download, and installs to `~/.local/bin` (override
+by setting `WIFF_BIN_DIR` in the environment).
+
+| Platform | Target |
+| --- | --- |
+| Linux, x86_64 | `x86_64-unknown-linux-musl` |
+| Linux, arm64 | `aarch64-unknown-linux-musl` |
+| macOS, Apple silicon | `aarch64-apple-darwin` |
+| macOS, Intel | `x86_64-apple-darwin` |
+| Windows | Not currently supported |
+
 ## From git
 
 Install straight from the repository:
 
 ```bash
-cargo install --git https://github.com/wez/wiff.git wiff
+cargo install --git https://github.com/wez/wiff.git --locked wiff
 ```
 
 This builds the `wiff` binary and places it on your PATH (usually
@@ -19,7 +45,7 @@ This builds the `wiff` binary and places it on your PATH (usually
 If you have cloned the repository, install from the workspace instead:
 
 ```bash
-cargo install --path crates/wiff
+cargo install --path crates/wiff --locked
 ```
 
 ## Verify

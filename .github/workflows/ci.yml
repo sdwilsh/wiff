@@ -4,6 +4,7 @@ on:
     branches:
       - main
   pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
@@ -43,3 +44,104 @@ jobs:
         with:
           components: rustfmt
       - run: cargo +nightly fmt --all -- --check
+
+  create-release:
+    # Publish only after the full check suite is green, and only from the
+    # canonical repository on a push to main or a manual run.
+    needs: [build, lint, test, fmt]
+    if: >-
+      github.repository == 'wez/wiff'
+      && (github.event_name == 'workflow_dispatch'
+          || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # A newer push cancels an in-progress older one so they cannot both move the
+    # rolling `continuous` tag. The per-target `binaries` group below extends
+    # this to the uploads.
+    concurrency:
+      group: continuous
+      cancel-in-progress: true
+    steps:
+      - env:
+          GH_REPO: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api "repos/$GH_REPO/git/refs/tags/continuous" -X PATCH \
+            -f sha="$GITHUB_SHA" -F force=true \
+            || gh api "repos/$GH_REPO/git/refs" -X POST \
+              -f ref=refs/tags/continuous -f sha="$GITHUB_SHA"
+          if gh release view continuous >/dev/null 2>&1; then
+            gh release edit continuous --target "$GITHUB_SHA" \
+              --notes "Built from main at $GITHUB_SHA."
+          else
+            gh release create continuous --prerelease --target "$GITHUB_SHA" \
+              --title continuous --notes "Built from main at $GITHUB_SHA."
+          fi
+
+  binaries:
+    needs: create-release
+    permissions:
+      # contents: write to upload assets; id-token/attestations for the
+      # keyless build provenance attestation below.
+      contents: write
+      id-token: write
+      attestations: write
+    # Serialize uploads per target so an older run cannot overwrite a newer
+    # run's archive: without this, two pushes in quick succession would each
+    # clobber the same `continuous` asset and the release could end up holding
+    # archives built from two different commits.
+    concurrency:
+      group: continuous-${{ matrix.target }}
+      cancel-in-progress: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup show
+      - id: upload
+        uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: wiff
+          package: wiff
+          target: ${{ matrix.target }}
+          profile: dist
+          locked: true
+          include: LICENSE,README.md
+          checksum: sha256
+          tar: unix
+          ref: refs/tags/continuous
+          token: ${{ secrets.GITHUB_TOKEN }}
+      # Keyless Sigstore provenance for the uploaded archive, bound to this
+      # workflow's OIDC identity. Verify a download with:
+      #   gh attestation verify wiff-<target>.tar.gz --repo wez/wiff
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ steps.upload.outputs.tar }}
+
+  # Publish the installer only once every archive it points at exists, so the
+  # script served from the release is never newer than the binaries it fetches.
+  publish-installer:
+    needs: binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: continuous-installer
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v7
+      - env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload continuous install.sh --clobber

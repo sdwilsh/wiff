@@ -13,8 +13,36 @@ skill) can read and write at the same time.
 
 ## Install
 
-Install straight from the git repository with a recent Rust toolchain, without
-cloning it first:
+Prebuilt binaries for Linux and macOS, x86_64 and arm64, are attached to the
+rolling [`continuous`](https://github.com/wez/wiff/releases/tag/continuous)
+release which builds from `main` on every commit.
+
+The most convenient way to install is:
+
+```bash
+curl -fsSL https://github.com/wez/wiff/releases/download/continuous/install.sh | sh
+```
+
+The script picks the archive for your platform, checks it against the published
+SHA-256 to catch a corrupted download, and installs to `~/.local/bin` (override
+by setting `WIFF_BIN_DIR` in the environment).
+
+| Platform | Target |
+| --- | --- |
+| Linux, x86_64 | `x86_64-unknown-linux-musl` |
+| Linux, arm64 | `aarch64-unknown-linux-musl` |
+| macOS, Apple silicon | `aarch64-apple-darwin` |
+| macOS, Intel | `x86_64-apple-darwin` |
+| Windows | Not currently supported |
+
+`curl|sh` is not a great practice from a security or trust perspective.  If you
+want a stronger, more reliable way to verify the provenance of the download,
+each archive carries a [Sigstore
+attestation](https://github.com/wez/wiff/attestations) which you can check with
+`gh attestation verify wiff-<target>.tar.gz --repo wez/wiff`.
+
+You may install by compiling straight from the git repository with a recent
+Rust toolchain, without cloning it first:
 
 ```bash
 cargo install --git https://github.com/wez/wiff.git wiff
