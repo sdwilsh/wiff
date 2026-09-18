@@ -311,4 +311,51 @@ mod fixture {
             pushed_verdicts: Vec::new(),
         }
     }
+
+    /// Returns the same review as [`state`], plus a second comment anchored to
+    /// the exact same range and context as the first, and a third anchored to
+    /// the same numeric range and content but on the before side, exercising
+    /// the distinction between an incidental same-side match and a same-range
+    /// match on the opposite side.
+    pub(super) fn shared_anchors() -> ReviewState {
+        let mut state = state();
+        state.comments.push(comment(
+            "00000000000000000000000008",
+            author("assistant", AuthorKind::Agent),
+            lines("main.rs", 2, 2),
+            "also why 3?",
+            12,
+        ));
+        state.comments.push(comment(
+            "00000000000000000000000009",
+            author("dev", AuthorKind::Human),
+            CommentTarget::Lines {
+                file: "main.rs".to_string(),
+                side: Side::Before,
+                start_line: LineNo::new(2).unwrap(),
+                end_line: LineNo::new(2).unwrap(),
+            },
+            "why 3 on the before side?",
+            13,
+        ));
+        let first = state
+            .comments
+            .iter()
+            .find(|comment| comment.id == ulid("00000000000000000000000001"))
+            .expect("first comment")
+            .anchor
+            .clone()
+            .expect("first comment anchor");
+        for id in ["00000000000000000000000008", "00000000000000000000000009"] {
+            state
+                .comments
+                .iter_mut()
+                .find(|comment| comment.id == ulid(id))
+                .expect("new comment")
+                .anchor = Some(first.clone());
+        }
+        // Number it in append order like the fold does.
+        state.comments = number_in_order(state.comments);
+        state
+    }
 }

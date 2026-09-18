@@ -5,13 +5,17 @@ use std::collections::HashMap;
 use ulid::Ulid;
 use wiff_core::record::{Anchor, CommentTarget};
 use wiff_core::review::{CommentState, ReviewState};
+use wiff_diff::Side;
 
 use super::visible_threads;
 
 /// Render `state` as markdown. Comments group by file, and within each group a
 /// thread renders as its root followed by its replies. A withdrawn reply drops
-/// out; a withdrawn root shows as a tombstone while it still has a live reply,
-/// and disappears once its whole thread is withdrawn.
+/// out. A withdrawn root shows as a tombstone while it still has a live reply,
+/// and disappears once its whole thread is withdrawn. Within a file group, only
+/// the first comment on a given range shows its snippet, provided its captured
+/// anchor content matches. A later comment on the same range renders a pointer
+/// to the comment that showed it.
 pub(super) fn render(state: &ReviewState) -> String {
     let mut out = String::new();
     out.push_str(&format!("# Review {}\n\n", state.session.id));
@@ -73,8 +77,9 @@ pub(super) fn render(state: &ReviewState) -> String {
     }
     for (heading, group) in group_by_file(&roots) {
         out.push_str(&format!("\n### {heading}\n\n"));
+        let mut shown: Vec<ShownSnippet> = Vec::new();
         for comment in group {
-            out.push_str(&comment_block(comment));
+            out.push_str(&comment_block(comment, &mut shown));
             for reply in replies.get(&comment.id).into_iter().flatten() {
                 out.push_str(&reply_block(reply));
             }
@@ -83,10 +88,23 @@ pub(super) fn render(state: &ReviewState) -> String {
     out
 }
 
-/// Renders one comment as a markdown bullet: its handle, metadata, body, and
-/// code context. The handle leads the bullet so a reader can act on the comment
-/// (resolve or withdraw it) straight from this rendering.
-fn comment_block(comment: &CommentState) -> String {
+/// A snippet already emitted within a file group, matched against the target
+/// and anchor of a later comment to decide whether to repeat it or point back.
+struct ShownSnippet<'a> {
+    file: &'a str,
+    side: Side,
+    start: u32,
+    end: u32,
+    anchor: &'a Anchor,
+    /// The handle of the comment that showed the snippet.
+    handle: String,
+}
+
+/// Renders one comment as a markdown bullet, handle first: its handle,
+/// metadata, body, and code context. A snippet already shown for the same range
+/// and anchor content within the file group renders as a pointer to the comment
+/// that showed it.
+fn comment_block<'a>(comment: &'a CommentState, shown: &mut Vec<ShownSnippet<'a>>) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "- {} {} by {} ({}){}\n",
@@ -100,7 +118,51 @@ fn comment_block(comment: &CommentState) -> String {
         out.push_str(&format!("  {line}\n"));
     }
     if let Some(anchor) = &comment.anchor {
-        out.push_str(&anchor_block(anchor, &comment.target));
+        if comment.deleted {
+            // A withdrawn comment is never a dedup source: a later live comment
+            // must not point a reader at a tombstone.
+            out.push_str(&anchor_block(anchor, &comment.target));
+        } else {
+            let first = match &comment.target {
+                CommentTarget::Lines {
+                    file,
+                    side,
+                    start_line,
+                    end_line,
+                } => shown.iter().find(|entry| {
+                    entry.file == file
+                        && entry.side == *side
+                        && entry.start == start_line.get()
+                        && entry.end == end_line.get()
+                        && entry.anchor == anchor
+                }),
+                _ => None,
+            };
+            match first {
+                Some(first) => {
+                    out.push_str(&format!("\n  (context: as shown under {})\n", first.handle))
+                }
+                None => {
+                    if let CommentTarget::Lines {
+                        file,
+                        side,
+                        start_line,
+                        end_line,
+                    } = &comment.target
+                    {
+                        shown.push(ShownSnippet {
+                            file,
+                            side: *side,
+                            start: start_line.get(),
+                            end: end_line.get(),
+                            anchor,
+                            handle: comment.handle(),
+                        });
+                    }
+                    out.push_str(&anchor_block(anchor, &comment.target));
+                }
+            }
+        }
     }
     out
 }
@@ -320,6 +382,73 @@ mod tests {
             "  never mind\n",
             "  - #7 reply by dev (human)\n",
             "    still relevant though\n",
+            "\n",
+            "### other.rs\n",
+            "\n",
+            "- #4 lines 5-6 (after) by dev (human) [shifted, request_changes, changed by opus (agent)]\n",
+            "  moved code\n",
+        );
+    }
+
+    #[test]
+    fn markdown_shows_a_shared_anchor_once_but_not_across_sides() {
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            render(&crate::render::fixture::shared_anchors()),
+            "# Review 000000000\n",
+            "\n",
+            "- project: demo\n",
+            "- source: git working copy\n",
+            "- version: v0 (1 file)\n",
+            "\n",
+            "## Description\n",
+            "\n",
+            "**Tidy the parser**\n",
+            "\n",
+            "Split the lexer out and cover it with tests.\n",
+            "\n",
+            "## Verdicts\n",
+            "\n",
+            "- wez (human): approve\n",
+            "- dev (human): request_changes\n",
+            "\n",
+            "## Comments\n",
+            "\n",
+            "### Review\n",
+            "\n",
+            "- #3 review by wez (human) [approve]\n",
+            "  overall solid\n",
+            "\n",
+            "### main.rs\n",
+            "\n",
+            "- #2 whole file by assistant (agent) [resolved by wez (human)]\n",
+            "  needs tests\n",
+            "- #1 line 2 (after) by wez (human)\n",
+            "  why 3?\n",
+            "\n",
+            "  ```rust\n",
+            "       1 | let a = 1;\n",
+            "  >    2 | let b = 3;\n",
+            "       3 | let c = 4;\n",
+            "  ```\n",
+            "  - #6 reply by opus (agent)\n",
+            "    3 is the loop bound\n",
+            "- #5 line 9 (after) by wez (human) [withdrawn by wez (human)]\n",
+            "  never mind\n",
+            "  - #7 reply by dev (human)\n",
+            "    still relevant though\n",
+            "- #8 line 2 (after) by assistant (agent)\n",
+            "  also why 3?\n",
+            "\n",
+            "  (context: as shown under #1)\n",
+            "- #9 line 2 (before) by dev (human)\n",
+            "  why 3 on the before side?\n",
+            "\n",
+            "  ```rust\n",
+            "       1 | let a = 1;\n",
+            "  >    2 | let b = 3;\n",
+            "       3 | let c = 4;\n",
+            "  ```\n",
             "\n",
             "### other.rs\n",
             "\n",
