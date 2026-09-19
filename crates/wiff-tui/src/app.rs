@@ -2106,7 +2106,7 @@ impl App {
     /// Reports instead when there is no earlier version, and does nothing on a
     /// read-only view.
     fn open_compare_picker(&mut self) {
-        let Some(latest) = self.latest_version() else {
+        let Some(latest) = self.review_version() else {
             return;
         };
         if latest == 0 {
@@ -2268,7 +2268,7 @@ impl App {
     /// refresh records the request for the host to act on. Does nothing on a
     /// read-only view with no review.
     pub fn offer_refresh(&mut self) {
-        let Some(latest) = self.latest_version() else {
+        let Some(latest) = self.review_version() else {
             return;
         };
         let rows: Vec<Box<dyn PickerRow<App>>> = vec![
@@ -2367,7 +2367,7 @@ impl App {
         last_commented: Option<u32>,
         note: Option<String>,
     ) {
-        let Some(latest) = self.latest_version() else {
+        let Some(latest) = self.review_version() else {
             return;
         };
         if latest == 0 {
@@ -2777,17 +2777,16 @@ impl App {
         self.scroll_into_view();
     }
 
-    /// Recapture the review over `diff` as version `version`, replacing the diff
-    /// and its committed `comments` and rebasing pending drafts forward. Folds
-    /// reset to collapsed since the diff's structure has moved, comment collapse
-    /// state survives by identity, and the cursor returns to the same file and
-    /// line it was on, or the nearest surviving line in that file. Passes through
-    /// silently when no review is attached. Drafted line comments move through
-    /// `old_diff`, which yields the diff a draft was authored against.
+    /// Recapture the review over `diff` as version `version`, replacing the
+    /// diff and the committed `comments` and `description`, and rebasing
+    /// pending drafts forward. Does nothing when the review is absent. A
+    /// drafted line comment moves through `old_diff`, which yields the diff
+    /// against which a draft was authored.
     pub fn refresh(
         &mut self,
         diff: wiff_diff::Diff,
         comments: Vec<wiff_core::review::CommentState>,
+        description: Option<wiff_core::review::DescriptionState>,
         version: u32,
         old_diff: impl FnMut(u32) -> wiff_core::Result<wiff_diff::Diff>,
     ) -> wiff_core::Result<()> {
@@ -2798,7 +2797,7 @@ impl App {
         let layout = self.layout();
         let document = {
             let review = self.review.as_mut().expect("review present");
-            review.refresh(diff, comments, version, old_diff)?;
+            review.refresh(diff, comments, description, version, old_diff)?;
             review.document(layout)
         };
         self.collapsed = initial_collapse(&document);
@@ -2844,9 +2843,9 @@ impl App {
         self.review.as_ref().and_then(Review::comparing_from)
     }
 
-    /// The latest captured version under review, or `None` on a read-only view
-    /// with no review attached.
-    fn latest_version(&self) -> Option<u32> {
+    /// Returns the latest captured version under review, or `None` on a
+    /// read-only view without a review attached.
+    pub fn review_version(&self) -> Option<u32> {
         self.review.as_ref().map(Review::version)
     }
 
@@ -3882,7 +3881,7 @@ impl App {
     /// `percent`, how far the cursor sits through the view.
     fn status_meta(&self, percent: &str) -> String {
         let marker = if self.has_drafts() { "* " } else { "" };
-        let compare = match (self.comparing_from(), self.latest_version()) {
+        let compare = match (self.comparing_from(), self.review_version()) {
             (Some(from), Some(latest)) => format!("v{from}..v{latest}  "),
             _ => String::new(),
         };
@@ -7415,8 +7414,10 @@ mod tests {
                 ],
             )],
         };
-        app.refresh(new, Vec::new(), 1, |_| unreachable!("no drafts to rebase"))
-            .unwrap();
+        app.refresh(new, Vec::new(), None, 1, |_| {
+            unreachable!("no drafts to rebase")
+        })
+        .unwrap();
         app.set_message(
             "captured v1; rebased 0 comments: 0 exact, 0 shifted, 0 outdated".to_string(),
         );
@@ -7477,7 +7478,7 @@ mod tests {
                 ],
             )],
         };
-        app.refresh(new, Vec::new(), 1, |version| {
+        app.refresh(new, Vec::new(), None, 1, |version| {
             wince::assert_eq!(version, 0);
             Ok(old.clone())
         })
@@ -7518,8 +7519,10 @@ mod tests {
                 &[(LineKind::Context, "let x = 1;", 1)],
             )],
         };
-        app.refresh(new, Vec::new(), 1, |_| unreachable!("no drafts to rebase"))
-            .unwrap();
+        app.refresh(new, Vec::new(), None, 1, |_| {
+            unreachable!("no drafts to rebase")
+        })
+        .unwrap();
 
         wince::assert_eq!(app.cursor(), 3);
         wince::assert_eq!(app.top(), 0);

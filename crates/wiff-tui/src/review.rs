@@ -589,14 +589,16 @@ impl Review {
             .count()
     }
 
-    /// Recapture the review over `diff` as version `version`, replacing the diff
-    /// and its committed `comments` and rebasing pending drafts forward onto it.
-    /// A drafted line comment moves through `old_diff`, which yields the parsed
-    /// diff a draft was authored against so its anchored lines can be relocated.
+    /// Recapture the review over `diff` as version `version`, replacing the
+    /// diff and the committed `comments` and `description`, and rebasing
+    /// pending drafts forward onto it. A drafted line comment moves through
+    /// `old_diff`, which yields the parsed diff against which a draft was
+    /// authored.
     pub fn refresh(
         &mut self,
         diff: Diff,
         comments: Vec<CommentState>,
+        description: Option<DescriptionState>,
         version: u32,
         mut old_diff: impl FnMut(u32) -> wiff_core::Result<Diff>,
     ) -> wiff_core::Result<()> {
@@ -607,6 +609,7 @@ impl Review {
         self.comparing = None;
         self.rehighlight();
         self.committed = comments;
+        self.committed_description = description;
         self.version = version;
         Ok(())
     }

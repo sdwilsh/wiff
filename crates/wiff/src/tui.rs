@@ -208,14 +208,14 @@ pub fn open(
             // Act only on a successful read. A read that fails because a line is
             // still being appended leaves the change unacknowledged, so the next
             // wakeup retries it once the line is whole.
-            let Ok(summary) = reload_committed(session_path, app) else {
+            let Ok(report) = reconcile_in_place(session_path, config.tab_width, app) else {
                 return false;
             };
             watcher.acknowledge(fingerprint);
-            if summary.is_empty() {
+            let Some(report) = report else {
                 return false;
-            }
-            app.set_message(sync_report(&summary));
+            };
+            app.set_message(report);
             true
         }),
         compare: Box::new(|app: &mut App, request: CompareRequest| {
@@ -327,9 +327,16 @@ fn refresh_in_place(
         .filter(|comment| !comment.deleted)
         .cloned()
         .collect();
-    app.refresh(latest_diff, comments, latest.get(), |authored_version| {
-        parse_diff(&log.read_diff(VersionNumber(authored_version))?, tab_width).map_err(Into::into)
-    })?;
+    app.refresh(
+        latest_diff,
+        comments,
+        state.description.clone(),
+        latest.get(),
+        |authored_version| {
+            parse_diff(&log.read_diff(VersionNumber(authored_version))?, tab_width)
+                .map_err(Into::into)
+        },
+    )?;
     app.set_message(refresh_report(&outcome));
     // Offer the version list from the reviewer's pre-refresh perspective: their
     // prior view is marked and pre-selected, and cancelling keeps it against the
@@ -415,9 +422,16 @@ fn add_file_in_place(
         .filter(|comment| !comment.deleted)
         .cloned()
         .collect();
-    app.refresh(latest_diff, comments, latest.get(), |authored_version| {
-        parse_diff(&log.read_diff(VersionNumber(authored_version))?, tab_width).map_err(Into::into)
-    })?;
+    app.refresh(
+        latest_diff,
+        comments,
+        state.description.clone(),
+        latest.get(),
+        |authored_version| {
+            parse_diff(&log.read_diff(VersionNumber(authored_version))?, tab_width)
+                .map_err(Into::into)
+        },
+    )?;
     app.set_message(format!("added {path} (v{})", outcome.version));
     debug_assert!(
         app.move_to_file(&path),
@@ -679,9 +693,16 @@ fn reload_after_reconcile(
         .filter(|comment| !comment.deleted)
         .cloned()
         .collect();
-    app.refresh(latest_diff, comments, latest.get(), |authored_version| {
-        parse_diff(&log.read_diff(VersionNumber(authored_version))?, tab_width).map_err(Into::into)
-    })?;
+    app.refresh(
+        latest_diff,
+        comments,
+        state.description.clone(),
+        latest.get(),
+        |authored_version| {
+            parse_diff(&log.read_diff(VersionNumber(authored_version))?, tab_width)
+                .map_err(Into::into)
+        },
+    )?;
     Ok(())
 }
 
@@ -795,6 +816,57 @@ fn reload_committed(session_path: &Path, app: &mut App) -> anyhow::Result<Commen
         .cloned()
         .collect();
     Ok(app.reload_comments(comments, state.description.clone()))
+}
+
+/// Fold another actor's committed changes into the running review, returning a
+/// status note when there is something to report. When they captured a newer
+/// diff version, the review adopts it in place and advances onto the new
+/// version to keep reanchored comments on their lines rather than drifting to
+/// the file header. It keeps the reviewer's spot and, when they were comparing
+/// against an earlier version, re-derives that comparison against the new
+/// latest.
+fn reconcile_in_place(
+    session_path: &Path,
+    tab_width: usize,
+    app: &mut App,
+) -> anyhow::Result<Option<String>> {
+    let state = ReviewState::load(session_path)?;
+    let latest = state
+        .latest_version()
+        .context("this session has no captured diff to review")?
+        .number;
+    if app.review_version() >= Some(latest.get()) {
+        let summary = reload_committed(session_path, app)?;
+        return Ok((!summary.is_empty()).then(|| sync_report(&summary)));
+    }
+    let comments: Vec<_> = state
+        .comments
+        .iter()
+        .filter(|comment| !comment.deleted)
+        .cloned()
+        .collect();
+    // The version the reviewer was comparing against. Captured before the
+    // adoption below replaces it to re-derive the comparison against the new
+    // latest instead of dropping back to the whole diff.
+    let comparing_from = app.comparing_from();
+    let log = SessionLog::open(session_path)?;
+    let latest_diff = parse_diff(&log.read_diff(latest)?, tab_width)?;
+    app.refresh(
+        latest_diff.clone(),
+        comments,
+        state.description.clone(),
+        latest.get(),
+        |authored_version| {
+            parse_diff(&log.read_diff(VersionNumber(authored_version))?, tab_width)
+                .map_err(Into::into)
+        },
+    )?;
+    if let Some(from) = comparing_from.filter(|from| *from < latest.get()) {
+        let from_diff = parse_diff(&log.read_diff(VersionNumber(from))?, tab_width)?;
+        let comparison = compare_versions(&latest_diff, latest.get(), &from_diff, from);
+        app.show_comparison(comparison.diff, Some((from, comparison.before_origin)));
+    }
+    Ok(Some(format!("synced to v{}", latest.get())))
 }
 
 /// A terse status note naming what another actor changed, joining only the parts
@@ -954,9 +1026,9 @@ mod tests {
     };
 
     use super::{
-        addable_files, commit_drafts, compare_in_place, push_report, recapture, reconcile_note,
-        refresh_in_place, refresh_report, reload_after_reconcile, reload_committed, save_in_place,
-        source_changed, sync_report,
+        addable_files, commit_drafts, compare_in_place, push_report, recapture, reconcile_in_place,
+        reconcile_note, refresh_in_place, refresh_report, reload_after_reconcile, reload_committed,
+        save_in_place, source_changed, sync_report,
     };
     use crate::command::{DiffSelection, capture_scm_diff};
     use crate::testutil::{git, git_out};
@@ -2103,6 +2175,299 @@ new file mode 100644
             "---\n",
             "synced: 1 added\n",
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn syncing_follows_a_version_another_actor_captured() {
+        // A session over a git working tree, captured as v0 with a comment on the
+        // added delta line. While the reviewer holds v0, another actor changes
+        // the tree and captures v1, which reanchors the comment onto its new
+        // line. Reconciling in place adopts v1, placing the comment against its
+        // reanchored line instead of leaving it to drift to the file header,
+        // without opening a picker, and reports the move in the status line.
+        let repo = tempfile::tempdir().expect("repo tempdir");
+        let data = tempfile::tempdir().expect("data tempdir");
+        let file = repo.path().join("f.txt");
+
+        git(repo.path(), &["init", "-q"]);
+        std::fs::write(&file, "alpha\nbeta\ngamma\n").expect("write base");
+        git(repo.path(), &["add", "f.txt"]);
+        git(repo.path(), &["commit", "-q", "-m", "base"]);
+        // The working tree gains a fourth line. This is the diff v0 captures.
+        std::fs::write(&file, "alpha\nbeta\ngamma\ndelta\n").expect("write v0");
+
+        let identity = ProjectIdentity {
+            canonical: "demo".to_string(),
+            repo_root: Some(repo.path().to_path_buf()),
+            scm: Some(ScmType::Git),
+        };
+        let captured = capture_scm_diff(
+            Some(ScmType::Git),
+            repo.path().to_path_buf(),
+            DiffSelection::WorkingCopy,
+            None,
+        )
+        .await
+        .expect("capture v0");
+        let mut log = create_session(data.path(), &identity, repo.path(), &captured, None)
+            .expect("create session");
+        let session_path = log.path().to_path_buf();
+        DraftComment {
+            author: Author {
+                name: "wez".to_string(),
+                kind: AuthorKind::Human,
+            },
+            target: CommentTarget::Lines {
+                file: "f.txt".to_string(),
+                side: Side::After,
+                start_line: LineNo::new(4).unwrap(),
+                end_line: LineNo::new(4).unwrap(),
+            },
+            body: "why delta?".to_string(),
+            disposition: None,
+        }
+        .append(&mut log, LockWait::Block)
+        .expect("attach comment");
+        drop(log);
+
+        let theme = Theme::dark();
+        let state = ReviewState::load(&session_path).expect("load state");
+        let version = state.latest_version().expect("a captured version").number;
+        let diff = wiff_diff::parse(
+            &SessionLog::open(&session_path)
+                .unwrap()
+                .read_diff(version)
+                .unwrap(),
+        )
+        .expect("parse v0");
+        let review = Review::new(
+            DiffView::new(theme.clone()).expect("renderer"),
+            diff,
+            Author {
+                name: "wez".to_string(),
+                kind: AuthorKind::Human,
+            },
+            version.get(),
+            state.comments.clone(),
+            None,
+        );
+        let mut app = App::reviewing(review, 40, &theme);
+
+        // The watcher baselines on the v0 session, so it doesn't register a
+        // change until the other actor writes v1.
+        let mut watcher = SessionWatcher::new(&session_path);
+        wince::assert_eq!(watcher.changed().is_some(), false);
+
+        // Another actor inserts a line above delta, pushing it from line 4 to
+        // line 5, then captures v1 straight to the log, reanchoring the comment
+        // onto its new line.
+        std::fs::write(&file, "zero\nalpha\nbeta\ngamma\ndelta\n").expect("write v1");
+        let captured_v1 = capture_scm_diff(
+            Some(ScmType::Git),
+            repo.path().to_path_buf(),
+            DiffSelection::WorkingCopy,
+            None,
+        )
+        .await
+        .expect("capture v1");
+        let agent = Author {
+            name: "assistant".to_string(),
+            kind: AuthorKind::Agent,
+        };
+        let mut log = SessionLog::open(&session_path).expect("open");
+        wiff_core::refresh_session(&mut log, &captured_v1, agent.clone(), LockWait::Block)
+            .expect("capture v1")
+            .expect("the recapture changed the diff");
+        // In the same round of edits the agent also sets the review description.
+        // Reconciling onto the new version must pick up this description change
+        // too, not just the diff and the comment.
+        wiff_core::set_description(
+            &mut log,
+            wiff_core::record::Description::from_message("Overview\n\nagent summary"),
+            agent,
+            LockWait::Block,
+        )
+        .expect("set description");
+        drop(log);
+
+        let fingerprint = watcher.changed().expect("the v1 capture registers");
+        let report = reconcile_in_place(&session_path, wiff_diff::DEFAULT_TAB_WIDTH, &mut app)
+            .expect("reconcile");
+        watcher.acknowledge(fingerprint);
+        if let Some(report) = &report {
+            app.set_message(report.clone());
+        }
+        wince::assert_eq!(report, Some("synced to v1".to_string()));
+        // Unlike a refresh, reconciling in place never offers the
+        // version-comparison picker.
+        wince::assert_eq!(app.picking(), false);
+        // The acknowledged change no longer registers.
+        wince::assert_eq!(watcher.changed().is_some(), false);
+
+        // The review shows the full v1 diff with the comment still on delta,
+        // now at line 5, rather than floating to the file header, and the
+        // description set concurrently by the agent folded in above it.
+        #[rustfmt::skip]
+        wince::snapshot_str!(
+            screen(&app, 80),
+            "Review [press c here to draft the review comment]\n",
+            "┌ Description  assistant (agent)  press e to edit  tab to expand/collapse ─────┐\n",
+            "│Overview                                                                      │\n",
+            "│                                                                              │\n",
+            "│agent summary                                                                 │\n",
+            "└──────────────────────────────────────────────────────────────────────────────┘\n",
+            "modified  f.txt\n",
+            "@@ -1,3 +1,5 @@\n",
+            "        1 + zero\n",
+            "   1    2   alpha\n",
+            "   2    3   beta\n",
+            "   3    4   gamma\n",
+            "┌ #1 wez (human)  press e to edit  r to reply  x to resolve  d to delete  tab to expand/collapse ┐\n",
+            "│why delta?                                                                    │\n",
+            "└──────────┬───────────────────────────────────────────────────────────────────┘\n",
+            "        5 +└delta\n",
+            "---\n",
+            "synced to v1\n",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn syncing_re_derives_an_active_comparison_against_the_new_version() {
+        // The reviewer is comparing v0 against the latest v1 when another actor
+        // captures v2. Reconciling adopts v2 as the new latest and recomputes the
+        // v0-vs-latest comparison against it, keeping the reviewer looking at the
+        // change since v0 instead of falling back to the whole diff.
+        let repo = tempfile::tempdir().expect("repo tempdir");
+        let data = tempfile::tempdir().expect("data tempdir");
+        let file = repo.path().join("f.txt");
+
+        git(repo.path(), &["init", "-q"]);
+        std::fs::write(&file, "alpha\nbeta\ngamma\n").expect("write base");
+        git(repo.path(), &["add", "f.txt"]);
+        git(repo.path(), &["commit", "-q", "-m", "base"]);
+        // v0 appends delta to the working tree.
+        std::fs::write(&file, "alpha\nbeta\ngamma\ndelta\n").expect("write v0");
+
+        let identity = ProjectIdentity {
+            canonical: "demo".to_string(),
+            repo_root: Some(repo.path().to_path_buf()),
+            scm: Some(ScmType::Git),
+        };
+        let captured = capture_scm_diff(
+            Some(ScmType::Git),
+            repo.path().to_path_buf(),
+            DiffSelection::WorkingCopy,
+            None,
+        )
+        .await
+        .expect("capture v0");
+        let log = create_session(data.path(), &identity, repo.path(), &captured, None)
+            .expect("create session");
+        let session_path = log.path().to_path_buf();
+        drop(log);
+
+        let reviewer = Author {
+            name: "wez".to_string(),
+            kind: AuthorKind::Human,
+        };
+        let agent = Author {
+            name: "assistant".to_string(),
+            kind: AuthorKind::Agent,
+        };
+
+        // The agent rewrites beta to produce v1, a second version to compare
+        // against, capturing it before the review opens to build the review at
+        // v1.
+        std::fs::write(&file, "alpha\nBETA\ngamma\ndelta\n").expect("write v1");
+        let captured_v1 = capture_scm_diff(
+            Some(ScmType::Git),
+            repo.path().to_path_buf(),
+            DiffSelection::WorkingCopy,
+            None,
+        )
+        .await
+        .expect("capture v1");
+        let mut log = SessionLog::open(&session_path).expect("open");
+        wiff_core::refresh_session(&mut log, &captured_v1, reviewer.clone(), LockWait::Block)
+            .expect("capture v1")
+            .expect("the recapture changed the diff");
+        drop(log);
+
+        let theme = Theme::dark();
+        let state = ReviewState::load(&session_path).expect("load state");
+        let version = state.latest_version().expect("a captured version").number;
+        let diff = wiff_diff::parse(
+            &SessionLog::open(&session_path)
+                .unwrap()
+                .read_diff(version)
+                .unwrap(),
+        )
+        .expect("parse v1");
+        let review = Review::new(
+            DiffView::new(theme.clone()).expect("renderer"),
+            diff,
+            reviewer.clone(),
+            version.get(),
+            state.comments.clone(),
+            None,
+        );
+        let mut app = App::reviewing(review, 40, &theme);
+        compare_in_place(
+            &session_path,
+            wiff_diff::DEFAULT_TAB_WIDTH,
+            &mut app,
+            CompareRequest::Version(0),
+        )
+        .expect("compare v0 against v1");
+        wince::assert_eq!(app.comparing_from(), Some(0));
+
+        let mut watcher = SessionWatcher::new(&session_path);
+        wince::assert_eq!(watcher.changed().is_some(), false);
+
+        // Another actor appends epsilon and captures v2.
+        std::fs::write(&file, "alpha\nBETA\ngamma\ndelta\nepsilon\n").expect("write v2");
+        let captured_v2 = capture_scm_diff(
+            Some(ScmType::Git),
+            repo.path().to_path_buf(),
+            DiffSelection::WorkingCopy,
+            None,
+        )
+        .await
+        .expect("capture v2");
+        let mut log = SessionLog::open(&session_path).expect("open");
+        wiff_core::refresh_session(&mut log, &captured_v2, agent, LockWait::Block)
+            .expect("capture v2")
+            .expect("the recapture changed the diff");
+        drop(log);
+
+        let fingerprint = watcher.changed().expect("the v2 capture registers");
+        let report = reconcile_in_place(&session_path, wiff_diff::DEFAULT_TAB_WIDTH, &mut app)
+            .expect("reconcile");
+        watcher.acknowledge(fingerprint);
+        if let Some(report) = &report {
+            app.set_message(report.clone());
+        }
+        wince::assert_eq!(report, Some("synced to v2".to_string()));
+        wince::assert_eq!(app.picking(), false);
+        // The comparison follows onto v2 rather than being dropped.
+        wince::assert_eq!(app.comparing_from(), Some(0));
+
+        // The review still shows the change since v0: beta became BETA, and
+        // epsilon was added, with the rest as context.
+        let expected = "\
+Review [press c here to draft the review comment] [press e to write the description]
+modified  f.txt
+@@ -1,4 +1,5 @@
+   1    1   alpha
+   2      - beta
+        2 + BETA
+   3    3   gamma
+   4    4   delta
+        5 + epsilon
+---
+synced to v2
+";
+        wince::assert_eq!(screen(&app, 80), expected.to_string());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
