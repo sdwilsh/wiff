@@ -182,6 +182,7 @@ mod fixture {
             snippet: vec!["let b = 3;".to_string()],
             context_before: vec!["let a = 1;".to_string()],
             context_after: vec!["let c = 4;".to_string()],
+            landmark: None,
         });
         let mut whole = comment(
             "00000000000000000000000002",

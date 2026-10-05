@@ -12,6 +12,7 @@ use wiff_core::{
     BaseRuleset, CapturedDiff, IfNeeded, ProjectIdentity, RefreshOutcome, SessionId, SessionLog,
     capture_explore, create_session, parse_ruleset, reuse_or_create,
 };
+use wiff_diff::SectionMatchers;
 use wiff_forge::TokenOverride;
 
 use super::{DiffSelection, capture_scm_diff, read_piped_stdin, resolve_author};
@@ -112,7 +113,18 @@ impl NewArgs {
     ) -> anyhow::Result<()> {
         let base = data_dir()?;
         let author = resolve_author(self.agent, self.author.clone())?;
-        match reuse_or_create(&base, identity, cwd, captured, author, self.description()?)? {
+        let config = Config::load()?;
+        let sections = SectionMatchers::new(&config.section, &config.attachment)
+            .context("a configured section pattern is not a valid regex")?;
+        match reuse_or_create(
+            &base,
+            identity,
+            cwd,
+            captured,
+            author,
+            self.description()?,
+            &sections,
+        )? {
             IfNeeded::Created(log) => report_created(&log),
             IfNeeded::Unchanged(log) => {
                 warn_description_ignored(self.description.as_deref());

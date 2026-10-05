@@ -118,6 +118,7 @@ fn folds_versions_and_comment_chains() {
         snippet: vec!["let b = 3;".to_string()],
         context_before: vec!["let a = 1;".to_string()],
         context_after: vec!["let c = 4;".to_string()],
+        landmark: None,
     };
     let records = vec![
         rec(0, RecordBody::Session(header())),

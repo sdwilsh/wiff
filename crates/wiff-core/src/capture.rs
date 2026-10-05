@@ -7,6 +7,7 @@
 
 use std::path::Path;
 
+use wiff_diff::SectionMatchers;
 use wiff_diff::parse::parse;
 
 use crate::error::{Error, Result};
@@ -102,13 +103,14 @@ pub fn reuse_or_create(
     captured: &CapturedDiff,
     author: Author,
     description: Option<(Author, Description)>,
+    sections: &SectionMatchers,
 ) -> Result<IfNeeded> {
     let lock = ProjectLock::acquire(base, &identity.canonical, LockWait::Block)?;
     if let Some(path) = session_with_source(base, &identity.canonical, &captured.source)? {
         drop(lock);
         let mut log = SessionLog::open(&path)?;
         return Ok(
-            match refresh_session(&mut log, captured, author, LockWait::Block)? {
+            match refresh_session(&mut log, captured, author, LockWait::Block, sections)? {
                 Some(outcome) => IfNeeded::Refreshed(log, outcome),
                 None => IfNeeded::Unchanged(log),
             },

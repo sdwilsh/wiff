@@ -19,6 +19,7 @@ use wiff_core::{
     BaseRuleset, DiffSource, GitSource, JjSource, ProjectIdentity, ScmRepo, ScmType, SessionId,
     SessionLog,
 };
+use wiff_diff::SectionMatchers;
 use wiff_forge::{
     DeclinedWrite, FetchedPullRequest, Forge, GithubForge, ImportRequest, PushOutcome,
     ResyncOutcome, TokenOverride, assemble_diff, import_pull_request, push, resolve_token,
@@ -107,9 +108,20 @@ impl PullArgs {
         let (url, forge) = resolve_target(&self.pr, &cwd, &config, cli).await?;
         let base = data_dir()?;
         let author = resolve_author(self.agent, self.author)?;
-        let session =
-            mirror_pull_request(forge.as_ref(), &url, &cwd, &base, author, self.new_session)
-                .await?;
+        let sections = SectionMatchers::new(&config.section, &config.attachment)
+            .context("a configured section pattern is not a valid regex")?;
+        let session = mirror_pull_request(
+            forge.as_ref(),
+            MirrorRequest {
+                url: &url,
+                cwd: &cwd,
+                base: &base,
+                author,
+                new_session: self.new_session,
+                sections: &sections,
+            },
+        )
+        .await?;
         tui::open(&session, &config, cli, false)
     }
 }
@@ -159,6 +171,8 @@ impl PushArgs {
             .await?;
         let mut log = SessionLog::open(&path)?;
         let author = resolve_author(self.agent, self.author)?;
+        let sections = SectionMatchers::new(&config.section, &config.attachment)
+            .context("a configured section pattern is not a valid regex")?;
         let (resync, pushed) = push_bound_review(
             forge.as_ref(),
             repo.as_ref(),
@@ -167,6 +181,7 @@ impl PushArgs {
             &root,
             &url,
             author,
+            &sections,
         )
         .await?;
         report_push(&url, &resync, &pushed);
@@ -248,8 +263,10 @@ async fn push_bound_review(
     root: &Path,
     url: &ForgeUrl,
     author: Author,
+    sections: &SectionMatchers,
 ) -> anyhow::Result<(ResyncOutcome, PushOutcome)> {
-    let resync = reconcile_before_push(forge, repo, scm, log, root, url, author.clone()).await?;
+    let resync =
+        reconcile_before_push(forge, repo, scm, log, root, url, author.clone(), sections).await?;
     let pushed = push(forge, log, url, &author).await?;
     Ok((resync, pushed))
 }
@@ -267,10 +284,11 @@ pub(crate) async fn reconcile_before_push(
     root: &Path,
     url: &ForgeUrl,
     author: Author,
+    sections: &SectionMatchers,
 ) -> anyhow::Result<ResyncOutcome> {
     let fetched = forge.fetch(url).await?;
     let source = prepare_source(repo, scm, root, &fetched, log.id()).await?;
-    resync_pull_request(log, source.as_ref(), &fetched, author).await
+    resync_pull_request(log, source.as_ref(), &fetched, author, sections).await
 }
 
 /// Print what pushing to `url` did: first what its pull-first step reconciled
@@ -408,20 +426,31 @@ async fn resolve_target(
 /// from the pull request URL. Either way a session already bound to the pull
 /// request is re-synced in place, attributing the rebased comments to `author`,
 /// unless `new_session` forces a fresh review alongside it.
-async fn mirror_pull_request(
-    forge: &dyn Forge,
-    url: &ForgeUrl,
-    cwd: &Path,
-    base: &Path,
-    author: Author,
-    new_session: bool,
-) -> anyhow::Result<PathBuf> {
-    if let Ok(identity) = ProjectIdentity::for_dir(cwd)
-        && belongs_to_repo(forge, url, &identity).await?
+async fn mirror_pull_request(forge: &dyn Forge, req: MirrorRequest<'_>) -> anyhow::Result<PathBuf> {
+    if let Ok(identity) = ProjectIdentity::for_dir(req.cwd)
+        && belongs_to_repo(forge, req.url, &identity).await?
     {
-        return mirror_into_repo(forge, url, cwd, base, author, new_session, identity).await;
+        return mirror_into_repo(forge, req, identity).await;
     }
-    mirror_without_repo(forge, url, cwd, base, author, new_session).await
+    mirror_without_repo(forge, req).await
+}
+
+/// The inputs a mirror needs in common, regardless of which session strategy
+/// `mirror_pull_request` picks for it.
+struct MirrorRequest<'a> {
+    /// The pull request to mirror.
+    url: &'a ForgeUrl,
+    /// The directory from which the pull runs, recorded on a fresh session.
+    cwd: &'a Path,
+    /// The data directory sessions live under.
+    base: &'a Path,
+    /// Who the rebased comments of a re-synced session are attributed to.
+    author: Author,
+    /// Force a fresh review even when one is already bound to the pull request.
+    new_session: bool,
+    /// The [`SectionMatchers`](wiff_diff::SectionMatchers) used by the comment
+    /// rebaser.
+    sections: &'a SectionMatchers,
 }
 
 /// Whether the pull request `url` belongs to the repository `identity` names: a
@@ -450,11 +479,7 @@ async fn belongs_to_repo(
 /// the pull request is re-synced in place; otherwise a fresh one is imported.
 async fn mirror_into_repo(
     forge: &dyn Forge,
-    url: &ForgeUrl,
-    cwd: &Path,
-    base: &Path,
-    author: Author,
-    new_session: bool,
+    req: MirrorRequest<'_>,
     identity: ProjectIdentity,
 ) -> anyhow::Result<PathBuf> {
     let root = identity
@@ -463,18 +488,19 @@ async fn mirror_into_repo(
         .expect("for_dir yields a repo root on success");
     let repo = scm_repo(identity.scm, root.clone())?;
 
-    let fetched = forge.fetch(url).await?;
-    let existing = if new_session {
+    let fetched = forge.fetch(req.url).await?;
+    let existing = if req.new_session {
         None
     } else {
-        session_bound_to(base, &identity.canonical, url)?
+        session_bound_to(req.base, &identity.canonical, req.url)?
     };
     match existing {
         Some(path) => {
             let mut log = SessionLog::open(&path)?;
             let source =
                 prepare_source(repo.as_ref(), identity.scm, &root, &fetched, log.id()).await?;
-            resync_pull_request(&mut log, source.as_ref(), &fetched, author).await?;
+            resync_pull_request(&mut log, source.as_ref(), &fetched, req.author, req.sections)
+                .await?;
             Ok(path)
         }
         None => {
@@ -483,12 +509,12 @@ async fn mirror_into_repo(
                 prepare_source(repo.as_ref(), identity.scm, &root, &fetched, session).await?;
             let request = ImportRequest {
                 session,
-                base,
+                base: req.base,
                 identity: &identity,
-                cwd,
+                cwd: req.cwd,
             };
-            import_pull_request(source.as_ref(), &fetched, &request).await?;
-            Ok(session_file(base, &identity.canonical, session))
+            import_pull_request(source.as_ref(), &fetched, &request, req.sections).await?;
+            Ok(session_file(req.base, &identity.canonical, session))
         }
     }
 }
@@ -497,38 +523,31 @@ async fn mirror_into_repo(
 /// project bucket the forge reads from its URL. The review diffs the base and
 /// head blobs the forge serves; refreshing it re-fetches those blobs rather than
 /// re-resolving against a repository.
-async fn mirror_without_repo(
-    forge: &dyn Forge,
-    url: &ForgeUrl,
-    cwd: &Path,
-    base: &Path,
-    author: Author,
-    new_session: bool,
-) -> anyhow::Result<PathBuf> {
-    let identity = ProjectIdentity::for_forge(&forge.project_bucket(url)?);
-    let fetched = forge.fetch(url).await?;
+async fn mirror_without_repo(forge: &dyn Forge, req: MirrorRequest<'_>) -> anyhow::Result<PathBuf> {
+    let identity = ProjectIdentity::for_forge(&forge.project_bucket(req.url)?);
+    let fetched = forge.fetch(req.url).await?;
     let source = forge_diff_source(forge, &fetched).await?;
-    let existing = if new_session {
+    let existing = if req.new_session {
         None
     } else {
-        session_bound_to(base, &identity.canonical, url)?
+        session_bound_to(req.base, &identity.canonical, req.url)?
     };
     match existing {
         Some(path) => {
             let mut log = SessionLog::open(&path)?;
-            resync_pull_request(&mut log, &source, &fetched, author).await?;
+            resync_pull_request(&mut log, &source, &fetched, req.author, req.sections).await?;
             Ok(path)
         }
         None => {
             let session = SessionId::new();
             let request = ImportRequest {
                 session,
-                base,
+                base: req.base,
                 identity: &identity,
-                cwd,
+                cwd: req.cwd,
             };
-            import_pull_request(&source, &fetched, &request).await?;
-            Ok(session_file(base, &identity.canonical, session))
+            import_pull_request(&source, &fetched, &request, req.sections).await?;
+            Ok(session_file(req.base, &identity.canonical, session))
         }
     }
 }
@@ -977,18 +996,45 @@ mod tests {
         ));
         let url = ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("valid url");
 
-        let first =
-            mirror_pull_request(&forge, &url, work.path(), data.path(), human("wez"), false)
-                .await
-                .expect("first pull imports");
-        let resynced =
-            mirror_pull_request(&forge, &url, work.path(), data.path(), human("wez"), false)
-                .await
-                .expect("second pull resyncs");
-        let forked =
-            mirror_pull_request(&forge, &url, work.path(), data.path(), human("wez"), true)
-                .await
-                .expect("forced fresh session");
+        let first = mirror_pull_request(
+            &forge,
+            MirrorRequest {
+                url: &url,
+                cwd: work.path(),
+                base: data.path(),
+                author: human("wez"),
+                new_session: false,
+                sections: &SectionMatchers::builtins(),
+            },
+        )
+        .await
+        .expect("first pull imports");
+        let resynced = mirror_pull_request(
+            &forge,
+            MirrorRequest {
+                url: &url,
+                cwd: work.path(),
+                base: data.path(),
+                author: human("wez"),
+                new_session: false,
+                sections: &SectionMatchers::builtins(),
+            },
+        )
+        .await
+        .expect("second pull resyncs");
+        let forked = mirror_pull_request(
+            &forge,
+            MirrorRequest {
+                url: &url,
+                cwd: work.path(),
+                base: data.path(),
+                author: human("wez"),
+                new_session: true,
+                sections: &SectionMatchers::builtins(),
+            },
+        )
+        .await
+        .expect("forced fresh session");
 
         let bucket = first.parent().expect("session bucket");
         let sessions = std::fs::read_dir(bucket)
@@ -1163,21 +1209,27 @@ mod tests {
 
         let first = mirror_pull_request(
             &repoless_pull_request(&modified("new\n")),
-            &url,
-            cwd.path(),
-            data.path(),
-            human("wez"),
-            false,
+            MirrorRequest {
+                url: &url,
+                cwd: cwd.path(),
+                base: data.path(),
+                author: human("wez"),
+                new_session: false,
+                sections: &SectionMatchers::builtins(),
+            },
         )
         .await
         .expect("first pull imports");
         let resynced = mirror_pull_request(
             &repoless_pull_request(&modified("newer\n")),
-            &url,
-            cwd.path(),
-            data.path(),
-            human("wez"),
-            false,
+            MirrorRequest {
+                url: &url,
+                cwd: cwd.path(),
+                base: data.path(),
+                author: human("wez"),
+                new_session: false,
+                sections: &SectionMatchers::builtins(),
+            },
         )
         .await
         .expect("second pull resyncs");
@@ -1279,11 +1331,14 @@ mod tests {
 
         let path = mirror_pull_request(
             &repoless_pull_request(&modified("new\n")),
-            &url,
-            repo.path(),
-            data.path(),
-            human("wez"),
-            false,
+            MirrorRequest {
+                url: &url,
+                cwd: repo.path(),
+                base: data.path(),
+                author: human("wez"),
+                new_session: false,
+                sections: &SectionMatchers::builtins(),
+            },
         )
         .await
         .expect("pull falls back to a repo-less session");
@@ -1487,10 +1542,19 @@ mod tests {
         let fetched = fetched_pull_request(origin.path(), &base_commit, &head_commit);
         let url = ForgeUrl::parse("https://github.com/octo/demo/pull/7").expect("valid url");
         let import = FetchForge(fetched.clone());
-        let path =
-            mirror_pull_request(&import, &url, work.path(), data.path(), human("wez"), false)
-                .await
-                .expect("import binds a session");
+        let path = mirror_pull_request(
+            &import,
+            MirrorRequest {
+                url: &url,
+                cwd: work.path(),
+                base: data.path(),
+                author: human("wez"),
+                new_session: false,
+                sections: &SectionMatchers::builtins(),
+            },
+        )
+        .await
+        .expect("import binds a session");
 
         // A locally authored review-level comment, anchored against the imported
         // diff version, with no forge object yet.
@@ -1536,6 +1600,7 @@ mod tests {
             work.path(),
             &url,
             human("wez"),
+            &SectionMatchers::builtins(),
         )
         .await
         .expect("push publishes the review");

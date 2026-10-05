@@ -44,6 +44,9 @@ agent = \"opus\"
 [section]
 kotlin = ['^ *(fun|class) .*$']
 
+[attachment]
+kotlin = ['//', '/*']
+
 [generated]
 names = [\"gen/**/*.rs\", \"!Cargo.lock\"]
 markers = [\"DO NOT EDIT\"]
@@ -103,6 +106,12 @@ quit = [\"q\", \"ctrl-c\"]
             section: [(
                 "kotlin".to_string(),
                 vec![r"^ *(fun|class) .*$".to_string()],
+            )]
+            .into_iter()
+            .collect(),
+            attachment: [(
+                "kotlin".to_string(),
+                vec!["//".to_string(), "/*".to_string()],
             )]
             .into_iter()
             .collect(),
@@ -275,7 +284,7 @@ fn an_unknown_field_is_rejected() {
         "  |\n",
         "1 | wibble = true\n",
         "  | ^^^^^^\n",
-        "unknown field `wibble`, expected one of `on_exit`, `theme`, `display_context`, `min_fold`, `tab_width`, `editor`, `wrap_lines`, `show_line_numbers`, `diff_mode`, `side_by_side_min_width`, `nudge_to_detach`, `author`, `base_revision_rules`, `forge`, `section`, `generated`, `disable_default_keymap`, `keymap`\n",
+        "unknown field `wibble`, expected one of `on_exit`, `theme`, `display_context`, `min_fold`, `tab_width`, `editor`, `wrap_lines`, `show_line_numbers`, `diff_mode`, `side_by_side_min_width`, `nudge_to_detach`, `author`, `base_revision_rules`, `forge`, `section`, `attachment`, `generated`, `disable_default_keymap`, `keymap`\n",
     );
 }
 

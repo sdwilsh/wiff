@@ -20,7 +20,7 @@ use wiff_core::record::{
     ExternalRef, RecordBody, VersionNumber, comment_body_marker,
 };
 use wiff_core::{CommentState, DescriptionState};
-use wiff_diff::Diff;
+use wiff_diff::{Diff, SectionMatchers};
 
 use crate::types::{FetchedComment, FetchedDescription, FetchedReview};
 
@@ -34,6 +34,7 @@ pub fn reconcile_comments(
     existing: &[CommentState],
     diff: &Diff,
     number: VersionNumber,
+    sections: &SectionMatchers,
     mut new_id: impl FnMut() -> Ulid,
 ) -> Vec<RecordBody> {
     let by_id: HashMap<Ulid, &CommentState> = existing
@@ -99,7 +100,7 @@ pub fn reconcile_comments(
         let id = *id_by_origin
             .entry(comment.origin.clone())
             .or_insert_with(&mut new_id);
-        let (target, anchor) = place_target(comment, &id_by_origin, diff, number);
+        let (target, anchor) = place_target(comment, &id_by_origin, diff, number, sections);
         events.push(import_create(
             id,
             comment.author.clone(),
@@ -365,6 +366,7 @@ fn place_target(
     id_by_origin: &HashMap<ExternalRef, Ulid>,
     diff: &Diff,
     number: VersionNumber,
+    sections: &SectionMatchers,
 ) -> (CommentTarget, Option<Anchor>) {
     if let Some(parent) = &comment.reply_to
         && let Some(&id) = id_by_origin.get(parent)
@@ -379,6 +381,7 @@ fn place_target(
             anchor.side,
             anchor.start_line,
             anchor.end_line,
+            sections,
         ),
         None => (CommentTarget::Review, None),
     }

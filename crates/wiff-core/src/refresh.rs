@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::path::Path;
 
-use wiff_diff::Diff;
 use wiff_diff::parse::parse;
+use wiff_diff::{Diff, SectionMatchers};
 
 use crate::capture::write_diff_version;
 use crate::comment::reanchor_event;
@@ -87,8 +87,9 @@ pub fn refresh_session(
     captured: &CapturedDiff,
     author: Author,
     wait: LockWait,
+    sections: &SectionMatchers,
 ) -> Result<Option<RefreshOutcome>> {
-    refresh_session_with(log, author, wait, |_state| Ok(captured.clone()))
+    refresh_session_with(log, author, wait, sections, |_state| Ok(captured.clone()))
 }
 
 /// Capture the diff `capture` produces as the session's next version and rebase
@@ -102,6 +103,7 @@ pub fn refresh_session_with<F>(
     log: &mut SessionLog,
     author: Author,
     wait: LockWait,
+    sections: &SectionMatchers,
     capture: F,
 ) -> Result<Option<RefreshOutcome>>
 where
@@ -151,6 +153,7 @@ where
             comment.anchor.as_ref(),
             old_diff,
             &new_diff,
+            sections,
         ) else {
             continue;
         };
@@ -207,8 +210,9 @@ pub fn widen_explore(
     requested: &[String],
     author: Author,
     wait: LockWait,
+    sections: &SectionMatchers,
 ) -> Result<Option<RefreshOutcome>> {
-    refresh_session_with(log, author, wait, |state| {
+    refresh_session_with(log, author, wait, sections, |state| {
         let mut paths = explore_file_set(state);
         paths.extend(requested.iter().cloned());
         let capture = capture_explore(root, &paths);

@@ -257,9 +257,14 @@ async fn importing_a_pull_request_binds_a_session_and_mirrors_its_metadata() {
         cwd: std::path::Path::new("/work"),
     };
 
-    let outcome = import_pull_request(&source, &fetched, &req)
-        .await
-        .expect("import succeeds");
+    let outcome = import_pull_request(
+        &source,
+        &fetched,
+        &req,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
+    .await
+    .expect("import succeeds");
 
     wince::assert_eq!(
         outcome,

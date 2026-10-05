@@ -21,7 +21,7 @@
 
 use time::OffsetDateTime;
 use ulid::Ulid;
-use wiff_diff::Diff;
+use wiff_diff::{Diff, SectionMatchers};
 
 use crate::comment::{anchor_in_diff, delete_event, disposition_event, edit_event, resolve_event};
 use crate::description::local_description;
@@ -238,6 +238,7 @@ impl DraftBuffer {
         &mut self,
         new_version: VersionNumber,
         new_diff: &Diff,
+        sections: &SectionMatchers,
         mut old_diff: impl FnMut(VersionNumber) -> Result<Diff>,
     ) -> Result<()> {
         for op in &mut self.ops {
@@ -258,12 +259,12 @@ impl DraftBuffer {
                 // anchor, where commit-time capture would instead report it.
                 let anchor = match &create.anchor {
                     Some(anchor) => Some(anchor.clone()),
-                    None => anchor_in_diff(&old, create.version, &create.target)
+                    None => anchor_in_diff(&old, create.version, &create.target, sections)
                         .ok()
                         .flatten(),
                 };
                 if let Some(rebased) =
-                    rebase_line_comment(&create.target, anchor.as_ref(), &old, new_diff)
+                    rebase_line_comment(&create.target, anchor.as_ref(), &old, new_diff, sections)
                 {
                     create.target = rebased.target;
                     create.version = new_version;
@@ -797,10 +798,15 @@ new file mode 100644
         )
         .unwrap();
         buffer
-            .rebase(VersionNumber(1), &new, |version| {
-                wince::assert_eq!(version, VersionNumber(0));
-                Ok(old.clone())
-            })
+            .rebase(
+                VersionNumber(1),
+                &new,
+                &wiff_diff::SectionMatchers::builtins(),
+                |version| {
+                    wince::assert_eq!(version, VersionNumber(0));
+                    Ok(old.clone())
+                },
+            )
             .unwrap();
 
         wince::assert_eq!(
@@ -839,10 +845,15 @@ new file mode 100644
         )
         .unwrap();
         buffer
-            .rebase(VersionNumber(1), &new, |version| {
-                wince::assert_eq!(version, VersionNumber(0));
-                Ok(old.clone())
-            })
+            .rebase(
+                VersionNumber(1),
+                &new,
+                &wiff_diff::SectionMatchers::builtins(),
+                |version| {
+                    wince::assert_eq!(version, VersionNumber(0));
+                    Ok(old.clone())
+                },
+            )
             .unwrap();
 
         wince::assert_eq!(
@@ -864,9 +875,12 @@ new file mode 100644
         buffer.add(drafted(2, "one more thing"));
         let new = parse(V0).unwrap();
         buffer
-            .rebase(VersionNumber(1), &new, |_| {
-                panic!("a review draft needs no old diff")
-            })
+            .rebase(
+                VersionNumber(1),
+                &new,
+                &wiff_diff::SectionMatchers::builtins(),
+                |_| panic!("a review draft needs no old diff"),
+            )
             .unwrap();
         wince::assert_eq!(
             buffer.into_records(),

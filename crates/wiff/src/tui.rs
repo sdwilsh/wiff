@@ -19,7 +19,7 @@ use wiff_core::{
     SidebandHash, capture_draft_anchors, compare_versions, explore_file_set, refresh_session,
     widen_explore,
 };
-use wiff_diff::decode_text;
+use wiff_diff::{SectionMatchers, decode_text};
 use wiff_forge::{Forge, PushOutcome, ResyncOutcome, TokenOverride, push};
 use wiff_tui::{
     App, CommentSync, CompareRequest, DiffView, Exit, ExitDefault, HighlightMode, Hooks, KeyHints,
@@ -71,7 +71,7 @@ pub fn open(
         .probed_light_theme()
         .map(|name| Theme::named(name).with_context(|| format!("unknown light theme {name:?}")))
         .transpose()?;
-    let sections = wiff_diff::SectionMatchers::new(&config.section)
+    let sections = wiff_diff::SectionMatchers::new(&config.section, &config.attachment)
         .context("a configured section pattern is not a valid regex")?;
     let generated =
         wiff_diff::GeneratedMatchers::new(&config.generated.names, &config.generated.markers)
@@ -237,7 +237,11 @@ pub fn open(
     };
 
     let (exit, drafts) = run(app, keymap, hooks)?;
-    resolve_exit(exit, session_path, drafts)
+    // The matchers stored in `DiffView` are dropped with the app when `run`
+    // returns. Exit-time anchor capture must use the review's section rules.
+    let exit_sections = wiff_diff::SectionMatchers::new(&config.section, &config.attachment)
+        .context("a configured section pattern is not a valid regex")?;
+    resolve_exit(exit, session_path, drafts, &exit_sections)
 }
 
 /// Reconstruct the diff the reviewer chose to compare against and show it in
@@ -290,14 +294,30 @@ fn refresh_in_place(
     let state = ReviewState::load(session_path)?;
     let prior_latest = state.latest_version().map(|v| v.number.get());
     let mut log = SessionLog::open(session_path)?;
+    let sections = app
+        .section_matchers()
+        .context("refreshing requires an attached review")?;
     // An explore review re-reads its file set from the latest version under the
     // session lock; every other source recaptures its recorded range.
     let refreshed = if matches!(state.session.source, SourceKind::Explore) {
         let root = explore_root(&state.session);
-        widen_explore(&mut log, &root, &[], author.clone(), LockWait::NonBlock)?
+        widen_explore(
+            &mut log,
+            &root,
+            &[],
+            author.clone(),
+            LockWait::NonBlock,
+            sections,
+        )?
     } else {
         let captured = recapture(&state)?;
-        refresh_session(&mut log, &captured, author.clone(), LockWait::NonBlock)?
+        refresh_session(
+            &mut log,
+            &captured,
+            author.clone(),
+            LockWait::NonBlock,
+            sections,
+        )?
     };
     let outcome = match refreshed {
         Some(outcome) => outcome,
@@ -395,12 +415,16 @@ fn add_file_in_place(
     let state = ReviewState::load(session_path)?;
     let root = explore_root(&state.session);
     let mut log = SessionLog::open(session_path)?;
+    let sections = app
+        .section_matchers()
+        .context("adding a file requires an attached review")?;
     let widened = widen_explore(
         &mut log,
         &root,
         std::slice::from_ref(&path),
         author.clone(),
         LockWait::NonBlock,
+        sections,
     )?;
     let Some(outcome) = widened else {
         app.set_message(format!("{path} is already under review"));
@@ -476,7 +500,10 @@ fn save_in_place(session_path: &Path, app: &mut App) -> anyhow::Result<()> {
         return Ok(());
     }
     let count = drafts.len();
-    let anchor_failures = commit_drafts(session_path, drafts)?;
+    let sections = app
+        .section_matchers()
+        .context("saving requires an attached review")?;
+    let anchor_failures = commit_drafts(session_path, drafts, sections)?;
     app.clear_drafts();
     let changes = format!("{count} change{}", if count == 1 { "" } else { "s" });
     // The commit is durable once it returns; a reload failure here only leaves
@@ -592,6 +619,9 @@ fn refresh_forge_in_place(
         forge,
     } = resolve_forge_review(session_path, connect, ForgeReviewAction::Refresh)?;
     let mut log = SessionLog::open(session_path)?;
+    let sections = app
+        .section_matchers()
+        .context("refreshing requires an attached review")?;
     let outcome = block_on(reconcile_before_push(
         forge.as_ref(),
         repo.as_ref(),
@@ -600,6 +630,7 @@ fn refresh_forge_in_place(
         &root,
         &url,
         author.clone(),
+        sections,
     ))?;
     reload_after_reconcile(session_path, tab_width, &log, &outcome, app)?;
     match reconcile_note(&outcome) {
@@ -648,11 +679,17 @@ fn publish_reconcile_in_place(
     // an apparently empty buffer.
     let drafts = app.draft_records();
     if !drafts.is_empty() {
-        commit_drafts(session_path, drafts)?;
+        let sections = app
+            .section_matchers()
+            .context("publishing requires an attached review")?;
+        commit_drafts(session_path, drafts, sections)?;
         app.clear_drafts();
         reload_committed(session_path, app)?;
     }
 
+    let sections = app
+        .section_matchers()
+        .context("publishing requires an attached review")?;
     let mut log = SessionLog::open(session_path)?;
     let outcome = block_on(reconcile_before_push(
         forge.as_ref(),
@@ -662,6 +699,7 @@ fn publish_reconcile_in_place(
         &root,
         &url,
         author.clone(),
+        sections,
     ))?;
     reload_after_reconcile(session_path, tab_width, &log, &outcome, app)?;
     Ok(reconcile_note(&outcome))
@@ -953,12 +991,17 @@ fn exit_default(on_exit: OnExit) -> ExitDefault {
 
 /// Carry out the reviewer's chosen `exit`: commit the buffered drafts and keep
 /// the session, keep it and drop the drafts, or remove it entirely.
-fn resolve_exit(exit: Exit, session_path: &Path, drafts: Vec<RecordBody>) -> anyhow::Result<()> {
+fn resolve_exit(
+    exit: Exit,
+    session_path: &Path,
+    drafts: Vec<RecordBody>,
+    sections: &SectionMatchers,
+) -> anyhow::Result<()> {
     match exit {
         Exit::Commit => {
             // Report the same count the interactive save shows, then the causes
             // stderr has room for that the one-row status line does not.
-            let failures = commit_drafts(session_path, drafts)?;
+            let failures = commit_drafts(session_path, drafts, sections)?;
             if let Some(summary) = failures.summary() {
                 eprintln!("warning: {summary}");
                 for cause in &failures.errors {
@@ -987,6 +1030,7 @@ fn resolve_exit(exit: Exit, session_path: &Path, drafts: Vec<RecordBody>) -> any
 fn commit_drafts(
     session_path: &Path,
     mut drafts: Vec<RecordBody>,
+    sections: &SectionMatchers,
 ) -> anyhow::Result<AnchorFailures> {
     if drafts.is_empty() {
         return Ok(AnchorFailures::default());
@@ -997,7 +1041,7 @@ fn commit_drafts(
     // sideband diff without the session lock; a written version's diff is fixed
     // once its record is appended, and if a concurrent removal takes it out from
     // under this read the comment simply commits as a bare locator.
-    let anchor_failures = capture_draft_anchors(&log, &mut drafts);
+    let anchor_failures = capture_draft_anchors(&log, &mut drafts, sections);
     // Buffered drafts append as a batch that rejects a diverged file rather
     // than resyncing to it. The reviewer composed them against the view folded
     // at save time; failing the save on a concurrent write lets the view reload
@@ -1088,7 +1132,7 @@ mod tests {
             resolve_event(Ulid(1), wez(), true),
             delete_event(Ulid(2), wez()),
         ];
-        commit_drafts(&path, drafts).expect("commit");
+        commit_drafts(&path, drafts, &wiff_diff::SectionMatchers::builtins()).expect("commit");
 
         // The header is followed by the two drafts in the order they were made;
         // the non-deterministic `at` timestamp is dropped from the comparison.
@@ -1116,7 +1160,7 @@ mod tests {
         drop(lock);
         drop(log);
 
-        commit_drafts(&path, Vec::new()).expect("commit");
+        commit_drafts(&path, Vec::new(), &wiff_diff::SectionMatchers::builtins()).expect("commit");
 
         let records = read_records(&path).expect("read");
         let got: Vec<(u64, RecordBody)> = records
@@ -1533,7 +1577,11 @@ index HASHES
             body: "why delta?".to_string(),
             disposition: None,
         }
-        .append(&mut log, LockWait::Block)
+        .append(
+            &mut log,
+            LockWait::Block,
+            &wiff_diff::SectionMatchers::builtins(),
+        )
         .expect("attach comment");
 
         // The review opens over v0, the version the reviewer was reading before
@@ -1563,9 +1611,15 @@ index HASHES
         )
         .await
         .expect("capture v1");
-        let refresh = wiff_core::refresh_session(&mut log, &recaptured, wez(), LockWait::Block)
-            .expect("advance to v1")
-            .expect("the recapture changed the diff");
+        let refresh = wiff_core::refresh_session(
+            &mut log,
+            &recaptured,
+            wez(),
+            LockWait::Block,
+            &wiff_diff::SectionMatchers::builtins(),
+        )
+        .expect("advance to v1")
+        .expect("the recapture changed the diff");
 
         reload_after_reconcile(
             &session_path,
@@ -1674,7 +1728,11 @@ index HASHES
             body: "why delta?".to_string(),
             disposition: None,
         }
-        .append(&mut log, LockWait::Block)
+        .append(
+            &mut log,
+            LockWait::Block,
+            &wiff_diff::SectionMatchers::builtins(),
+        )
         .expect("attach comment");
         drop(log);
 
@@ -2226,7 +2284,11 @@ new file mode 100644
             body: "why delta?".to_string(),
             disposition: None,
         }
-        .append(&mut log, LockWait::Block)
+        .append(
+            &mut log,
+            LockWait::Block,
+            &wiff_diff::SectionMatchers::builtins(),
+        )
         .expect("attach comment");
         drop(log);
 
@@ -2275,9 +2337,15 @@ new file mode 100644
             kind: AuthorKind::Agent,
         };
         let mut log = SessionLog::open(&session_path).expect("open");
-        wiff_core::refresh_session(&mut log, &captured_v1, agent.clone(), LockWait::Block)
-            .expect("capture v1")
-            .expect("the recapture changed the diff");
+        wiff_core::refresh_session(
+            &mut log,
+            &captured_v1,
+            agent.clone(),
+            LockWait::Block,
+            &wiff_diff::SectionMatchers::builtins(),
+        )
+        .expect("capture v1")
+        .expect("the recapture changed the diff");
         // In the same round of edits the agent also sets the review description.
         // Reconciling onto the new version must pick up this description change
         // too, not just the diff and the comment.
@@ -2388,9 +2456,15 @@ new file mode 100644
         .await
         .expect("capture v1");
         let mut log = SessionLog::open(&session_path).expect("open");
-        wiff_core::refresh_session(&mut log, &captured_v1, reviewer.clone(), LockWait::Block)
-            .expect("capture v1")
-            .expect("the recapture changed the diff");
+        wiff_core::refresh_session(
+            &mut log,
+            &captured_v1,
+            reviewer.clone(),
+            LockWait::Block,
+            &wiff_diff::SectionMatchers::builtins(),
+        )
+        .expect("capture v1")
+        .expect("the recapture changed the diff");
         drop(log);
 
         let theme = Theme::dark();
@@ -2435,9 +2509,15 @@ new file mode 100644
         .await
         .expect("capture v2");
         let mut log = SessionLog::open(&session_path).expect("open");
-        wiff_core::refresh_session(&mut log, &captured_v2, agent, LockWait::Block)
-            .expect("capture v2")
-            .expect("the recapture changed the diff");
+        wiff_core::refresh_session(
+            &mut log,
+            &captured_v2,
+            agent,
+            LockWait::Block,
+            &wiff_diff::SectionMatchers::builtins(),
+        )
+        .expect("capture v2")
+        .expect("the recapture changed the diff");
         drop(log);
 
         let fingerprint = watcher.changed().expect("the v2 capture registers");
@@ -2534,7 +2614,12 @@ synced to v2
             "why uppercase?".to_string(),
         );
         let drafts = review.take_drafts();
-        commit_drafts(&session_path, drafts).expect("commit");
+        commit_drafts(
+            &session_path,
+            drafts,
+            &wiff_diff::SectionMatchers::builtins(),
+        )
+        .expect("commit");
 
         // The rendered review shows the comment with its captured snippet: the
         // changed line marked, with the line above and below as context. The
@@ -2644,7 +2729,12 @@ synced to v2
         .expect("refresh in place");
 
         let drafts = app.draft_records();
-        commit_drafts(&session_path, drafts).expect("commit");
+        commit_drafts(
+            &session_path,
+            drafts,
+            &wiff_diff::SectionMatchers::builtins(),
+        )
+        .expect("commit");
 
         // The committed comment renders its anchor from v1: delta at line 5 with
         // gamma above it, proving the capture read the version the draft rebased

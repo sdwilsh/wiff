@@ -675,8 +675,8 @@ pub enum CommentTarget {
     },
 }
 
-/// The captured content a line-range comment rebases against: the anchored
-/// lines plus a window of surrounding context.
+/// Evidence captured with a line-range comment for locating the same reviewed
+/// content in later diff versions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Anchor {
     /// The exact text of the anchored lines.
@@ -685,6 +685,39 @@ pub struct Anchor {
     pub context_before: Vec<String>,
     /// Context lines immediately after the snippet.
     pub context_after: Vec<String>,
+    /// A definition line and relative position that can locate the snippet when
+    /// nearby text changes. This is `None` when the captured content cannot
+    /// supply a definition and for sessions written before landmarks existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub landmark: Option<Landmark>,
+}
+
+/// Locates anchored lines relative to a definition that may survive when their
+/// own text is reworded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Landmark {
+    /// The text of the definition line against which the anchor is measured.
+    pub definition: String,
+    /// Where the anchored lines sit relative to the definition.
+    pub relation: LandmarkRelation,
+    /// The number of lines from the origin defined by `relation` to the first
+    /// line of the anchor.
+    pub offset: u32,
+}
+
+/// Where anchored lines sit relative to their landmark definition, naming the
+/// edge [`Landmark::offset`] counts from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LandmarkRelation {
+    /// The first anchored line is the definition line itself. The offset is 0.
+    OnDefinition,
+    /// The anchor begins `offset` lines after the definition line.
+    Body,
+    /// The anchor begins `offset` lines after the first line of the comment or
+    /// attribute block leading into the definition. Using the start of the block
+    /// preserves the position when edits add lines next to the definition.
+    LeadingBlock,
 }
 
 /// A reviewer's verdict on a comment: a sign-off or a request for

@@ -589,6 +589,12 @@ impl Review {
             .count()
     }
 
+    /// Returns the section matchers, recognising enclosing-definition and
+    /// attachment lines.
+    pub fn section_matchers(&self) -> &wiff_diff::SectionMatchers {
+        self.view.section_matchers()
+    }
+
     /// Recapture the review over `diff` as version `version`, replacing the
     /// diff and the committed `comments` and `description`, and rebasing
     /// pending drafts forward onto it. A drafted line comment moves through
@@ -602,8 +608,12 @@ impl Review {
         version: u32,
         mut old_diff: impl FnMut(u32) -> wiff_core::Result<Diff>,
     ) -> wiff_core::Result<()> {
-        self.drafts
-            .rebase(VersionNumber(version), &diff, |v| old_diff(v.get()))?;
+        self.drafts.rebase(
+            VersionNumber(version),
+            &diff,
+            self.view.section_matchers(),
+            |v| old_diff(v.get()),
+        )?;
         self.diff = diff;
         // A refresh moves to the new latest diff, ending any active comparison.
         self.comparing = None;

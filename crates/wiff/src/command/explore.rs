@@ -10,9 +10,11 @@ use std::path::Path;
 
 use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
+use wiff_config::Config;
 use wiff_core::record::{Author, SourceKind};
 use wiff_core::review::ReviewState;
 use wiff_core::{LockWait, SessionLog, widen_explore};
+use wiff_diff::SectionMatchers;
 
 use super::{explore_root, resolve_author, resolve_session};
 
@@ -81,8 +83,18 @@ impl AddArgs {
             .collect::<anyhow::Result<_>>()?;
 
         let author = resolve_author(self.agent, self.author.clone())?;
+        let config = Config::load()?;
+        let sections = SectionMatchers::new(&config.section, &config.attachment)
+            .context("a configured section pattern is not a valid regex")?;
         let mut log = SessionLog::open(&path)?;
-        match widen_explore(&mut log, &root, &requested, author, LockWait::Block)? {
+        match widen_explore(
+            &mut log,
+            &root,
+            &requested,
+            author,
+            LockWait::Block,
+            &sections,
+        )? {
             Some(outcome) => {
                 let after = ReviewState::load(&path)?;
                 let count = after.latest_version().map(|v| v.files.len()).unwrap_or(0);
@@ -114,6 +126,7 @@ pub(crate) fn ensure_file_present(
     path: &Path,
     file: &str,
     author: Author,
+    sections: &SectionMatchers,
 ) -> anyhow::Result<String> {
     let state = ReviewState::load(path)?;
     if !matches!(state.session.source, SourceKind::Explore) {
@@ -128,6 +141,7 @@ pub(crate) fn ensure_file_present(
         std::slice::from_ref(&normalized),
         author,
         LockWait::Block,
+        sections,
     )?;
     Ok(normalized)
 }

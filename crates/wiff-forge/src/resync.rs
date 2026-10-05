@@ -17,6 +17,7 @@ use wiff_core::review::{ReviewState, fold};
 use wiff_core::session::{LockWait, SessionLog};
 use wiff_core::source::DiffSource;
 use wiff_core::{RefreshOutcome, refresh_session};
+use wiff_diff::SectionMatchers;
 use wiff_diff::parse::parse;
 
 use crate::pull::{reconcile_comments, reconcile_description, reconcile_reviews};
@@ -53,11 +54,12 @@ pub async fn resync_pull_request(
     source: &dyn DiffSource,
     fetched: &FetchedPullRequest,
     author: Author,
+    sections: &SectionMatchers,
 ) -> Result<ResyncOutcome> {
     verify_binding(log, &fetched.url)?;
     let captured = source.capture().await?;
-    let refresh = refresh_session(log, &captured, author, LockWait::Block)?;
-    let metadata = reconcile_metadata(log, fetched)?;
+    let refresh = refresh_session(log, &captured, author, LockWait::Block, sections)?;
+    let metadata = reconcile_metadata(log, fetched, sections)?;
     Ok(ResyncOutcome {
         refresh,
         comments: metadata.comments,
@@ -95,7 +97,11 @@ struct Metadata {
 /// latest diff version, whose text is read authoritatively under the lock rather
 /// than assumed to be the just-captured diff, since a concurrent refresh may have
 /// advanced it.
-fn reconcile_metadata(log: &mut SessionLog, fetched: &FetchedPullRequest) -> Result<Metadata> {
+fn reconcile_metadata(
+    log: &mut SessionLog,
+    fetched: &FetchedPullRequest,
+    sections: &SectionMatchers,
+) -> Result<Metadata> {
     let (mut lock, records) = log.lock_and_sync(LockWait::Block)?;
     let state = fold(&records)?;
     let number = state
@@ -105,7 +111,14 @@ fn reconcile_metadata(log: &mut SessionLog, fetched: &FetchedPullRequest) -> Res
     let diff = parse(&log.read_diff(number)?)?;
 
     let description = reconcile_description(&fetched.description, state.description.as_ref());
-    let comments = reconcile_comments(&fetched.comments, &state.comments, &diff, number, new_ulid);
+    let comments = reconcile_comments(
+        &fetched.comments,
+        &state.comments,
+        &diff,
+        number,
+        sections,
+        new_ulid,
+    );
     let reviews = reconcile_reviews(&fetched.reviews, &state.comments, number, new_ulid);
 
     let tally = Metadata {

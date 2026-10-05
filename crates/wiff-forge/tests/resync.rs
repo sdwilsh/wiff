@@ -230,6 +230,7 @@ async fn seed(
             identity: &identity,
             cwd: std::path::Path::new("/work"),
         },
+        &wiff_diff::SectionMatchers::builtins(),
     )
     .await
     .expect("import succeeds");
@@ -354,6 +355,7 @@ async fn resyncing_recaptures_the_diff_and_reconciles_upstream_changes() {
         &captured(DIFF_V1, "head1"),
         &fetched_v1(),
         human("wez"),
+        &wiff_diff::SectionMatchers::builtins(),
     )
     .await
     .expect("resync succeeds");
@@ -407,6 +409,7 @@ async fn resyncing_withdraws_a_comment_the_forge_dropped() {
         &captured(DIFF_V0, "head0"),
         &dropped,
         human("wez"),
+        &wiff_diff::SectionMatchers::builtins(),
     )
     .await
     .expect("resync succeeds");
@@ -454,6 +457,7 @@ async fn resyncing_preserves_a_local_edit_made_against_unchanged_upstream() {
         &captured(DIFF_V0, "head0"),
         &fetched_v0(),
         human("wez"),
+        &wiff_diff::SectionMatchers::builtins(),
     )
     .await
     .expect("resync succeeds");
@@ -501,6 +505,7 @@ async fn resyncing_clears_a_dismissed_reviews_verdict() {
         &captured(DIFF_V0, "head0"),
         &dismissed,
         human("wez"),
+        &wiff_diff::SectionMatchers::builtins(),
     )
     .await
     .expect("resync succeeds");
@@ -541,6 +546,7 @@ async fn resyncing_rejects_a_fetch_for_a_different_pull_request() {
         &captured(DIFF_V0, "head0"),
         &elsewhere,
         human("wez"),
+        &wiff_diff::SectionMatchers::builtins(),
     )
     .await
     .expect_err("a mismatched pull request is rejected");

@@ -14,7 +14,7 @@
 //!   leading `!`) rejecting the line. The `!`-exclusion syntax matches git's
 //!   `userdiff` config format, so a user can paste git's patterns into config.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fancy_regex::Regex;
 
@@ -32,6 +32,14 @@ const BUILTIN: &[(&str, &[&str])] = &[
     ),
     ("python", &[r"^[\t ]*(class|def|async[\t ]+def)[\t ]+"]),
     ("markdown", &[r"^ {0,3}#{1,6}[\t ]"]),
+];
+
+/// The prefixes, tested after leading whitespace, that mark a line as part of
+/// the comment or attribute block leading into a definition, keyed by language.
+/// A blank line attaches regardless and is not listed here.
+const BUILTIN_ATTACHMENT: &[(&str, &[&str])] = &[
+    ("rust", &["//", "/*", "*", "#[", "#!"]),
+    ("python", &["#", "@"]),
 ];
 
 /// An error compiling a section pattern into a matcher.
@@ -54,15 +62,22 @@ struct Rule {
     negate: bool,
 }
 
-/// An ordered list of rules recognising one language's definition lines,
-/// evaluated first-match-wins.
+/// Recognizes definitions and their leading comment or attribute lines for one
+/// language.
 struct LanguageRules {
     rules: Vec<Rule>,
+    attachment: Vec<String>,
 }
 
 impl LanguageRules {
-    /// Compile `patterns` for `language`, treating a leading `!` as an exclusion.
-    fn compile<S: AsRef<str>>(language: &str, patterns: &[S]) -> Result<Self, SectionError> {
+    /// Compile `patterns` for `language`, treating a leading `!` as an
+    /// exclusion. `attachment` holds the comment/attribute prefixes for the
+    /// language.
+    fn compile<S: AsRef<str>>(
+        language: &str,
+        patterns: &[S],
+        attachment: Vec<String>,
+    ) -> Result<Self, SectionError> {
         let mut rules = Vec::with_capacity(patterns.len());
         for pattern in patterns {
             let (negate, body) = match pattern.as_ref().strip_prefix('!') {
@@ -75,7 +90,7 @@ impl LanguageRules {
             })?;
             rules.push(Rule { regex, negate });
         }
-        Ok(Self { rules })
+        Ok(Self { rules, attachment })
     }
 
     /// Whether `line` is a definition: the first rule to match decides, an
@@ -88,6 +103,24 @@ impl LanguageRules {
         }
         false
     }
+
+    /// Whether `line`, after its leading whitespace, opens with a comment or
+    /// attribute prefix for this language.
+    fn is_attachment(&self, line: &str) -> bool {
+        let trimmed = line.trim_start();
+        self.attachment
+            .iter()
+            .any(|prefix| trimmed.starts_with(prefix.as_str()))
+    }
+}
+
+/// Returns the attachment prefixes `language` includes.
+fn builtin_attachment(language: &str) -> Vec<String> {
+    BUILTIN_ATTACHMENT
+        .iter()
+        .find(|(name, _)| *name == language)
+        .map(|(_, prefixes)| prefixes.iter().map(|p| p.to_string()).collect())
+        .unwrap_or_default()
 }
 
 /// The definition-line rules for one path: a language driver, or the default
@@ -104,6 +137,19 @@ impl Section<'_> {
             None => is_default_definition(line),
         }
     }
+
+    /// Returns whether `line` may belong to a leading comment or attribute
+    /// block. Blank lines qualify for every file. Recognized comment and
+    /// attribute prefixes qualify only for languages with configured rules.
+    pub fn is_attachment(&self, line: &str) -> bool {
+        if line.trim().is_empty() {
+            return true;
+        }
+        match self.rules {
+            Some(rules) => rules.is_attachment(line),
+            None => false,
+        }
+    }
 }
 
 /// The compiled section matchers for every language, the built-ins overlaid with
@@ -113,20 +159,49 @@ pub struct SectionMatchers {
 }
 
 impl SectionMatchers {
-    /// Build the matchers from the built-in patterns, with each language in
-    /// `overrides` replacing its built-in patterns (and new languages added).
-    pub fn new(overrides: &BTreeMap<String, Vec<String>>) -> Result<Self, SectionError> {
+    /// Build the matchers from the built-ins layered with the user's `sections`
+    /// (definition patterns) and `attachment` (comment/attribute prefixes)
+    /// overrides. `sections` and `attachment` are independent: overriding one for
+    /// a language does not clear the other, which stays at its built-in value for
+    /// that language.
+    pub fn new(
+        sections: &BTreeMap<String, Vec<String>>,
+        attachment: &BTreeMap<String, Vec<String>>,
+    ) -> Result<Self, SectionError> {
+        // Assemble the definition patterns of each language first: the
+        // built-ins, then each listed language replacing its definition
+        // patterns wholesale.
+        let mut definitions: BTreeMap<String, Vec<String>> = BUILTIN
+            .iter()
+            .map(|(language, patterns)| {
+                (
+                    (*language).to_string(),
+                    patterns.iter().map(|p| (*p).to_string()).collect(),
+                )
+            })
+            .collect();
+        for (language, patterns) in sections {
+            definitions.insert(language.clone(), patterns.clone());
+        }
+        // A language the user configured only for attachment, without any
+        // definition patterns of its own, still needs an entry: we want it
+        // available for attachment matching even though it will never match a
+        // definition.
+        let languages: BTreeSet<&str> = definitions
+            .keys()
+            .chain(attachment.keys())
+            .map(String::as_str)
+            .collect();
         let mut by_language = BTreeMap::new();
-        for (language, patterns) in BUILTIN {
+        for language in languages {
+            let patterns = definitions.get(language).cloned().unwrap_or_default();
+            let prefixes = attachment
+                .get(language)
+                .cloned()
+                .unwrap_or_else(|| builtin_attachment(language));
             by_language.insert(
                 language.to_string(),
-                LanguageRules::compile(language, patterns)?,
-            );
-        }
-        for (language, patterns) in overrides {
-            by_language.insert(
-                language.clone(),
-                LanguageRules::compile(language, patterns)?,
+                LanguageRules::compile(language, &patterns, prefixes)?,
             );
         }
         Ok(Self { by_language })
@@ -134,7 +209,8 @@ impl SectionMatchers {
 
     /// The matchers with only the built-in patterns.
     pub fn builtins() -> Self {
-        Self::new(&BTreeMap::new()).expect("built-in section patterns are valid regexes")
+        Self::new(&BTreeMap::new(), &BTreeMap::new())
+            .expect("built-in section patterns are valid regexes")
     }
 
     /// The section rules for `path`, resolved through its language.
@@ -275,7 +351,7 @@ Just a paragraph. -> false
         )]
         .into_iter()
         .collect();
-        let matchers = SectionMatchers::new(&overrides).unwrap();
+        let matchers = SectionMatchers::new(&overrides, &BTreeMap::new()).unwrap();
         let expected = "\
 pub fn draw() { -> true
 #[derive(Debug)] -> false
@@ -293,13 +369,108 @@ struct Theme { -> false
         );
     }
 
+    /// Formats each attachment verdict as a `text -> bool` line.
+    fn classify_attachment(matchers: &SectionMatchers, path: &str, lines: &[&str]) -> String {
+        let section = matchers.for_path(path);
+        let mut out = String::new();
+        for line in lines {
+            out.push_str(&format!("{} -> {}\n", line, section.is_attachment(line)));
+        }
+        out
+    }
+
+    #[test]
+    fn rust_attaches_doc_comments_attributes_and_blanks_but_not_code() {
+        // A doc or line comment, a block-comment continuation, an attribute,
+        // and a blank line all lead into the definition below. A statement does
+        // not.
+        let matchers = SectionMatchers::builtins();
+        let expected = "\
+/// doc -> true
+// note -> true
+/* block -> true
+ * cont -> true
+#[inline] -> true
+#![allow] -> true
+ -> true
+    let x = 1; -> false
+pub fn draw() { -> false
+";
+        wince::assert_eq!(
+            classify_attachment(
+                &matchers,
+                "src/lib.rs",
+                &[
+                    "/// doc",
+                    "// note",
+                    "/* block",
+                    " * cont",
+                    "#[inline]",
+                    "#![allow]",
+                    "",
+                    "    let x = 1;",
+                    "pub fn draw() {",
+                ]
+            ),
+            expected.to_string()
+        );
+    }
+
+    #[test]
+    fn a_configured_attachment_replaces_the_builtin_prefixes_and_adds_languages() {
+        // The configured list for rust replaces its built-in prefixes wholesale
+        // rather than adding to them. Omitting `#[` from that list means an
+        // attribute line no longer attaches. Go has no built-in prefixes to
+        // replace. Its configured `//` is simply the only prefix it has.
+        let attachment: BTreeMap<String, Vec<String>> = [
+            ("rust".to_string(), vec!["//".to_string()]),
+            ("go".to_string(), vec!["//".to_string()]),
+        ]
+        .into_iter()
+        .collect();
+        let matchers = SectionMatchers::new(&BTreeMap::new(), &attachment).unwrap();
+        let rust = "\
+/// doc -> true
+#[inline] -> false
+ -> true
+";
+        wince::assert_eq!(
+            classify_attachment(&matchers, "src/lib.rs", &["/// doc", "#[inline]", ""]),
+            rust.to_string()
+        );
+        let go = "\
+// note -> true
+x := 1 -> false
+";
+        wince::assert_eq!(
+            classify_attachment(&matchers, "m.go", &["// note", "x := 1"]),
+            go.to_string()
+        );
+    }
+
+    #[test]
+    fn an_unknown_language_attaches_only_blank_lines() {
+        // Comment syntax is ambiguous without language rules. Only blank lines
+        // may extend a leading block.
+        let matchers = SectionMatchers::builtins();
+        let expected = "\
+# heading -> false
+ -> true
+text -> false
+";
+        wince::assert_eq!(
+            classify_attachment(&matchers, "notes.txt", &["# heading", "", "text"]),
+            expected.to_string()
+        );
+    }
+
     #[test]
     fn an_invalid_configured_pattern_is_an_error() {
         let overrides: BTreeMap<String, Vec<String>> =
             [("go".to_string(), vec!["(unclosed".to_string()])]
                 .into_iter()
                 .collect();
-        let message = match SectionMatchers::new(&overrides) {
+        let message = match SectionMatchers::new(&overrides, &BTreeMap::new()) {
             Ok(_) => panic!("expected an invalid-pattern error"),
             Err(error) => error.to_string(),
         };

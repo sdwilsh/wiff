@@ -214,7 +214,11 @@ fn comment_on(log: &mut SessionLog, file: &str, line: u32) -> Ulid {
         body: "note".to_string(),
         disposition: None,
     }
-    .append(log, LockWait::Block)
+    .append(
+        log,
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
     .expect("append comment")
     .id
 }
@@ -237,9 +241,15 @@ fn editing_the_reviewed_line_relocates_its_comment() {
     // The commented line's own text is rewritten, then the file is recaptured.
     write(root.path(), "foo.txt", "alpha\nBETA CHANGED\ngamma\n");
     let capture = capture_explore(root.path(), &["foo.txt".into()]);
-    let outcome = refresh_session(&mut log, &capture.captured, wez(), LockWait::Block)
-        .expect("refresh")
-        .expect("a new version");
+    let outcome = refresh_session(
+        &mut log,
+        &capture.captured,
+        wez(),
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
+    .expect("refresh")
+    .expect("a new version");
 
     // A single all-context file whose commented line changed relocates the
     // comment through the shared base rather than declaring it outdated: the
@@ -278,9 +288,15 @@ fn an_unrelated_edit_shifts_the_comment_forward_exactly() {
     // A line inserted above the commented one moves gamma from 3 to 4.
     write(root.path(), "foo.txt", "inserted\nalpha\nbeta\ngamma\n");
     let capture = capture_explore(root.path(), &["foo.txt".into()]);
-    let outcome = refresh_session(&mut log, &capture.captured, wez(), LockWait::Block)
-        .expect("refresh")
-        .expect("a new version");
+    let outcome = refresh_session(
+        &mut log,
+        &capture.captured,
+        wez(),
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
+    .expect("refresh")
+    .expect("a new version");
 
     let comment = only_comment(&log);
     wince::assert_eq!(
@@ -326,9 +342,15 @@ fn deleting_a_reviewed_file_does_not_abort_the_refresh() {
     // failing because one file is gone.
     std::fs::remove_file(root.path().join("bar.txt")).expect("remove bar");
     let capture = capture_explore(root.path(), &["bar.txt".into(), "foo.txt".into()]);
-    let outcome = refresh_session(&mut log, &capture.captured, wez(), LockWait::Block)
-        .expect("refresh")
-        .expect("a new version");
+    let outcome = refresh_session(
+        &mut log,
+        &capture.captured,
+        wez(),
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
+    .expect("refresh")
+    .expect("a new version");
 
     let comment = only_comment(&log);
     wince::assert_eq!(
@@ -373,9 +395,15 @@ fn an_empty_explore_session_creates_a_zero_file_v0_and_widens() {
     // Adding a file widens the set to a new version over the one readable file.
     write(root.path(), "foo.txt", "alpha\n");
     let capture = capture_explore(root.path(), &["foo.txt".into()]);
-    refresh_session(&mut log, &capture.captured, wez(), LockWait::Block)
-        .expect("refresh")
-        .expect("a new version");
+    refresh_session(
+        &mut log,
+        &capture.captured,
+        wez(),
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
+    .expect("refresh")
+    .expect("a new version");
     let widened = ReviewState::load(&path).expect("load widened");
     wince::assert_eq!(
         (
@@ -407,6 +435,7 @@ fn widening_the_set_then_commenting_anchors_on_the_new_version() {
         &["new.txt".into()],
         wez(),
         LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
     )
     .expect("widen")
     .expect("a new version");
@@ -421,7 +450,11 @@ fn widening_the_set_then_commenting_anchors_on_the_new_version() {
         body: "on two".to_string(),
         disposition: None,
     }
-    .append(&mut log, LockWait::Block)
+    .append(
+        &mut log,
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
     .expect("append comment");
 
     // The comment records the just-widened version and anchors to the line's own
@@ -466,6 +499,7 @@ fn re_widening_with_an_existing_file_captures_no_new_version() {
         &["foo.txt".into()],
         wez(),
         LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
     )
     .expect("widen");
     wince::assert_eq!(outcome, None);
@@ -487,6 +521,7 @@ fn widening_a_binary_file_fails_without_writing_a_version() {
         &["data.bin".into()],
         wez(),
         LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
     )
     .expect_err("binary rejected");
     let versions = fold(&read_records(log.path()).unwrap())

@@ -160,6 +160,12 @@ pub struct Config {
     /// built-in patterns; unlisted languages keep the built-ins. Patterns follow
     /// git's `userdiff` format, a leading `!` marking an exclusion.
     pub section: BTreeMap<String, Vec<String>>,
+    /// Per-language line prefixes marking a comment or attribute line that
+    /// leads into the definition below it, keyed by language token. A language
+    /// here replaces its built-in prefixes. Unlisted languages keep the
+    /// built-ins. A blank line leads into a definition in every language and
+    /// need not be listed.
+    pub attachment: BTreeMap<String, Vec<String>>,
     /// Extra globs and markers that mark a file machine-generated, layered onto
     /// the built-in sets. A recognised file shows a `[generated]` badge and folds
     /// to its header by default.
@@ -188,6 +194,7 @@ impl Default for Config {
             base_revision_rules: BaseRuleset::new(DEFAULT_BASE_REVISION_RULES),
             forge: ForgeTable::default(),
             section: BTreeMap::new(),
+            attachment: BTreeMap::new(),
             generated: GeneratedRules::default(),
             disable_default_keymap: false,
             keymap: KeymapOverrides::default(),

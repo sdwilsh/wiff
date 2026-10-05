@@ -486,18 +486,50 @@ fn reuse_or_create_creates_then_reuses_then_refreshes_one_session() {
     let id = identity();
     let cwd = Path::new("/work");
 
-    let first = reuse_or_create(base, &id, cwd, &topic_capture(DIFF_A), actor(), None)
-        .expect("first run creates");
+    let first = reuse_or_create(
+        base,
+        &id,
+        cwd,
+        &topic_capture(DIFF_A),
+        actor(),
+        None,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
+    .expect("first run creates");
     let (topic_id, topic_path) = match &first {
         IfNeeded::Created(log) => (log.id(), log.path().to_path_buf()),
         other => panic!("expected a create, got {}", render(other)),
     };
-    let reused = reuse_or_create(base, &id, cwd, &topic_capture(DIFF_A), actor(), None)
-        .expect("identical diff reuses");
-    let refreshed = reuse_or_create(base, &id, cwd, &topic_capture(DIFF_B), actor(), None)
-        .expect("moved working copy refreshes");
-    let other = reuse_or_create(base, &id, cwd, &other_capture(DIFF_A), actor(), None)
-        .expect("a different range creates");
+    let reused = reuse_or_create(
+        base,
+        &id,
+        cwd,
+        &topic_capture(DIFF_A),
+        actor(),
+        None,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
+    .expect("identical diff reuses");
+    let refreshed = reuse_or_create(
+        base,
+        &id,
+        cwd,
+        &topic_capture(DIFF_B),
+        actor(),
+        None,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
+    .expect("moved working copy refreshes");
+    let other = reuse_or_create(
+        base,
+        &id,
+        cwd,
+        &other_capture(DIFF_A),
+        actor(),
+        None,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
+    .expect("a different range creates");
     let other_id = match &other {
         IfNeeded::Created(log) => log.id(),
         other => panic!("expected a create, got {}", render(other)),
@@ -553,16 +585,40 @@ fn reuse_or_create_reports_nothing_to_review_until_a_session_exists() {
     let id = identity();
     let cwd = Path::new("/work");
 
-    let empty_first = reuse_or_create(base, &id, cwd, &topic_capture(""), actor(), None)
-        .expect("an empty capture is reported, not an error");
-    let created = reuse_or_create(base, &id, cwd, &topic_capture(DIFF_A), actor(), None)
-        .expect("a non-empty capture opens the session");
+    let empty_first = reuse_or_create(
+        base,
+        &id,
+        cwd,
+        &topic_capture(""),
+        actor(),
+        None,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
+    .expect("an empty capture is reported, not an error");
+    let created = reuse_or_create(
+        base,
+        &id,
+        cwd,
+        &topic_capture(DIFF_A),
+        actor(),
+        None,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
+    .expect("a non-empty capture opens the session");
     let session_id = match &created {
         IfNeeded::Created(log) => log.id(),
         other => panic!("expected a create, got {}", render(other)),
     };
-    let empty_again = reuse_or_create(base, &id, cwd, &topic_capture(""), actor(), None)
-        .expect("an empty capture reuses the existing session");
+    let empty_again = reuse_or_create(
+        base,
+        &id,
+        cwd,
+        &topic_capture(""),
+        actor(),
+        None,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
+    .expect("an empty capture reuses the existing session");
 
     let report = format!(
         "empty first: {}\n\

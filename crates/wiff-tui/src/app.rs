@@ -898,6 +898,12 @@ impl App {
             .live_highlighter("markdown")
     }
 
+    /// Returns the section matchers used by the attached review to rebase
+    /// comments, or `None` when the review is absent.
+    pub fn section_matchers(&self) -> Option<&wiff_diff::SectionMatchers> {
+        self.review.as_ref().map(Review::section_matchers)
+    }
+
     /// Take the pending draft records to be committed to the session log,
     /// emptying the buffer. Empty when no review is attached.
     pub fn take_drafts(&mut self) -> Vec<RecordBody> {

@@ -5,12 +5,13 @@ use std::path::Path;
 use anyhow::{Context, anyhow, bail};
 use clap::{Args, Subcommand};
 use ulid::Ulid;
+use wiff_config::Config;
 use wiff_core::record::{CommentRef, CommentTarget, Disposition};
 use wiff_core::review::ReviewState;
 use wiff_core::{
     DraftComment, LockWait, SessionLog, delete_comment, edit_comment, set_disposition, set_resolved,
 };
-use wiff_diff::{LineNo, Side};
+use wiff_diff::{LineNo, SectionMatchers, Side};
 
 use super::{read_piped_stdin, resolve_author, resolve_session};
 use crate::render::render_list;
@@ -99,6 +100,9 @@ impl CommentAddArgs {
     async fn run(self) -> anyhow::Result<()> {
         let path = resolve_session(self.session.as_deref(), self.project.as_deref())?;
         let author = resolve_author(self.agent, self.author.clone())?;
+        let config = Config::load()?;
+        let sections = SectionMatchers::new(&config.section, &config.attachment)
+            .context("a configured section pattern is not a valid regex")?;
         // On an explore review, commenting on a file not yet under review adds
         // it first, so `--file` doubles as the way to bring a file in. This is a
         // no-op on any other kind of session, and returns the file's stored
@@ -108,6 +112,7 @@ impl CommentAddArgs {
                 &path,
                 file,
                 author.clone(),
+                &sections,
             )?),
             None => None,
         };
@@ -120,7 +125,7 @@ impl CommentAddArgs {
             body,
             disposition: self.verdict.and_then(VerdictArg::into_disposition),
         }
-        .append(&mut log, LockWait::Block)?;
+        .append(&mut log, LockWait::Block, &sections)?;
         println!("added comment {} (seq {})", added.id, added.seq);
         Ok(())
     }
@@ -478,7 +483,11 @@ diff --git a/f.txt b/f.txt
                 body: body.to_string(),
                 disposition: None,
             }
-            .append(log, LockWait::Block)
+            .append(
+                log,
+                LockWait::Block,
+                &wiff_diff::SectionMatchers::builtins(),
+            )
             .unwrap()
             .id
         };

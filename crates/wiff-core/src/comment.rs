@@ -11,7 +11,9 @@ use time::OffsetDateTime;
 use ulid::Ulid;
 use wiff_diff::parse::parse;
 use wiff_diff::reconstitute::known_lines;
-use wiff_diff::{Diff, FileDiff, LineNo, Side};
+use wiff_diff::{Diff, FileDiff, LineNo, Section, SectionMatchers, Side};
+
+use crate::rebase::locate_landmark;
 
 use crate::error::{Error, Result};
 use crate::record::{
@@ -56,11 +58,18 @@ impl DraftComment {
     /// Append this comment to `log`, anchoring a line-range target against the
     /// session's most recent diff version. The version and anchor are read under
     /// the same lock that appends the comment.
-    pub fn append(self, log: &mut SessionLog, wait: LockWait) -> Result<AddedComment> {
+    pub fn append(
+        self,
+        log: &mut SessionLog,
+        wait: LockWait,
+        sections: &SectionMatchers,
+    ) -> Result<AddedComment> {
         let (mut lock, records) = log.lock_and_sync(wait)?;
         let version = latest_diff_version(&records)?.number;
         let anchor = match &self.target {
-            CommentTarget::Lines { .. } => capture_target_anchor(log, version, &self.target)?,
+            CommentTarget::Lines { .. } => {
+                capture_target_anchor(log, version, &self.target, sections)?
+            }
             // A reply names the comment it answers. Confirm that comment exists
             // before writing: fold rejects a reply to an unknown id as a corrupt
             // log, so appending an unchecked reply would make the whole session
@@ -145,7 +154,11 @@ impl AnchorFailures {
 /// but still commits, so one bad draft does not cost the reviewer the whole batch.
 ///
 /// [`DraftBuffer::rebase`]: crate::draft::DraftBuffer::rebase
-pub fn capture_draft_anchors(log: &SessionLog, drafts: &mut [RecordBody]) -> AnchorFailures {
+pub fn capture_draft_anchors(
+    log: &SessionLog,
+    drafts: &mut [RecordBody],
+    sections: &SectionMatchers,
+) -> AnchorFailures {
     // Parse each version's diff once and reuse it for every draft against that
     // version: a batch usually comments several times on one version.
     let mut diffs: HashMap<VersionNumber, Option<Diff>> = HashMap::new();
@@ -183,7 +196,7 @@ pub fn capture_draft_anchors(log: &SessionLog, drafts: &mut [RecordBody]) -> Anc
             failures.unanchored += 1;
             continue;
         };
-        match anchor_in_diff(diff, create.version, &create.target) {
+        match anchor_in_diff(diff, create.version, &create.target, sections) {
             Ok(anchor) => create.anchor = anchor,
             Err(err) => {
                 failures.unanchored += 1;
@@ -204,9 +217,10 @@ fn capture_target_anchor(
     log: &SessionLog,
     number: VersionNumber,
     target: &CommentTarget,
+    sections: &SectionMatchers,
 ) -> Result<Option<Anchor>> {
     let diff = read_version_diff(log, number)?;
-    anchor_in_diff(&diff, number, target)
+    anchor_in_diff(&diff, number, target, sections)
 }
 
 fn read_version_diff(log: &SessionLog, number: VersionNumber) -> Result<Diff> {
@@ -220,6 +234,7 @@ pub(crate) fn anchor_in_diff(
     diff: &Diff,
     number: VersionNumber,
     target: &CommentTarget,
+    sections: &SectionMatchers,
 ) -> Result<Option<Anchor>> {
     let CommentTarget::Lines {
         file,
@@ -240,6 +255,7 @@ pub(crate) fn anchor_in_diff(
         *side,
         *start_line,
         *end_line,
+        &sections.for_path(file),
     ))
 }
 
@@ -253,6 +269,7 @@ pub fn place_forge_anchor(
     side: Side,
     start_line: LineNo,
     end_line: LineNo,
+    sections: &SectionMatchers,
 ) -> (CommentTarget, Option<Anchor>) {
     let lines = CommentTarget::Lines {
         file: path.to_string(),
@@ -260,7 +277,7 @@ pub fn place_forge_anchor(
         start_line,
         end_line,
     };
-    match anchor_in_diff(diff, number, &lines) {
+    match anchor_in_diff(diff, number, &lines, sections) {
         Ok(Some(anchor)) => (lines, Some(anchor)),
         _ => (
             CommentTarget::File {
@@ -550,15 +567,17 @@ fn latest_diff_version(records: &[Record]) -> Result<&DiffVersionRecord> {
         .ok_or(Error::NoDiffVersion)
 }
 
-/// Returns the anchor for lines `start..=end` on `side` within a single file's
-/// diff: the exact text of those lines, plus up to [`ANCHOR_CONTEXT`] known
-/// context lines on each side. Yields `None` when the range is not present as
-/// one contiguous run in the captured window.
+/// Returns the anchor for lines `start..=end` on `side` within the diff of a
+/// file: the exact text of those lines, up to [`ANCHOR_CONTEXT`] known context
+/// lines on each side, and the structural landmark `section` locates for them.
+/// Yields `None` when the range is not present as one contiguous run in the
+/// captured window.
 fn anchor_in_file_diff(
     file_diff: &FileDiff,
     side: Side,
     start: LineNo,
     end: LineNo,
+    section: &Section,
 ) -> Option<Anchor> {
     // The line count below is `end - start + 1` on `NonZeroU32` and underflows
     // for a reversed range. Callers construct ranges low-to-high, so guarding
@@ -599,9 +618,11 @@ fn anchor_in_file_diff(
         .map(|(_, text)| text.clone())
         .collect();
 
+    let landmark = locate_landmark(section, &lines, first);
     Some(Anchor {
         snippet,
         context_before,
         context_after,
+        landmark,
     })
 }

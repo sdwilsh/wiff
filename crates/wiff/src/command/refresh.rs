@@ -1,13 +1,15 @@
 //! `wiff refresh`: capture a new diff version into a session and rebase its
 //! comments onto it.
 
-use anyhow::bail;
+use anyhow::{Context, bail};
 use clap::Args;
+use wiff_config::Config;
 use wiff_core::record::SourceKind;
 use wiff_core::review::ReviewState;
 use wiff_core::{
     CapturedDiff, LockWait, RefreshOutcome, SessionLog, refresh_session, widen_explore,
 };
+use wiff_diff::SectionMatchers;
 
 use super::{explore_root, read_piped_stdin, recapture_diff, resolve_author, resolve_session};
 
@@ -36,15 +38,18 @@ impl RefreshArgs {
         let state = ReviewState::load(&path)?;
         let author = resolve_author(self.agent, self.author)?;
         let mut log = SessionLog::open(&path)?;
+        let config = Config::load()?;
+        let sections = SectionMatchers::new(&config.section, &config.attachment)
+            .context("a configured section pattern is not a valid regex")?;
         // An explore review re-reads its file set from the latest version under
         // the session lock rather than recapturing an scm range; widening with
         // no new paths is that re-read.
         let outcome = if matches!(state.session.source, SourceKind::Explore) {
             let root = explore_root(&state.session);
-            widen_explore(&mut log, &root, &[], author, LockWait::Block)?
+            widen_explore(&mut log, &root, &[], author, LockWait::Block, &sections)?
         } else {
             let captured = recapture(&state).await?;
-            refresh_session(&mut log, &captured, author, LockWait::Block)?
+            refresh_session(&mut log, &captured, author, LockWait::Block, &sections)?
         };
         match outcome {
             Some(outcome) => report(&outcome),

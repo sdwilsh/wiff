@@ -232,6 +232,38 @@ If you instead list rust, python, or markdown, you take over that language's
 rules completely, so repeat the cases you still want; otherwise definitions wiff
 used to recognise stop being labelled.
 
+### Comment anchors
+
+When the diff is refreshed wiff adjusts the location of each line comment in
+order that it continues to anchor to the same logical location in the updated
+source file.  If the line range covered by a wiff comment has been reworded
+significantly wiff will anchor the comment to a function or variable definition
+in the source file, as defined by the `[section]` and `[attachment]`
+configuration settings.
+
+As an example, if you commented on the second doc comment line for `fn foo` and
+that line got totally rewritten, wiff will anchor to the second doc comment
+line.
+
+To recognise that doc block wiff needs to know which lines are comments or
+attributes in the language.  Wiff has defaults for rust and python, but you
+can override them or add definitions for other languages.
+
+Under the `[attachment]` section you can add a per-language list of line
+prefixes.  A line whose first non-whitespace characters exactly equal a prefix
+is considered to lead into the definition below it. A blank line is always
+considered to lead into a definition.
+
+```toml
+[attachment]
+# Lines that lead into a Go definition: doc and line comments, and block-comment
+# body lines.
+go = ["//", "/*", "*"]
+```
+
+Like `[section]`, listing a language replaces its built-in prefixes rather than
+adding to them.
+
 ### Generated files
 
 A recognised generated file shows a `[generated]` badge and folds to its header

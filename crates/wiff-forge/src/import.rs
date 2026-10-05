@@ -15,8 +15,8 @@ use wiff_core::determinism::new_ulid;
 use wiff_core::identity::ProjectIdentity;
 use wiff_core::record::{CommentEventKind, ExternalKind, RecordBody, VersionNumber};
 use wiff_core::source::DiffSource;
-use wiff_diff::Diff;
 use wiff_diff::parse::parse;
+use wiff_diff::{Diff, SectionMatchers};
 
 use crate::pull::{reconcile_comments, reconcile_description, reconcile_reviews};
 use crate::types::FetchedPullRequest;
@@ -64,10 +64,11 @@ pub async fn import_pull_request(
     source: &dyn DiffSource,
     fetched: &FetchedPullRequest,
     req: &ImportRequest<'_>,
+    sections: &SectionMatchers,
 ) -> Result<ImportOutcome> {
     let captured = source.capture().await?;
     let diff = parse(&captured.text)?;
-    let (events, mirrored) = mirror_events(fetched, &diff, VersionNumber(0));
+    let (events, mirrored) = mirror_events(fetched, &diff, VersionNumber(0), sections);
 
     create_forge_session(
         req.base,
@@ -103,9 +104,10 @@ fn mirror_events(
     fetched: &FetchedPullRequest,
     diff: &Diff,
     number: VersionNumber,
+    sections: &SectionMatchers,
 ) -> (Vec<RecordBody>, Mirrored) {
     let description = reconcile_description(&fetched.description, None);
-    let comments = reconcile_comments(&fetched.comments, &[], diff, number, new_ulid);
+    let comments = reconcile_comments(&fetched.comments, &[], diff, number, sections, new_ulid);
     let reviews = reconcile_reviews(&fetched.reviews, &[], number, new_ulid);
 
     let mirrored = Mirrored {

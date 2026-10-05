@@ -224,7 +224,14 @@ fn fetched() -> Vec<FetchedComment> {
 
 #[test]
 fn a_fresh_pull_imports_every_comment_placement() {
-    let events = reconcile_comments(&fetched(), &[], &diff(), VersionNumber(0), ids());
+    let events = reconcile_comments(
+        &fetched(),
+        &[],
+        &diff(),
+        VersionNumber(0),
+        &wiff_diff::SectionMatchers::builtins(),
+        ids(),
+    );
     let comments = fold_events(events);
     #[rustfmt::skip]
     wince::snapshot_str!(
@@ -254,7 +261,12 @@ fn a_fresh_pull_imports_every_comment_placement() {
       "context_after": [
         "twelve",
         "thirteen"
-      ]
+      ],
+      "landmark": {
+        "definition": "ELEVEN",
+        "relation": "on_definition",
+        "offset": 0
+      }
     },
     "body": "anchors to ELEVEN",
     "created_at": "2024-03-01T12:00:00Z",
@@ -387,7 +399,12 @@ fn a_fresh_pull_imports_every_comment_placement() {
       ],
       "context_after": [
         "thirteen"
-      ]
+      ],
+      "landmark": {
+        "definition": "twelve",
+        "relation": "on_definition",
+        "offset": 0
+      }
     },
     "body": "resolved thread on twelve",
     "created_at": "2024-03-01T12:00:00Z",
@@ -467,15 +484,36 @@ fn a_fresh_pull_imports_every_comment_placement() {
 
 #[test]
 fn re_pulling_an_unchanged_request_appends_nothing() {
-    let first = reconcile_comments(&fetched(), &[], &diff(), VersionNumber(0), ids());
+    let first = reconcile_comments(
+        &fetched(),
+        &[],
+        &diff(),
+        VersionNumber(0),
+        &wiff_diff::SectionMatchers::builtins(),
+        ids(),
+    );
     let existing = fold_events(first);
-    let again = reconcile_comments(&fetched(), &existing, &diff(), VersionNumber(0), ids());
+    let again = reconcile_comments(
+        &fetched(),
+        &existing,
+        &diff(),
+        VersionNumber(0),
+        &wiff_diff::SectionMatchers::builtins(),
+        ids(),
+    );
     wince::assert_eq!(again, Vec::<RecordBody>::new());
 }
 
 #[test]
 fn a_local_edit_of_a_linked_comment_survives_an_unchanged_pull() {
-    let first = reconcile_comments(&fetched(), &[], &diff(), VersionNumber(0), ids());
+    let first = reconcile_comments(
+        &fetched(),
+        &[],
+        &diff(),
+        VersionNumber(0),
+        &wiff_diff::SectionMatchers::builtins(),
+        ids(),
+    );
 
     // Edit and resolve an imported comment locally, without pushing it; the
     // forge still holds the original body and an unresolved thread.
@@ -493,7 +531,14 @@ fn a_local_edit_of_a_linked_comment_survives_an_unchanged_pull() {
     // Re-pulling the unchanged request must not import the forge's stale body or
     // resolution over the unpushed local change; it leaves the comment for push
     // to send, so reconcile appends nothing.
-    let again = reconcile_comments(&fetched(), &existing, &diff(), VersionNumber(0), ids());
+    let again = reconcile_comments(
+        &fetched(),
+        &existing,
+        &diff(),
+        VersionNumber(0),
+        &wiff_diff::SectionMatchers::builtins(),
+        ids(),
+    );
     wince::assert_eq!(again, Vec::<RecordBody>::new());
 }
 
@@ -520,7 +565,14 @@ fn a_local_resolve_of_a_freshly_linked_comment_survives_an_unchanged_pull() {
     // not import a resolve back to unresolved over the unpushed local one; it
     // leaves the resolution for push to send, so reconcile appends nothing.
     let forge = vec![comment("c1", "wez", body)];
-    let again = reconcile_comments(&forge, &existing, &diff(), VersionNumber(0), ids());
+    let again = reconcile_comments(
+        &forge,
+        &existing,
+        &diff(),
+        VersionNumber(0),
+        &wiff_diff::SectionMatchers::builtins(),
+        ids(),
+    );
     wince::assert_eq!(again, Vec::<RecordBody>::new());
 }
 
@@ -528,7 +580,14 @@ fn a_local_resolve_of_a_freshly_linked_comment_survives_an_unchanged_pull() {
 fn a_concurrent_forge_edit_wins_over_an_unpushed_local_edit() {
     // Import a review-level comment, then edit it locally without pushing.
     let forge = vec![comment("c2", "bob", "overall this looks fine")];
-    let first = reconcile_comments(&forge, &[], &diff(), VersionNumber(0), ids());
+    let first = reconcile_comments(
+        &forge,
+        &[],
+        &diff(),
+        VersionNumber(0),
+        &wiff_diff::SectionMatchers::builtins(),
+        ids(),
+    );
     let target = fold_events(first.clone())[0].id;
     let local_edit = edit_event(target, human("wez"), "local rewording".to_string());
     let mut existing_events = first.clone();
@@ -540,7 +599,14 @@ fn a_concurrent_forge_edit_wins_over_an_unpushed_local_edit() {
     // the unpushed local one and folding the whole history leaves the comment
     // holding the forge's body.
     let changed = vec![comment("c2", "bob", "on reflection, needs work")];
-    let second = reconcile_comments(&changed, &existing, &diff(), VersionNumber(0), ids());
+    let second = reconcile_comments(
+        &changed,
+        &existing,
+        &diff(),
+        VersionNumber(0),
+        &wiff_diff::SectionMatchers::builtins(),
+        ids(),
+    );
     let mut all = first;
     all.push(local_edit);
     all.extend(second);
@@ -594,7 +660,14 @@ fn a_concurrent_forge_edit_wins_over_an_unpushed_local_edit() {
 
 #[test]
 fn a_later_pull_edits_resolves_and_withdraws() {
-    let first = reconcile_comments(&fetched(), &[], &diff(), VersionNumber(0), ids());
+    let first = reconcile_comments(
+        &fetched(),
+        &[],
+        &diff(),
+        VersionNumber(0),
+        &wiff_diff::SectionMatchers::builtins(),
+        ids(),
+    );
     let existing = fold_events(first.clone());
 
     // The review-level comment's body changed, its thread is now resolved, and
@@ -606,7 +679,14 @@ fn a_later_pull_edits_resolves_and_withdraws() {
     });
     later.pop();
 
-    let second = reconcile_comments(&later, &existing, &diff(), VersionNumber(0), ids());
+    let second = reconcile_comments(
+        &later,
+        &existing,
+        &diff(),
+        VersionNumber(0),
+        &wiff_diff::SectionMatchers::builtins(),
+        ids(),
+    );
     let mut all = first;
     all.extend(second);
     let comments = fold_events(all);
@@ -638,7 +718,12 @@ fn a_later_pull_edits_resolves_and_withdraws() {
       "context_after": [
         "twelve",
         "thirteen"
-      ]
+      ],
+      "landmark": {
+        "definition": "ELEVEN",
+        "relation": "on_definition",
+        "offset": 0
+      }
     },
     "body": "anchors to ELEVEN",
     "created_at": "2024-03-01T12:00:00Z",
@@ -775,7 +860,12 @@ fn a_later_pull_edits_resolves_and_withdraws() {
       ],
       "context_after": [
         "thirteen"
-      ]
+      ],
+      "landmark": {
+        "definition": "twelve",
+        "relation": "on_definition",
+        "offset": 0
+      }
     },
     "body": "resolved thread on twelve",
     "created_at": "2024-03-01T12:00:00Z",
@@ -859,19 +949,40 @@ fn a_later_pull_edits_resolves_and_withdraws() {
 
 #[test]
 fn a_repeated_withdrawal_appends_nothing() {
-    let first = reconcile_comments(&fetched(), &[], &diff(), VersionNumber(0), ids());
+    let first = reconcile_comments(
+        &fetched(),
+        &[],
+        &diff(),
+        VersionNumber(0),
+        &wiff_diff::SectionMatchers::builtins(),
+        ids(),
+    );
     let existing = fold_events(first.clone());
 
     // Withdraw the outdated comment upstream, then fold the withdrawal in.
     let mut later = fetched();
     later.pop();
-    let second = reconcile_comments(&later, &existing, &diff(), VersionNumber(0), ids());
+    let second = reconcile_comments(
+        &later,
+        &existing,
+        &diff(),
+        VersionNumber(0),
+        &wiff_diff::SectionMatchers::builtins(),
+        ids(),
+    );
     let mut all = first;
     all.extend(second);
     let settled = fold_events(all);
 
     // A further pull with the comment still absent must not tombstone it again.
-    let again = reconcile_comments(&later, &settled, &diff(), VersionNumber(0), ids());
+    let again = reconcile_comments(
+        &later,
+        &settled,
+        &diff(),
+        VersionNumber(0),
+        &wiff_diff::SectionMatchers::builtins(),
+        ids(),
+    );
     wince::assert_eq!(again, Vec::<RecordBody>::new());
 }
 
@@ -880,7 +991,14 @@ fn a_duplicate_origin_is_reconciled_once() {
     // A forge listing that repeats one object (an inline id colliding with an
     // issue id, or the same object across pages) must import it a single time.
     let dup = comment("c1", "alice", "said once");
-    let events = reconcile_comments(&[dup.clone(), dup], &[], &diff(), VersionNumber(0), ids());
+    let events = reconcile_comments(
+        &[dup.clone(), dup],
+        &[],
+        &diff(),
+        VersionNumber(0),
+        &wiff_diff::SectionMatchers::builtins(),
+        ids(),
+    );
     let comments = fold_events(events);
     #[rustfmt::skip]
     wince::snapshot_str!(
@@ -938,7 +1056,14 @@ fn a_reply_listed_before_its_parent_still_threads() {
         ..comment("c2", "bob", "answering first")
     };
     let parent = comment("c1", "alice", "asked first");
-    let events = reconcile_comments(&[reply, parent], &[], &diff(), VersionNumber(0), ids());
+    let events = reconcile_comments(
+        &[reply, parent],
+        &[],
+        &diff(),
+        VersionNumber(0),
+        &wiff_diff::SectionMatchers::builtins(),
+        ids(),
+    );
     let comments = fold_events(events);
     #[rustfmt::skip]
     wince::snapshot_str!(
@@ -1470,7 +1595,14 @@ fn reconciling_comments_leaves_an_imported_verdict_untouched() {
         ids(),
     );
     let existing = fold_events(verdict);
-    let again = reconcile_comments(&[], &existing, &diff(), VersionNumber(0), ids());
+    let again = reconcile_comments(
+        &[],
+        &existing,
+        &diff(),
+        VersionNumber(0),
+        &wiff_diff::SectionMatchers::builtins(),
+        ids(),
+    );
     wince::assert_eq!(again, Vec::<RecordBody>::new());
 }
 

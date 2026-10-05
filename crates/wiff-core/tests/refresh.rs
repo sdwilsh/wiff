@@ -112,7 +112,11 @@ fn session_with_gamma_comment() -> (tempfile::TempDir, SessionLog, Ulid) {
         body: "why gamma?".to_string(),
         disposition: None,
     }
-    .append(&mut log, LockWait::Block)
+    .append(
+        &mut log,
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
     .unwrap();
     (base, log, added.id)
 }
@@ -172,6 +176,11 @@ fn expected_comment(
             snippet: vec!["gamma".to_string()],
             context_before: vec!["alpha".to_string(), "beta".to_string()],
             context_after: vec!["delta".to_string()],
+            landmark: Some(wiff_core::record::Landmark {
+                definition: "gamma".to_string(),
+                relation: wiff_core::record::LandmarkRelation::OnDefinition,
+                offset: 0,
+            }),
         }),
         body: "why gamma?".to_string(),
         created_at: OffsetDateTime::UNIX_EPOCH,
@@ -209,7 +218,14 @@ new file mode 100644
 +gamma
 +delta
 ";
-    let outcome = refresh_session(&mut log, &stdin_capture(v1), author(), LockWait::Block).unwrap();
+    let outcome = refresh_session(
+        &mut log,
+        &stdin_capture(v1),
+        author(),
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
+    .unwrap();
     wince::assert_eq!(
         outcome,
         Some(RefreshOutcome {
@@ -248,7 +264,14 @@ new file mode 100644
 +gamma is now different
 +delta
 ";
-    let outcome = refresh_session(&mut log, &stdin_capture(v1), author(), LockWait::Block).unwrap();
+    let outcome = refresh_session(
+        &mut log,
+        &stdin_capture(v1),
+        author(),
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
+    .unwrap();
     wince::assert_eq!(
         outcome,
         Some(RefreshOutcome {
@@ -288,7 +311,14 @@ new file mode 100644
 +beta
 +delta
 ";
-    let outcome = refresh_session(&mut log, &stdin_capture(v1), author(), LockWait::Block).unwrap();
+    let outcome = refresh_session(
+        &mut log,
+        &stdin_capture(v1),
+        author(),
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
+    .unwrap();
     wince::assert_eq!(
         outcome,
         Some(RefreshOutcome {
@@ -331,7 +361,14 @@ new file mode 100644
 +gamma
 +delta
 ";
-    let outcome = refresh_session(&mut log, &stdin_capture(v1), agent(), LockWait::Block).unwrap();
+    let outcome = refresh_session(
+        &mut log,
+        &stdin_capture(v1),
+        agent(),
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
+    .unwrap();
     wince::assert_eq!(
         outcome,
         Some(RefreshOutcome {
@@ -373,7 +410,11 @@ fn a_refresh_reanchors_the_parent_but_leaves_its_reply_in_place() {
         body: "seconded".to_string(),
         disposition: None,
     }
-    .append(&mut log, LockWait::Block)
+    .append(
+        &mut log,
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
     .unwrap()
     .id;
     let v1 = "\
@@ -388,7 +429,14 @@ new file mode 100644
 +gamma
 +delta
 ";
-    let outcome = refresh_session(&mut log, &stdin_capture(v1), author(), LockWait::Block).unwrap();
+    let outcome = refresh_session(
+        &mut log,
+        &stdin_capture(v1),
+        author(),
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
+    .unwrap();
     // Only the parent line comment rebases; the reply is not counted.
     wince::assert_eq!(
         outcome,
@@ -456,6 +504,7 @@ fn a_base_not_anchored_to_the_tip_reports_its_move() {
         &scm_capture(V1, "base-b", false),
         author(),
         LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
     )
     .unwrap();
     wince::assert_eq!(
@@ -484,6 +533,7 @@ fn a_base_anchored_to_the_tip_does_not_report_its_move() {
         &scm_capture(V1, "base-b", true),
         author(),
         LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
     )
     .unwrap();
     wince::assert_eq!(
@@ -507,6 +557,7 @@ fn a_base_that_resolves_to_the_same_commit_reports_no_move() {
         &scm_capture(V1, "base-a", false),
         author(),
         LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
     )
     .unwrap();
     wince::assert_eq!(
@@ -533,6 +584,7 @@ fn switching_a_tip_anchored_base_to_a_pinned_one_reports_no_move() {
         &scm_capture(V1, "base-b", false),
         author(),
         LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
     )
     .unwrap();
     wince::assert_eq!(
@@ -551,7 +603,14 @@ fn switching_a_tip_anchored_base_to_a_pinned_one_reports_no_move() {
 #[test]
 fn an_identical_diff_captures_nothing() {
     let (_base, mut log, id) = session_with_gamma_comment();
-    let outcome = refresh_session(&mut log, &stdin_capture(V0), author(), LockWait::Block).unwrap();
+    let outcome = refresh_session(
+        &mut log,
+        &stdin_capture(V0),
+        author(),
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
+    .unwrap();
     wince::assert_eq!(outcome, None);
     // The comment stays anchored to v0, untouched.
     wince::assert_eq!(

@@ -114,7 +114,11 @@ fn adding_comments_captures_anchors_and_folds_to_current_state() {
         body: "why 3?".to_string(),
         disposition: None,
     }
-    .append(&mut log, LockWait::Block)
+    .append(
+        &mut log,
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
     .unwrap();
     let whole = DraftComment {
         author: Author {
@@ -127,7 +131,11 @@ fn adding_comments_captures_anchors_and_folds_to_current_state() {
         body: "needs a newline".to_string(),
         disposition: None,
     }
-    .append(&mut log, LockWait::Block)
+    .append(
+        &mut log,
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
     .unwrap();
     let overall = DraftComment {
         author: human("wez"),
@@ -135,7 +143,11 @@ fn adding_comments_captures_anchors_and_folds_to_current_state() {
         body: "looks good".to_string(),
         disposition: None,
     }
-    .append(&mut log, LockWait::Block)
+    .append(
+        &mut log,
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
     .unwrap();
 
     // The line comment captured the changed line and one context line each side.
@@ -145,6 +157,7 @@ fn adding_comments_captures_anchors_and_folds_to_current_state() {
             snippet: vec!["let b = 3;".to_string()],
             context_before: vec!["let a = 1;".to_string()],
             context_after: vec!["let c = 4;".to_string()],
+            landmark: None,
         })
     );
     wince::assert_eq!(whole.anchor, None);
@@ -200,6 +213,7 @@ fn adding_comments_captures_anchors_and_folds_to_current_state() {
                     snippet: vec!["let b = 3;".to_string()],
                     context_before: vec!["let a = 1;".to_string()],
                     context_after: vec!["let c = 4;".to_string()],
+                    landmark: None,
                 }),
                 body: "why 3?".to_string(),
                 created_at: OffsetDateTime::UNIX_EPOCH,
@@ -288,7 +302,11 @@ fn a_line_range_anchors_across_multiple_lines() {
         body: "both lines".to_string(),
         disposition: None,
     }
-    .append(&mut log, LockWait::Block)
+    .append(
+        &mut log,
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
     .unwrap();
     wince::assert_eq!(
         added.anchor,
@@ -296,6 +314,11 @@ fn a_line_range_anchors_across_multiple_lines() {
             snippet: vec!["first".to_string(), "second".to_string()],
             context_before: vec![],
             context_after: vec![],
+            landmark: Some(wiff_core::record::Landmark {
+                definition: "first".to_string(),
+                relation: wiff_core::record::LandmarkRelation::OnDefinition,
+                offset: 0,
+            }),
         })
     );
 }
@@ -309,7 +332,11 @@ fn a_line_beyond_the_captured_window_is_recorded_without_an_anchor() {
         body: "look here for context".to_string(),
         disposition: None,
     }
-    .append(&mut log, LockWait::Block)
+    .append(
+        &mut log,
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
     .unwrap();
     wince::assert_eq!(added.anchor, None);
 
@@ -354,7 +381,11 @@ fn resolving_and_withdrawing_comments_folds_to_current_state() {
         body: "needs a newline".to_string(),
         disposition: None,
     }
-    .append(&mut log, LockWait::Block)
+    .append(
+        &mut log,
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
     .unwrap();
     let gone = DraftComment {
         author: human("wez"),
@@ -362,7 +393,11 @@ fn resolving_and_withdrawing_comments_folds_to_current_state() {
         body: "never mind".to_string(),
         disposition: None,
     }
-    .append(&mut log, LockWait::Block)
+    .append(
+        &mut log,
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
     .unwrap();
 
     // Resolve then reopen the kept comment; its state reflects the last write.
@@ -437,7 +472,11 @@ fn setting_a_verdict_records_it_and_folds_it_onto_the_comment() {
         body: "needs work".to_string(),
         disposition: None,
     }
-    .append(&mut log, LockWait::Block)
+    .append(
+        &mut log,
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
     .unwrap();
     set_disposition(
         &mut log,
@@ -475,7 +514,11 @@ fn setting_a_verdict_on_another_authors_comment_is_refused() {
         body: "mine".to_string(),
         disposition: None,
     }
-    .append(&mut log, LockWait::Block)
+    .append(
+        &mut log,
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
     .unwrap();
     let error = set_disposition(
         &mut log,
@@ -521,7 +564,11 @@ fn a_human_may_edit_and_withdraw_an_agents_comment() {
         body: "agent take".to_string(),
         disposition: None,
     }
-    .append(&mut log, LockWait::Block)
+    .append(
+        &mut log,
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
     .unwrap();
     edit_comment(
         &mut log,
@@ -566,7 +613,11 @@ fn an_agent_may_edit_and_withdraw_its_own_comment() {
         body: "agent take".to_string(),
         disposition: None,
     }
-    .append(&mut log, LockWait::Block)
+    .append(
+        &mut log,
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
     .unwrap();
     edit_comment(
         &mut log,
@@ -596,7 +647,11 @@ fn an_agent_cannot_edit_or_withdraw_a_comment_it_did_not_author() {
         body: "human take".to_string(),
         disposition: None,
     }
-    .append(&mut log, LockWait::Block)
+    .append(
+        &mut log,
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
     .unwrap();
     let edit_err = edit_comment(
         &mut log,
@@ -656,7 +711,11 @@ fn editing_a_withdrawn_comment_is_refused() {
         body: "first take".to_string(),
         disposition: None,
     }
-    .append(&mut log, LockWait::Block)
+    .append(
+        &mut log,
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
     .unwrap();
     delete_comment(&mut log, added.id, human("wez"), LockWait::Block).unwrap();
     let error = edit_comment(
@@ -698,7 +757,11 @@ fn a_reply_names_its_parent_and_folds_beneath_it() {
         body: "why 3?".to_string(),
         disposition: None,
     }
-    .append(&mut log, LockWait::Block)
+    .append(
+        &mut log,
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
     .unwrap();
     let reply = DraftComment {
         author: human("dev"),
@@ -706,7 +769,11 @@ fn a_reply_names_its_parent_and_folds_beneath_it() {
         body: "it is the bound".to_string(),
         disposition: None,
     }
-    .append(&mut log, LockWait::Block)
+    .append(
+        &mut log,
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
     .unwrap();
     wince::assert_eq!(reply.anchor, None);
 
@@ -742,7 +809,11 @@ fn a_reply_to_an_unknown_comment_is_rejected_before_it_corrupts_the_session() {
         body: "reply to nothing".to_string(),
         disposition: None,
     }
-    .append(&mut log, LockWait::Block)
+    .append(
+        &mut log,
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
     .unwrap_err();
     wince::assert_eq!(matches!(error, Error::UnknownComment(_)), true);
     wince::assert_eq!(
@@ -768,7 +839,11 @@ fn a_reply_to_a_withdrawn_comment_is_refused_at_authoring() {
         body: "why 3?".to_string(),
         disposition: None,
     }
-    .append(&mut log, LockWait::Block)
+    .append(
+        &mut log,
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
     .unwrap();
     delete_comment(&mut log, root.id, human("wez"), LockWait::Block).unwrap();
 
@@ -778,7 +853,11 @@ fn a_reply_to_a_withdrawn_comment_is_refused_at_authoring() {
         body: "too late".to_string(),
         disposition: None,
     }
-    .append(&mut log, LockWait::Block)
+    .append(
+        &mut log,
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
     .unwrap_err();
     wince::assert_eq!(matches!(error, Error::WithdrawnComment(_)), true);
     wince::assert_eq!(
@@ -832,7 +911,8 @@ fn capturing_draft_anchors_fills_a_line_range_comment_authored_without_one() {
             "not in the diff".to_string(),
         )),
     ];
-    let failures = capture_draft_anchors(&log, &mut drafts);
+    let failures =
+        capture_draft_anchors(&log, &mut drafts, &wiff_diff::SectionMatchers::builtins());
     let errors: Vec<String> = failures.errors.iter().map(ToString::to_string).collect();
 
     // The in-window line comment gains its snippet; the review comment and the
@@ -856,6 +936,7 @@ fn capturing_draft_anchors_fills_a_line_range_comment_authored_without_one() {
                 snippet: vec!["let b = 3;".to_string()],
                 context_before: vec!["let a = 1;".to_string()],
                 context_after: vec!["let c = 4;".to_string()],
+                landmark: None,
             }),
             None,
             None,
@@ -910,7 +991,8 @@ fn capturing_draft_anchors_reports_one_fault_per_damage_across_drafts() {
             "second on the absent file".to_string(),
         )),
     ];
-    let failures = capture_draft_anchors(&log, &mut drafts);
+    let failures =
+        capture_draft_anchors(&log, &mut drafts, &wiff_diff::SectionMatchers::builtins());
     let sideband = log.sideband_dir().display().to_string();
     let errors: Vec<String> = failures
         .errors
@@ -951,7 +1033,11 @@ fn a_file_outside_the_diff_cannot_be_anchored() {
         body: "nowhere".to_string(),
         disposition: None,
     }
-    .append(&mut log, LockWait::Block)
+    .append(
+        &mut log,
+        LockWait::Block,
+        &wiff_diff::SectionMatchers::builtins(),
+    )
     .unwrap_err();
     wince::assert_eq!(matches!(error, Error::Anchor(_)), true);
     wince::snapshot_display!(

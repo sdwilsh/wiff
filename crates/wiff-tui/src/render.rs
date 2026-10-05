@@ -710,6 +710,12 @@ impl DiffView {
         self
     }
 
+    /// Returns the section matchers recognising enclosing-definition and
+    /// attachment lines.
+    pub fn section_matchers(&self) -> &SectionMatchers {
+        &self.sections
+    }
+
     /// Recognise machine-generated files with `generated`, so each such file
     /// shows a badge and folds to its header by default.
     pub fn with_generated_file_matches(mut self, generated: GeneratedMatchers) -> Self {
