@@ -34,7 +34,7 @@ use self::comment::CommentArgs;
 use self::description::DescriptionArgs;
 use self::explore::ExploreArgs;
 use self::forge::ForgeArgs;
-pub(crate) use self::forge::{connect_forge, reconcile_before_push};
+pub(crate) use self::forge::{ReconcileContext, connect_forge, reconcile_before_push};
 use self::new::NewArgs;
 use self::refresh::RefreshArgs;
 use self::render::RenderArgs;

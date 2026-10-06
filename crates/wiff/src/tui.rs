@@ -28,7 +28,7 @@ use wiff_tui::{
 
 use crate::command::explore::to_slash;
 use crate::command::{
-    connect_forge, explore_root, recapture_diff, reconcile_before_push, scm_repo,
+    ReconcileContext, connect_forge, explore_root, recapture_diff, reconcile_before_push, scm_repo,
 };
 
 /// Parse unified diff `text` and expand its tabs to spaces at `tab_width` column
@@ -622,16 +622,15 @@ fn refresh_forge_in_place(
     let sections = app
         .section_matchers()
         .context("refreshing requires an attached review")?;
-    let outcome = block_on(reconcile_before_push(
-        forge.as_ref(),
-        repo.as_ref(),
+    let ctx = ReconcileContext {
+        forge: forge.as_ref(),
+        repo: repo.as_ref(),
         scm,
-        &mut log,
-        &root,
-        &url,
-        author.clone(),
+        root: &root,
+        url: &url,
         sections,
-    ))?;
+    };
+    let outcome = block_on(reconcile_before_push(&ctx, &mut log, author.clone()))?;
     reload_after_reconcile(session_path, tab_width, &log, &outcome, app)?;
     match reconcile_note(&outcome) {
         Some(note) => app.set_message(note),
@@ -691,16 +690,15 @@ fn publish_reconcile_in_place(
         .section_matchers()
         .context("publishing requires an attached review")?;
     let mut log = SessionLog::open(session_path)?;
-    let outcome = block_on(reconcile_before_push(
-        forge.as_ref(),
-        repo.as_ref(),
+    let ctx = ReconcileContext {
+        forge: forge.as_ref(),
+        repo: repo.as_ref(),
         scm,
-        &mut log,
-        &root,
-        &url,
-        author.clone(),
+        root: &root,
+        url: &url,
         sections,
-    ))?;
+    };
+    let outcome = block_on(reconcile_before_push(&ctx, &mut log, author.clone()))?;
     reload_after_reconcile(session_path, tab_width, &log, &outcome, app)?;
     Ok(reconcile_note(&outcome))
 }

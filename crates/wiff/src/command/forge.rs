@@ -173,17 +173,15 @@ impl PushArgs {
         let author = resolve_author(self.agent, self.author)?;
         let sections = SectionMatchers::new(&config.section, &config.attachment)
             .context("a configured section pattern is not a valid regex")?;
-        let (resync, pushed) = push_bound_review(
-            forge.as_ref(),
-            repo.as_ref(),
-            identity.scm,
-            &mut log,
-            &root,
-            &url,
-            author,
-            &sections,
-        )
-        .await?;
+        let ctx = ReconcileContext {
+            forge: forge.as_ref(),
+            repo: repo.as_ref(),
+            scm: identity.scm,
+            root: &root,
+            url: &url,
+            sections: &sections,
+        };
+        let (resync, pushed) = push_bound_review(&ctx, &mut log, author).await?;
         report_push(&url, &resync, &pushed);
         Ok(())
     }
@@ -250,24 +248,36 @@ impl PushArgs {
     }
 }
 
+/// The borrowed environment in which a pull-request reconcile runs, shared by
+/// the pull and push halves of a publish.
+pub(crate) struct ReconcileContext<'a> {
+    /// The forge adapter to fetch the pull request from and push the review to.
+    pub forge: &'a dyn Forge,
+    /// The local repository the review is rebased onto.
+    pub repo: &'a dyn ScmRepo,
+    /// The kind of `repo`, when known.
+    pub scm: Option<ScmType>,
+    /// The root directory of the local repository.
+    pub root: &'a Path,
+    /// The bound pull request the local review is reconciled against.
+    pub url: &'a ForgeUrl,
+    /// The matchers used to align sections of the review with sections of the
+    /// forge during resync.
+    pub sections: &'a SectionMatchers,
+}
+
 /// Reconcile the bound pull request's remote state as of the pre-push fetch into
 /// the session behind `log`, then publish `author`'s local review to it. Pulling
 /// first rebases the local review onto that fetched state; a forge edit made
 /// after this fetch but before the review is submitted is left for the next pull
 /// to reconcile. Returns what the reconcile imported and what the publish sent.
 async fn push_bound_review(
-    forge: &dyn Forge,
-    repo: &dyn ScmRepo,
-    scm: Option<ScmType>,
+    ctx: &ReconcileContext<'_>,
     log: &mut SessionLog,
-    root: &Path,
-    url: &ForgeUrl,
     author: Author,
-    sections: &SectionMatchers,
 ) -> anyhow::Result<(ResyncOutcome, PushOutcome)> {
-    let resync =
-        reconcile_before_push(forge, repo, scm, log, root, url, author.clone(), sections).await?;
-    let pushed = push(forge, log, url, &author).await?;
+    let resync = reconcile_before_push(ctx, log, author.clone()).await?;
+    let pushed = push(ctx.forge, log, ctx.url, &author).await?;
     Ok((resync, pushed))
 }
 
@@ -277,18 +287,13 @@ async fn push_bound_review(
 /// the TUI can let the reviewer read what the reconcile pulled in before the
 /// push half sends the review back.
 pub(crate) async fn reconcile_before_push(
-    forge: &dyn Forge,
-    repo: &dyn ScmRepo,
-    scm: Option<ScmType>,
+    ctx: &ReconcileContext<'_>,
     log: &mut SessionLog,
-    root: &Path,
-    url: &ForgeUrl,
     author: Author,
-    sections: &SectionMatchers,
 ) -> anyhow::Result<ResyncOutcome> {
-    let fetched = forge.fetch(url).await?;
-    let source = prepare_source(repo, scm, root, &fetched, log.id()).await?;
-    resync_pull_request(log, source.as_ref(), &fetched, author, sections).await
+    let fetched = ctx.forge.fetch(ctx.url).await?;
+    let source = prepare_source(ctx.repo, ctx.scm, ctx.root, &fetched, log.id()).await?;
+    resync_pull_request(log, source.as_ref(), &fetched, author, ctx.sections).await
 }
 
 /// Print what pushing to `url` did: first what its pull-first step reconciled
@@ -499,8 +504,14 @@ async fn mirror_into_repo(
             let mut log = SessionLog::open(&path)?;
             let source =
                 prepare_source(repo.as_ref(), identity.scm, &root, &fetched, log.id()).await?;
-            resync_pull_request(&mut log, source.as_ref(), &fetched, req.author, req.sections)
-                .await?;
+            resync_pull_request(
+                &mut log,
+                source.as_ref(),
+                &fetched,
+                req.author,
+                req.sections,
+            )
+            .await?;
             Ok(path)
         }
         None => {
@@ -1592,18 +1603,18 @@ mod tests {
             posted: Mutex::new(Vec::new()),
         };
         let repo = scm_repo(Some(ScmType::Git), work.path().to_path_buf()).expect("git repo");
-        let (_resync, outcome) = push_bound_review(
-            &forge,
-            repo.as_ref(),
-            Some(ScmType::Git),
-            &mut log,
-            work.path(),
-            &url,
-            human("wez"),
-            &SectionMatchers::builtins(),
-        )
-        .await
-        .expect("push publishes the review");
+        let sections = SectionMatchers::builtins();
+        let ctx = ReconcileContext {
+            forge: &forge,
+            repo: repo.as_ref(),
+            scm: Some(ScmType::Git),
+            root: work.path(),
+            url: &url,
+            sections: &sections,
+        };
+        let (_resync, outcome) = push_bound_review(&ctx, &mut log, human("wez"))
+            .await
+            .expect("push publishes the review");
 
         let published = ReviewState::load(&path)
             .expect("reload session")
