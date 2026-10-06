@@ -27,6 +27,7 @@ strip = true
 anyhow = "1.0"
 async-trait = "0.1"
 base64 = "0.22"
+bitflags = "2"
 blake3 = "1"
 clap = { version = "4", features = ["derive"] }
 directories = "6"

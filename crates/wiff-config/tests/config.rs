@@ -5,7 +5,7 @@ use wiff_core::record::{Author, AuthorKind};
 use wiff_core::{AuthorDefaults, BaseRuleset, DEFAULT_BASE_REVISION_RULES};
 use wiff_forge::{ForgeHost, ForgeTable};
 use wiff_tui::keymap::KeymapOverrides;
-use wiff_tui::{Action, Chord, Resolution};
+use wiff_tui::{Action, Chord, Resolution, Scope};
 
 fn chord(text: &str) -> Chord {
     text.parse().unwrap()
@@ -267,11 +267,14 @@ fn the_configured_keymap_overlays_the_defaults() {
     // The override binds and the default "j" is gone, while untouched actions
     // keep their defaults.
     wince::assert_eq!(
-        map.resolve(&presses("R")),
+        map.resolve(&presses("R"), Scope::REVIEW),
         Resolution::Action(Action::LineDown)
     );
-    wince::assert_eq!(map.resolve(&presses("j")), Resolution::None);
-    wince::assert_eq!(map.resolve(&presses("q")), Resolution::Action(Action::Quit));
+    wince::assert_eq!(map.resolve(&presses("j"), Scope::REVIEW), Resolution::None);
+    wince::assert_eq!(
+        map.resolve(&presses("q"), Scope::REVIEW),
+        Resolution::Action(Action::Quit)
+    );
 }
 
 #[test]

@@ -623,6 +623,8 @@ fn event_loop<B: Backend>(
                     | Action::LineUp
                     | Action::PageDown
                     | Action::PageUp
+                    | Action::PageDownHalf
+                    | Action::PageUpHalf
                     | Action::Top
                     | Action::Bottom),
                 ) => app.notice_nav(action),
@@ -640,6 +642,8 @@ fn event_loop<B: Backend>(
                     | Action::LineUp
                     | Action::PageDown
                     | Action::PageUp
+                    | Action::PageDownHalf
+                    | Action::PageUpHalf
                     | Action::Top
                     | Action::Bottom),
                 ) => app.help_nav(action),
@@ -928,13 +932,15 @@ mod tests {
         // border with its thumb at the top where the window opens.
         #[rustfmt::skip]
         wince::snapshot_str!(
-            screen(70, 14, app),
+            screen(70, 16, app),
             "m┌Key bindings──────────────────────────────────────────────────────┐ \n",
             "@│Navigation                                                        █ \n",
-            " │  down, j                  Move down one line                     ║ \n",
+            " │  down, j                  Move down one line                     █ \n",
             " │  up, k                    Move up one line                       ║ \n",
             " │  space, ctrl-f, pagedown  Scroll down one page                   ║ \n",
             " │  b, ctrl-b, pageup        Scroll up one page                     ║ \n",
+            " │  ctrl-d                   Scroll down half a page                ║ \n",
+            " │  ctrl-u                   Scroll up half a page                  ║ \n",
             " │  g, <, home               Jump to the top                        ║ \n",
             " │  G, >, end                Jump to the bottom                     ║ \n",
             " │  .                        Next file                              ║ \n",

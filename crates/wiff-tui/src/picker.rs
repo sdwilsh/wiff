@@ -422,6 +422,18 @@ impl<Ctx> Picker<Ctx> {
         self.scroll_into_view();
     }
 
+    /// Move the highlight up by half a window's worth of rows.
+    pub fn page_up_half(&mut self) {
+        self.selected = self.selected.saturating_sub(self.half_page());
+        self.scroll_into_view();
+    }
+
+    /// Move the highlight down by half a window's worth of rows.
+    pub fn page_down_half(&mut self) {
+        self.selected = (self.selected + self.half_page()).min(self.last_row());
+        self.scroll_into_view();
+    }
+
     /// Move the highlight to the first row.
     pub fn to_top(&mut self) {
         self.selected = 0;
@@ -623,6 +635,11 @@ impl<Ctx> Picker<Ctx> {
     /// A window's worth of rows for a page move, at least one.
     fn page(&self) -> usize {
         self.height.max(1)
+    }
+
+    /// Returns half the rows of a window for a half-page move, at least one.
+    fn half_page(&self) -> usize {
+        (self.height / 2).max(1)
     }
 
     /// Slide the window so the highlighted row stays visible. The row sits at

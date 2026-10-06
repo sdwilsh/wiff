@@ -3752,6 +3752,7 @@ dependencies = [
 name = "wiff-tui"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "fancy-regex 0.16.2",
  "nix 0.29.0",
  "nucleo-matcher",

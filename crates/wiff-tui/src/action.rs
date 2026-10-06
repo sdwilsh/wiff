@@ -1,21 +1,43 @@
 //! The action vocabulary.
 //!
-//! Input events are decoded into an [`Action`] before the UI reacts, so the UI
-//! logic branches on intent rather than on raw keys. This keeps key bindings
-//! reassignable and the update logic small. Action names double as their config
-//! identifiers via [`Action::name`].
+//! An [`Action`] is the vocabulary of reviewer intent the UI reacts to, decoded
+//! from input before anything else runs. Keeping that vocabulary separate from
+//! raw keys is what lets key bindings stay reassignable.
 //!
-//! The whole vocabulary is declared through [`declare_actions!`], which is the
-//! single source of truth for the variant and the label the help overlay shows
-//! for it. A variant's config identifier is its own name in snake_case, derived
-//! at compile time rather than spelled out. Because the macro also records which
-//! group each action belongs to, the help overlay reads its layout straight from
-//! the declaration rather than a second table that could drift. The doc comment
-//! on each variant is the help label the reviewer reads; developer notes about
-//! an action's behavior belong in ordinary `//` comments, which the macro does
+//! The whole vocabulary is declared through [`declare_actions!`], the source of
+//! truth for each variant's config identifier (from [`Action::name`]), help
+//! label, group, and [`Scope`]. Developer notes about how an action behaves
+//! belong in ordinary `//` comments next to the variant, which the macro does
 //! not capture.
+//!
+//! A variant may also declare a [`Scope`], written `Variant @ expr` after its
+//! name, naming the UI contexts its chords resolve in. The default when omitted
+//! is [`Scope::DEFAULT`].
 
+use bitflags::bitflags;
 use serde::{Deserialize, Serialize};
+
+bitflags! {
+    /// The UI contexts a chord binding resolves in. A [`crate::Keymap`] keeps a
+    /// separate chord-to-action table for each context. The same chord can be
+    /// bound to a different action in each table: `ctrl-d` jumps a half page in
+    /// the review view ([`Scope::REVIEW`]) and submits the comment in the
+    /// inline editor ([`Scope::EDITOR`]). Each action declares the contexts it
+    /// belongs to.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct Scope: u8 {
+        /// The review view and its overlays.
+        const REVIEW = 1 << 0;
+        /// The open inline comment editor.
+        const EDITOR = 1 << 1;
+    }
+}
+
+impl Scope {
+    /// The scope an action is given when its declaration names none: both the
+    /// review view and the inline editor.
+    pub const DEFAULT: Scope = Scope::REVIEW.union(Scope::EDITOR);
+}
 
 /// The number of bytes `pascal` occupies once rewritten in snake_case: its own
 /// length plus one underscore before each uppercase letter after the first.
@@ -56,18 +78,23 @@ const fn snake_bytes<const N: usize>(pascal: &[u8]) -> [u8; N] {
     out
 }
 
-/// Declare the [`Action`] enum together with each variant's help label and
-/// group. The label is the variant's own doc comment; its config identifier is
-/// the variant name in snake_case. Emits the enum, [`Action::name`],
-/// [`Action::description`], and the [`ACTION_GROUPS`] table the help overlay
-/// reads.
+/// Declare the [`Action`] enum together with the help label, group, and
+/// [`Scope`] of each variant. The label is the doc comment of the variant. The
+/// config identifier of a variant is the variant name in snake_case. The scope
+/// of a variant is the optional `@ expr` after its name, defaulting to
+/// [`Scope::DEFAULT`]. Emits the enum, [`Action::name`],
+/// [`Action::description`], [`Action::scope`], and the [`ACTION_GROUPS`] table.
 macro_rules! declare_actions {
+    // Resolve the declared scope of a variant, falling back to the default when
+    // the declaration names none.
+    (@scope $scope:expr) => { $scope };
+    (@scope) => { Scope::DEFAULT };
     (
         $(
             $group:literal => {
                 $(
                     $(#[doc = $doc:literal])+
-                    $variant:ident
+                    $variant:ident $(@ $scope:expr)?
                 ),+ $(,)?
             }
         ),+ $(,)?
@@ -106,6 +133,13 @@ macro_rules! declare_actions {
                     $($( Action::$variant => concat!($($doc),+).trim(), )+)+
                 }
             }
+
+            /// The UI contexts in which the chords of this action resolve.
+            pub fn scope(self) -> Scope {
+                match self {
+                    $($( Action::$variant => declare_actions!(@scope $($scope)?), )+)+
+                }
+            }
         }
 
         /// The actions grouped by purpose, in the order the help overlay lists
@@ -140,6 +174,10 @@ declare_actions! {
         PageDown,
         /// Scroll up one page
         PageUp,
+        /// Scroll down half a page
+        PageDownHalf @ Scope::REVIEW,
+        /// Scroll up half a page
+        PageUpHalf @ Scope::REVIEW,
         /// Jump to the top
         Top,
         /// Jump to the bottom
@@ -166,10 +204,8 @@ declare_actions! {
         ToggleWrap,
         /// Show or hide line numbers
         ToggleLineNumbers,
-        // Leaves only the code, so rounds of annotation do not crowd out the diff.
         /// Show or hide comments
         HideComments,
-        // Side-by-side once the viewport is wide enough, else unified.
         /// Diff layout: auto
         DiffModeAuto,
         /// Diff layout: unified
@@ -190,7 +226,6 @@ declare_actions! {
         PickComment,
     },
     "Comments" => {
-        // Seeds from a draft comment's range when the cursor is on one.
         /// Select lines for a comment
         SelectLines,
         /// Add a comment
@@ -207,16 +242,12 @@ declare_actions! {
         SetVerdict,
     },
     "Editor" => {
-        // The editor's own keys, which act only while it is open.
         /// Submit the comment
-        SubmitComment,
-        // Confirms first when the body has unsaved changes.
+        SubmitComment @ Scope::EDITOR,
         /// Cancel the comment
         CancelComment,
-        // Floats the editor at a screen edge and frees the cursor to roam the
-        // diff for something to reference.
         /// Detach the editor to reference the diff
-        DetachEditor,
+        DetachEditor @ Scope::EDITOR,
     },
     "Search" => {
         /// Search forward
@@ -229,16 +260,12 @@ declare_actions! {
         SearchPrev,
     },
     "Session" => {
-        // Moves the pending drafts into the session log, keeping the review open.
         /// Commit pending comments
         Save,
-        // Recaptures the diff and rebases comments onto the new version.
         /// Capture a new diff version
         Refresh,
-        // Reconciles the pull request's forge state, then sends the review back.
         /// Publish the review to the forge
         Publish,
-        // A no-op outside an explore review, whose file set is fixed by its diff.
         /// Add a file to the review
         AddFile,
         /// Compare against an earlier version
@@ -249,7 +276,6 @@ declare_actions! {
         Suspend,
         /// Show this help
         Help,
-        // Honors the configured keep-or-remove default.
         /// Quit
         Quit,
         /// Quit and keep the session
@@ -261,7 +287,7 @@ declare_actions! {
 
 #[cfg(test)]
 mod tests {
-    use super::ACTION_GROUPS;
+    use super::{ACTION_GROUPS, Action, Scope};
 
     #[test]
     fn the_derived_name_matches_serde_for_every_action() {
@@ -299,6 +325,27 @@ mod tests {
     }
 
     #[test]
+    fn each_action_resolves_in_its_declared_scope() {
+        // The four exceptions are scoped to one context. Every other action
+        // defaults to both.
+        let exceptions: Vec<Action> = ACTION_GROUPS
+            .iter()
+            .flat_map(|group| group.actions)
+            .filter(|action| action.scope() != Scope::DEFAULT)
+            .copied()
+            .collect();
+        wince::assert_eq!(
+            exceptions,
+            vec![
+                Action::PageDownHalf,
+                Action::PageUpHalf,
+                Action::SubmitComment,
+                Action::DetachEditor,
+            ]
+        );
+    }
+
+    #[test]
     fn every_action_declares_its_group_name_and_help_label() {
         // The description of each action is its own doc comment, trimmed.
         #[rustfmt::skip]
@@ -309,6 +356,8 @@ mod tests {
             "  line_up = Move up one line\n",
             "  page_down = Scroll down one page\n",
             "  page_up = Scroll up one page\n",
+            "  page_down_half = Scroll down half a page\n",
+            "  page_up_half = Scroll up half a page\n",
             "  top = Jump to the top\n",
             "  bottom = Jump to the bottom\n",
             "  next_file = Next file\n",

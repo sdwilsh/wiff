@@ -28,7 +28,7 @@ use wiff_core::record::{CommentTarget, Confidence, RecordBody};
 use wiff_core::review::CommentState;
 use wiff_diff::{Diff, LineNo, LiveHighlighter, Rgb, Side};
 
-use crate::action::Action;
+use crate::action::{Action, Scope};
 use crate::compose::{Compose, ComposeKind, Scroll};
 use crate::exit::{Exit, ExitDefault, ExitPlan, plan_exit};
 use crate::help::{Help, HelpColors};
@@ -1082,6 +1082,8 @@ impl App {
             Action::LineUp => self.move_to(self.cursor.saturating_sub(1)),
             Action::PageDown => self.page_down(),
             Action::PageUp => self.page_up(),
+            Action::PageDownHalf => self.page_down_half(),
+            Action::PageUpHalf => self.page_up_half(),
             Action::Top => self.move_to(0),
             Action::Bottom => self.move_to(self.last_view()),
             Action::NextFile => self.jump_forward(Landmark::File),
@@ -1138,6 +1140,8 @@ impl App {
                 | Action::LineUp
                 | Action::PageDown
                 | Action::PageUp
+                | Action::PageDownHalf
+                | Action::PageUpHalf
                 | Action::Top
                 | Action::Bottom
                 | Action::NextFile
@@ -1504,7 +1508,10 @@ impl App {
     /// and hands the cursor to the diff; every other press edits the body.
     fn compose_key_editing(&mut self, press: KeyPress) {
         let width = self.editor_wrap_width();
-        match self.keymap.resolve(std::slice::from_ref(&press)) {
+        match self
+            .keymap
+            .resolve(std::slice::from_ref(&press), Scope::EDITOR)
+        {
             Resolution::Action(Action::SubmitComment) => self.submit_compose(),
             Resolution::Action(Action::CancelComment) => self.cancel_compose(),
             Resolution::Action(Action::DetachEditor) => self.detach_to_outside(),
@@ -1525,7 +1532,10 @@ impl App {
     /// detach binding, or any other key, returns to the editor, a printable key
     /// inserting itself once back inside.
     fn compose_key_outside(&mut self, press: KeyPress) {
-        match self.keymap.resolve(std::slice::from_ref(&press)) {
+        match self
+            .keymap
+            .resolve(std::slice::from_ref(&press), Scope::EDITOR)
+        {
             Resolution::Action(Action::SubmitComment) => self.submit_compose(),
             Resolution::Action(Action::CancelComment) => self.cancel_compose(),
             Resolution::Action(Action::EditComment | Action::DetachEditor) => self.reenter_editor(),
@@ -2441,6 +2451,8 @@ impl App {
             Action::LineUp => picker.select_prev(),
             Action::PageDown => picker.page_down(),
             Action::PageUp => picker.page_up(),
+            Action::PageDownHalf => picker.page_down_half(),
+            Action::PageUpHalf => picker.page_up_half(),
             Action::Top => picker.to_top(),
             Action::Bottom => picker.to_bottom(),
             _ => {}
@@ -2560,6 +2572,8 @@ impl App {
             Action::LineUp => help.scroll_up(),
             Action::PageDown => help.page_down(),
             Action::PageUp => help.page_up(),
+            Action::PageDownHalf => help.page_down_half(),
+            Action::PageUpHalf => help.page_up_half(),
             Action::Top => help.to_top(),
             Action::Bottom => help.to_bottom(),
             _ => {}
@@ -2674,6 +2688,8 @@ impl App {
             Action::LineUp => notice.scroll_up(),
             Action::PageDown => notice.page_down(),
             Action::PageUp => notice.page_up(),
+            Action::PageDownHalf => notice.page_down_half(),
+            Action::PageUpHalf => notice.page_up_half(),
             Action::Top => notice.to_top(),
             Action::Bottom => notice.to_bottom(),
             _ => {}
@@ -3769,6 +3785,11 @@ impl App {
         self.height.max(1)
     }
 
+    /// Returns the number of rows for a half page jump, at least one.
+    fn half_page(&self) -> usize {
+        (self.height / 2).max(1)
+    }
+
     /// The last addressable view row, or zero for an empty view.
     fn last_view(&self) -> usize {
         self.view.len().saturating_sub(1)
@@ -3789,16 +3810,38 @@ impl App {
     /// Advance a whole page: scroll the viewport down by a screen and carry the
     /// cursor with it, as `less` does on space.
     fn page_down(&mut self) {
-        let step = self.page();
-        self.top = (self.top + step).min(self.max_top());
-        self.cursor = (self.cursor + step).min(self.last_view());
-        self.clamp_cursor_visible();
+        self.scroll_down_by(self.page());
     }
 
     /// Retreat a whole page: scroll the viewport up by a screen and carry the
     /// cursor with it.
     fn page_up(&mut self) {
-        let step = self.page();
+        self.scroll_up_by(self.page());
+    }
+
+    /// Advance a half page: scroll the viewport down by half a screen and move
+    /// the cursor with it, as vim does on ctrl-d.
+    fn page_down_half(&mut self) {
+        self.scroll_down_by(self.half_page());
+    }
+
+    /// Retreat a half page: scroll the viewport up by half a screen and move
+    /// the cursor with it, as vim does on ctrl-u.
+    fn page_up_half(&mut self) {
+        self.scroll_up_by(self.half_page());
+    }
+
+    /// Scroll the viewport down by `step` rows, moving the cursor with it and
+    /// stopping once the last row has reached the screen.
+    fn scroll_down_by(&mut self, step: usize) {
+        self.top = (self.top + step).min(self.max_top());
+        self.cursor = (self.cursor + step).min(self.last_view());
+        self.clamp_cursor_visible();
+    }
+
+    /// Scroll the viewport up by `step` rows, moving the cursor with it and
+    /// stopping at the top.
+    fn scroll_up_by(&mut self, step: usize) {
         self.top = self.top.saturating_sub(step);
         self.cursor = self.cursor.saturating_sub(step);
         self.clamp_cursor_visible();
@@ -3958,6 +4001,8 @@ fn is_navigation(action: Action) -> bool {
             | Action::LineUp
             | Action::PageDown
             | Action::PageUp
+            | Action::PageDownHalf
+            | Action::PageUpHalf
             | Action::Top
             | Action::Bottom
             | Action::NextFile
@@ -5882,6 +5927,31 @@ mod tests {
 
         let (cursor, top, _) = after(3, &[Action::PageDown, Action::PageDown, Action::PageUp]);
         wince::assert_eq!(cursor, 3);
+        wince::assert_eq!(top, 1);
+    }
+
+    #[test]
+    fn ctrl_d_and_ctrl_u_jump_half_a_page() {
+        // On a height-4 view the half page is two rows: each half-page-down
+        // slides the viewport by two and moves the cursor with it, and
+        // half-page-up reverses it.
+        let (cursor, top, _) = after(4, &[Action::PageDownHalf]);
+        wince::assert_eq!(cursor, 2);
+        wince::assert_eq!(top, 2);
+
+        let (cursor, top, _) = after(4, &[Action::PageDownHalf, Action::PageDownHalf]);
+        wince::assert_eq!(cursor, 4);
+        wince::assert_eq!(top, 3);
+
+        let (cursor, top, _) = after(
+            4,
+            &[
+                Action::PageDownHalf,
+                Action::PageDownHalf,
+                Action::PageUpHalf,
+            ],
+        );
+        wince::assert_eq!(cursor, 2);
         wince::assert_eq!(top, 1);
     }
 

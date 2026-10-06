@@ -28,7 +28,7 @@ pub mod search;
 pub mod theme;
 pub mod wrap;
 
-pub use action::Action;
+pub use action::{Action, Scope};
 pub use app::{App, CompareRequest, PublishStep, Update};
 pub use event::to_key_press;
 pub use exit::{Exit, ExitDefault};

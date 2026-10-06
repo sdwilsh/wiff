@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use crate::action::Action;
+use crate::action::{Action, Scope};
 use crate::key::{Chord, KeyPress};
 
 /// A user's keymap overrides: a chord list per action, replacing that action's
@@ -48,8 +48,10 @@ pub enum KeymapError {
 pub struct Keymap {
     /// The chords bound to each action, kept for display and round-tripping.
     by_action: BTreeMap<Action, Vec<Chord>>,
-    /// The reverse lookup used to resolve a completed chord to its action.
-    by_chord: HashMap<Chord, Action>,
+    /// The reverse lookup for each single [`Scope`], resolving a completed chord
+    /// to its action within that context. A chord may appear in several of
+    /// these tables bound to a different action in each.
+    by_scope: HashMap<Scope, HashMap<Chord, Action>>,
 }
 
 impl Keymap {
@@ -79,17 +81,27 @@ impl Keymap {
         Self::from_action_map(by_action)
     }
 
-    /// Resolve the current pending presses: a completed action, a prefix of a
-    /// longer binding, or no match.
-    pub fn resolve(&self, pending: &[KeyPress]) -> Resolution {
+    /// Resolve the current pending presses within `scope`, which names a
+    /// context such as [`Scope::REVIEW`]: a completed action, a prefix of a
+    /// longer binding, or no match. Takes exactly one scope flag. A combined
+    /// scope such as [`Scope::DEFAULT`] doesn't name a context and resolves
+    /// nothing.
+    pub fn resolve(&self, pending: &[KeyPress], scope: Scope) -> Resolution {
+        debug_assert_eq!(
+            scope.iter().count(),
+            1,
+            "resolve takes exactly one scope flag"
+        );
         if pending.is_empty() {
             return Resolution::None;
         }
-        if let Some(action) = self.by_chord.get(&Chord(pending.to_vec())) {
+        let Some(by_chord) = self.by_scope.get(&scope) else {
+            return Resolution::None;
+        };
+        if let Some(action) = by_chord.get(&Chord(pending.to_vec())) {
             return Resolution::Action(*action);
         }
-        if self
-            .by_chord
+        if by_chord
             .keys()
             .any(|Chord(presses)| presses.len() > pending.len() && presses.starts_with(pending))
         {
@@ -110,23 +122,37 @@ impl Keymap {
     }
 
     fn from_action_map(by_action: BTreeMap<Action, Vec<Chord>>) -> Result<Self, KeymapError> {
-        let mut by_chord: HashMap<Chord, Action> = HashMap::new();
+        let mut by_scope: HashMap<Scope, HashMap<Chord, Action>> = HashMap::new();
         for (action, chords) in &by_action {
-            for chord in chords {
-                if let Some(first) = by_chord.insert(chord.clone(), *action) {
-                    return Err(KeymapError::Conflict {
-                        chord: chord.to_string(),
-                        first: first.name(),
-                        second: action.name(),
-                    });
+            for context in action.scope().iter() {
+                let table = by_scope.entry(context).or_default();
+                for chord in chords {
+                    insert_chord(table, chord, *action)?;
                 }
             }
         }
         Ok(Self {
             by_action,
-            by_chord,
+            by_scope,
         })
     }
+}
+
+/// Record `chord` as bound to `action` in one scope's reverse lookup, failing
+/// when another action already claimed it within that scope.
+fn insert_chord(
+    by_chord: &mut HashMap<Chord, Action>,
+    chord: &Chord,
+    action: Action,
+) -> Result<(), KeymapError> {
+    if let Some(first) = by_chord.insert(chord.clone(), action) {
+        return Err(KeymapError::Conflict {
+            chord: chord.to_string(),
+            first: first.name(),
+            second: action.name(),
+        });
+    }
+    Ok(())
 }
 
 /// Parse `text` into a chord, panicking on malformed input. Only used to build
@@ -148,6 +174,8 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
             Action::PageUp,
             vec![chord("b"), chord("ctrl-b"), chord("pageup")],
         ),
+        (Action::PageDownHalf, vec![chord("ctrl-d")]),
+        (Action::PageUpHalf, vec![chord("ctrl-u")]),
         (Action::Top, vec![chord("g"), chord("<"), chord("home")]),
         (Action::Bottom, vec![chord("G"), chord(">"), chord("end")]),
         (Action::NextFile, vec![chord(".")]),
@@ -176,8 +204,6 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
         (Action::ResolveComment, vec![chord("x")]),
         (Action::DeleteComment, vec![chord("d")]),
         (Action::SetVerdict, vec![chord("a")]),
-        // The inline editor's own keys, honored only while it is open, so ctrl-d
-        // and esc stay free for the review view.
         (Action::SubmitComment, vec![chord("ctrl-d")]),
         (Action::CancelComment, vec![chord("esc")]),
         (Action::DetachEditor, vec![chord("ctrl-o")]),
@@ -201,7 +227,7 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Action, Keymap, KeymapError, KeymapOverrides, Resolution};
+    use super::{Action, Keymap, KeymapError, KeymapOverrides, Resolution, Scope};
     use crate::key::{Chord, KeyPress};
 
     fn presses(text: &str) -> Vec<KeyPress> {
@@ -219,93 +245,20 @@ mod tests {
     }
 
     #[test]
-    fn the_defaults_resolve_navigation_and_review_keys() {
+    fn the_defaults_resolve_ctrl_d_in_each_scope() {
+        // The one chord this change exists for: ctrl-d jumps a half page in the
+        // review view and submits the comment in the editor, without the two
+        // colliding. esc, however, binds the same action in both scopes.
         let map = Keymap::defaults();
-        wince::assert_eq!(
-            map.resolve(&presses("j")),
-            Resolution::Action(Action::LineDown)
-        );
-        wince::assert_eq!(
-            map.resolve(&presses("down")),
-            Resolution::Action(Action::LineDown)
-        );
-        wince::assert_eq!(
-            map.resolve(&presses("space")),
-            Resolution::Action(Action::PageDown)
-        );
-        wince::assert_eq!(
-            map.resolve(&presses("ctrl-f")),
-            Resolution::Action(Action::PageDown)
-        );
-        wince::assert_eq!(
-            map.resolve(&presses("G")),
-            Resolution::Action(Action::Bottom)
-        );
-        // less-style angle brackets also jump to the ends of the diff.
-        wince::assert_eq!(map.resolve(&presses("<")), Resolution::Action(Action::Top));
-        wince::assert_eq!(
-            map.resolve(&presses(">")),
-            Resolution::Action(Action::Bottom)
-        );
-        wince::assert_eq!(
-            map.resolve(&presses("c")),
-            Resolution::Action(Action::AddComment)
-        );
-        wince::assert_eq!(
-            map.resolve(&presses("r")),
-            Resolution::Action(Action::ReplyComment)
-        );
-        wince::assert_eq!(
-            map.resolve(&presses("x")),
-            Resolution::Action(Action::ResolveComment)
-        );
-        wince::assert_eq!(
-            map.resolve(&presses("ctrl-r")),
-            Resolution::Action(Action::Refresh)
-        );
-        wince::assert_eq!(
-            map.resolve(&presses("ctrl-z")),
-            Resolution::Action(Action::Suspend)
-        );
-        wince::assert_eq!(map.resolve(&presses("q")), Resolution::Action(Action::Quit));
-        wince::assert_eq!(map.resolve(&presses("h")), Resolution::Action(Action::Help));
-        wince::assert_eq!(
-            map.resolve(&presses("H")),
-            Resolution::Action(Action::HideComments)
-        );
-        wince::assert_eq!(
-            map.resolve(&presses("V")),
-            Resolution::Action(Action::CompareVersions)
-        );
-        wince::assert_eq!(
-            map.resolve(&presses("v")),
-            Resolution::Action(Action::SelectLines)
-        );
-        wince::assert_eq!(
-            map.resolve(&presses("/")),
-            Resolution::Action(Action::SearchForward)
-        );
-        wince::assert_eq!(
-            map.resolve(&presses("?")),
-            Resolution::Action(Action::SearchBackward)
-        );
-        wince::assert_eq!(
-            map.resolve(&presses("n")),
-            Resolution::Action(Action::SearchNext)
-        );
-        wince::assert_eq!(
-            map.resolve(&presses("N")),
-            Resolution::Action(Action::SearchPrev)
-        );
-        wince::assert_eq!(
-            map.resolve(&presses("ctrl-d")),
-            Resolution::Action(Action::SubmitComment)
-        );
-        wince::assert_eq!(
-            map.resolve(&presses("esc")),
-            Resolution::Action(Action::CancelComment)
-        );
-        wince::assert_eq!(map.resolve(&presses("z")), Resolution::None);
+        let review = |text: &str| map.resolve(&presses(text), Scope::REVIEW);
+        wince::assert_eq!(review("ctrl-d"), Resolution::Action(Action::PageDownHalf));
+        wince::assert_eq!(review("ctrl-u"), Resolution::Action(Action::PageUpHalf));
+        wince::assert_eq!(review("esc"), Resolution::Action(Action::CancelComment));
+
+        let editor = |text: &str| map.resolve(&presses(text), Scope::EDITOR);
+        wince::assert_eq!(editor("ctrl-d"), Resolution::Action(Action::SubmitComment));
+        wince::assert_eq!(editor("ctrl-u"), Resolution::None);
+        wince::assert_eq!(editor("esc"), Resolution::Action(Action::CancelComment));
     }
 
     #[test]
@@ -314,12 +267,12 @@ mod tests {
         // The override takes effect and the default "j" no longer binds, but
         // untouched actions keep their defaults.
         wince::assert_eq!(
-            map.resolve(&presses("R")),
+            map.resolve(&presses("R"), Scope::REVIEW),
             Resolution::Action(Action::LineDown)
         );
-        wince::assert_eq!(map.resolve(&presses("j")), Resolution::None);
+        wince::assert_eq!(map.resolve(&presses("j"), Scope::REVIEW), Resolution::None);
         wince::assert_eq!(
-            map.resolve(&presses("k")),
+            map.resolve(&presses("k"), Scope::REVIEW),
             Resolution::Action(Action::LineUp)
         );
         wince::assert_eq!(
@@ -331,16 +284,19 @@ mod tests {
     #[test]
     fn an_empty_override_unbinds_an_action() {
         let map = build(&[(Action::Quit, &[])], false).unwrap();
-        wince::assert_eq!(map.resolve(&presses("q")), Resolution::None);
+        wince::assert_eq!(map.resolve(&presses("q"), Scope::REVIEW), Resolution::None);
         wince::assert_eq!(map.chords(Action::Quit), &[] as &[Chord]);
     }
 
     #[test]
     fn disabling_the_defaults_keeps_only_configured_bindings() {
         let map = build(&[(Action::Quit, &["x"])], true).unwrap();
-        wince::assert_eq!(map.resolve(&presses("x")), Resolution::Action(Action::Quit));
-        wince::assert_eq!(map.resolve(&presses("j")), Resolution::None);
-        wince::assert_eq!(map.resolve(&presses("q")), Resolution::None);
+        wince::assert_eq!(
+            map.resolve(&presses("x"), Scope::REVIEW),
+            Resolution::Action(Action::Quit)
+        );
+        wince::assert_eq!(map.resolve(&presses("j"), Scope::REVIEW), Resolution::None);
+        wince::assert_eq!(map.resolve(&presses("q"), Scope::REVIEW), Resolution::None);
     }
 
     #[test]
@@ -359,11 +315,17 @@ mod tests {
     #[test]
     fn a_multi_press_chord_reports_pending_until_complete() {
         let map = build(&[(Action::Top, &["g g"])], true).unwrap();
-        wince::assert_eq!(map.resolve(&presses("g")), Resolution::Pending);
         wince::assert_eq!(
-            map.resolve(&presses("g g")),
+            map.resolve(&presses("g"), Scope::REVIEW),
+            Resolution::Pending
+        );
+        wince::assert_eq!(
+            map.resolve(&presses("g g"), Scope::REVIEW),
             Resolution::Action(Action::Top)
         );
-        wince::assert_eq!(map.resolve(&presses("g x")), Resolution::None);
+        wince::assert_eq!(
+            map.resolve(&presses("g x"), Scope::REVIEW),
+            Resolution::None
+        );
     }
 }

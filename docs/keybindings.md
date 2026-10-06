@@ -19,6 +19,8 @@ a sequence pressed in turn (`g g`).
 | `k`, `up` | Move up one line | `line_up` |
 | `space`, `ctrl-f`, `pagedown` | Scroll down one page | `page_down` |
 | `b`, `ctrl-b`, `pageup` | Scroll up one page | `page_up` |
+| `ctrl-d` | Scroll down half a page | `page_down_half` |
+| `ctrl-u` | Scroll up half a page | `page_up_half` |
 | `g`, `<`, `home` | Jump to the top | `top` |
 | `G`, `>`, `end` | Jump to the bottom | `bottom` |
 | `.` | Next file | `next_file` |

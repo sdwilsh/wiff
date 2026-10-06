@@ -7,7 +7,7 @@
 //! press that matches nothing clears the sequence so the next press starts
 //! fresh.
 
-use crate::action::Action;
+use crate::action::{Action, Scope};
 use crate::key::KeyPress;
 use crate::keymap::{Keymap, Resolution};
 
@@ -29,7 +29,7 @@ impl Input {
     /// Feed one press, returning the action it completes, if any.
     pub fn press(&mut self, press: KeyPress) -> Option<Action> {
         self.pending.push(press);
-        match self.keymap.resolve(&self.pending) {
+        match self.keymap.resolve(&self.pending, Scope::REVIEW) {
             Resolution::Action(action) => {
                 self.pending.clear();
                 Some(action)

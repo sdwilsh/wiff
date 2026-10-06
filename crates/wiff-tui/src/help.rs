@@ -133,6 +133,16 @@ impl Help {
         self.top = (self.top + self.page()).min(self.max_top());
     }
 
+    /// Scroll up by half a window's worth of rows.
+    pub fn page_up_half(&mut self) {
+        self.top = self.top.saturating_sub(self.half_page());
+    }
+
+    /// Scroll down by half a window's worth of rows.
+    pub fn page_down_half(&mut self) {
+        self.top = (self.top + self.half_page()).min(self.max_top());
+    }
+
     /// Scroll to the first row.
     pub fn to_top(&mut self) {
         self.top = 0;
@@ -251,6 +261,11 @@ impl Help {
     /// A window's worth of rows for a page move, at least one.
     fn page(&self) -> usize {
         self.height.max(1)
+    }
+
+    /// Returns half the rows of a window for a half-page move, at least one.
+    fn half_page(&self) -> usize {
+        (self.height / 2).max(1)
     }
 
     /// The furthest the window can scroll while keeping the last row in view.
