@@ -132,12 +132,12 @@ pub fn enabled() -> bool {
     epoch().is_some()
 }
 
-/// Returns a fresh comment id: a real [`Ulid::new`] normally, or the next id in
-/// the fixed sequence under deterministic mode, where ids sort in creation
-/// order.
+/// Returns a fresh comment id: a real [`Ulid::generate`] normally, or the
+/// next id in the fixed sequence under deterministic mode, where ids sort in
+/// creation order.
 pub fn new_ulid() -> Ulid {
     let Some(anchor) = epoch() else {
-        return Ulid::new();
+        return Ulid::generate();
     };
     let seq = next_id_seq();
     let millis = (anchor.unix_timestamp_nanos() / 1_000_000).max(0) as u128;

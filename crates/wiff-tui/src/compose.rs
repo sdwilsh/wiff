@@ -105,9 +105,6 @@ impl Compose {
         highlighter.update(&lines);
         let mut textarea = TextArea::new(lines);
         textarea.set_tab_length(tab_width as u8);
-        // The editor otherwise underlines the whole line the cursor is on, which
-        // reads as emphasis on the text rather than a cursor.
-        textarea.set_cursor_line_style(Style::default());
         // Open with the cursor after the seeded text so an edit appends.
         textarea.move_cursor(CursorMove::Bottom);
         textarea.move_cursor(CursorMove::End);

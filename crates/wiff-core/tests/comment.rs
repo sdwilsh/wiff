@@ -541,7 +541,7 @@ fn setting_a_verdict_on_another_authors_comment_is_refused() {
 #[test]
 fn mutating_an_unknown_comment_is_an_error() {
     let (_base, mut log) = session();
-    let missing = Ulid::new();
+    let missing = Ulid::generate();
     let resolve_err =
         set_resolved(&mut log, missing, true, human("wez"), LockWait::Block).unwrap_err();
     let delete_err = delete_comment(&mut log, missing, human("wez"), LockWait::Block).unwrap_err();
@@ -802,7 +802,7 @@ fn a_reply_to_an_unknown_comment_is_rejected_before_it_corrupts_the_session() {
     // unchecked would make the whole session unreadable. `append` must refuse
     // the reply and leave the log foldable.
     let (_base, mut log) = session();
-    let missing = Ulid::new();
+    let missing = Ulid::generate();
     let error = DraftComment {
         author: human("wez"),
         target: CommentTarget::Comment { id: missing },

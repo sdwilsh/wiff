@@ -118,7 +118,7 @@ fn detect_terminal_appearance(app: &mut App) {
 /// Draw the current view: the visible lines over all but the last screen row,
 /// with a status line filling that last row. The app is resized to the document
 /// area first so its viewport matches the space the status line leaves.
-pub fn draw<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
+pub fn draw<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<(), B::Error> {
     terminal.draw(|frame| {
         let area = frame.area();
         let doc_height = area.height.saturating_sub(1);
@@ -564,7 +564,10 @@ fn event_loop<B: Backend>(
     mut app: App,
     keymap: Keymap,
     mut hooks: Hooks,
-) -> io::Result<(Exit, Vec<RecordBody>)> {
+) -> io::Result<(Exit, Vec<RecordBody>)>
+where
+    io::Error: From<B::Error>,
+{
     let mut input = Input::new(keymap);
     // Repaint only when the view might have changed, so an idle poll that finds
     // no session update does not redraw. Set the first time through to paint the

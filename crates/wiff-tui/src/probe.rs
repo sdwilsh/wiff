@@ -18,7 +18,7 @@
 //! rare.
 
 use std::io::{IsTerminal, Read, Write};
-use std::os::fd::{AsFd, AsRawFd};
+use std::os::fd::AsFd;
 use std::time::{Duration, Instant};
 
 use nix::errno::Errno;
@@ -74,7 +74,7 @@ fn query_terminal() -> std::io::Result<TerminalReply> {
     tty.flush()?;
     // Switch to non-blocking for the read loop, which is driven by poll against
     // the deadline rather than parking in read() when the terminal stays silent.
-    fcntl(tty.as_raw_fd(), FcntlArg::F_SETFL(OFlag::O_NONBLOCK))?;
+    fcntl(&tty, FcntlArg::F_SETFL(OFlag::O_NONBLOCK))?;
     Ok(TerminalReply::read(&mut tty))
 }
 

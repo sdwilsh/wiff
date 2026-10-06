@@ -191,7 +191,7 @@ fn now_sec() -> u64 {
 /// A random tail seeded from the platform's ULID randomness, reused here rather
 /// than pulling in a second source of entropy.
 fn random_tail() -> u64 {
-    (ulid::Ulid::new().random() as u64) & TAIL_MASK
+    (ulid::Ulid::generate().random() as u64) & TAIL_MASK
 }
 
 /// The value of a Crockford base32 digit, accepting the case-insensitive

@@ -488,7 +488,7 @@ fn definition_matches(new_texts: &[&str], definition: &str) -> Vec<(usize, f32)>
     let mut matches: Vec<(usize, f32)> = new_texts
         .iter()
         .enumerate()
-        .map(|(index, candidate)| (index, TextDiff::from_chars(definition, candidate).ratio()))
+        .map(|(index, candidate)| (index, TextDiff::from_chars(definition, *candidate).ratio()))
         .filter(|(_, ratio)| *ratio >= DEFINITION_FLOOR)
         .collect();
     matches.sort_by(|a, b| b.1.total_cmp(&a.1));
@@ -497,7 +497,7 @@ fn definition_matches(new_texts: &[&str], definition: &str) -> Vec<(usize, f32)>
 
 /// Returns the character similarity between the snippet and candidate window.
 fn snippet_char_ratio(snippet: &[&str], window: &[&str]) -> f32 {
-    TextDiff::from_chars(&snippet.join("\n"), &window.join("\n")).ratio()
+    TextDiff::from_chars(snippet.join("\n"), window.join("\n")).ratio()
 }
 
 /// Recover an after-side comment's position when its reviewed content was

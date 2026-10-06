@@ -66,8 +66,8 @@ fn refine_pair(before: &str, after: &str) -> Option<(LineRanges, LineRanges)> {
     if diff.ratio() < MIN_SIMILARITY {
         return None;
     }
-    let before_words: Vec<&str> = diff.old_slices().to_vec();
-    let after_words: Vec<&str> = diff.new_slices().to_vec();
+    let before_words: Vec<&str> = diff.iter_old_slices().collect();
+    let after_words: Vec<&str> = diff.iter_new_slices().collect();
     let before_bytes = word_byte_offsets(&before_words);
     let after_bytes = word_byte_offsets(&after_words);
     let mut before_ranges = Vec::new();
