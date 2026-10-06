@@ -39,22 +39,25 @@ Darwin)
 esac
 
 archive="wiff-${target}.tar.gz"
-url="https://github.com/${repo}/releases/download/${version}/${archive}"
+# The release's checksum asset is named after the archive minus its .tar.gz
+# suffix, e.g. wiff-aarch64-apple-darwin.sha256.
+checksum="${archive%.tar.gz}.sha256"
+base="https://github.com/${repo}/releases/download/${version}"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-echo "wiff: downloading $url"
-curl -fSL "$url" -o "$tmp/$archive"
-curl -fSL "$url.sha256" -o "$tmp/$archive.sha256"
+echo "wiff: downloading $base/$archive"
+curl -fSL "$base/$archive" -o "$tmp/$archive"
+curl -fSL "$base/$checksum" -o "$tmp/$checksum"
 
 # This sha check guards against a corrupted or truncated download only;
 # the checksum shares the release channel with the archive and this script
 # so it cannot attest provenance.  For that you should not be using curl|sh!
 if command -v sha256sum >/dev/null 2>&1; then
-	(cd "$tmp" && sha256sum -c "$archive.sha256")
+	(cd "$tmp" && sha256sum -c "$checksum")
 elif command -v shasum >/dev/null 2>&1; then
-	(cd "$tmp" && shasum -a 256 -c "$archive.sha256")
+	(cd "$tmp" && shasum -a 256 -c "$checksum")
 else
 	echo "wiff: no sha256sum or shasum found; skipping checksum verification" >&2
 fi
